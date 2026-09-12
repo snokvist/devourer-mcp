@@ -129,6 +129,55 @@ shares libusb's transfer queue with the TX bulk path — it measured
 4500 → 1000 TX submits in 10 s under sustained TX — so leave it off outside
 this kind of investigation; our 200-frame bursts are too short to show it.
 
+### It was EDCCA after all — but the threshold, not the gain
+
+The deferral is settled. Splitting the carrier-sense gate into its two bits
+(`radio.cca_gates`, 0x520[14] primary CCA and [15] EDCCA) and running all four
+states with a **fresh radio open per arm**:
+
+| Gate state | delivered |
+|---|---|
+| both on (devourer's default) | 0.0%, 1.7% |
+| **EDCCA off only** | **94.3%, 94.7%** |
+| primary CCA off only | 13.7%, 2.7% |
+| both off | 94.3%, 95.3% |
+
+**EDCCA is the gate.** That inverts what devourer documents — its `CLAUDE.md`
+says the primary-CCA bit "is the one that matters" and the energy bit "alone
+is null against a decodable preamble", measured on Jaguar3 with
+`tests/dis_cca_tx_onair.sh`. That test uses the 8812AU **only as its flooder**;
+Jaguar1 has never been the DUT, and on Jaguar1 the result is the other way
+round.
+
+**And carrier sense does not have to be turned off.** With EDCCA off and
+primary CCA still on, against a saturating co-channel flooder:
+
+| Arm | flooder | delivered |
+|---|---|---|
+| EDCCA off, primary CCA ON | no | 95.3% |
+| EDCCA off, primary CCA ON | yes | 78.0% |
+| both gates off | yes | **0.3%** |
+
+Deferral still works — 95% drops to 78% when a real transmitter takes the
+channel. And turning both gates off is *worse for your own delivery* on a
+busy channel: the injector transmits into the flood and collides, 0.3%
+against 78%. `dis_cca` is the wrong tool even selfishly.
+
+**Why Jaguar1 differs: devourer enables EDCCA and the vendor does not.** The
+BB table parks `0x8a4` at `0x7f7f`, never-trigger, which devourer's own
+comment identifies as the vendor's adaptivity-off default
+(`CONFIG_RTW_ADAPTIVITY_EN 0`). Bring-up programs the operating point off the
+live IGI, which is what makes EDCCA exist at all. The Realtek vendor driver
+on this machine (`/usr/src/rtl88x2eu-5.15.0.1`) ships adaptivity **off** and,
+when on, exposes both thresholds as runtime module parameters —
+`rtw_adaptivity_en`, `rtw_adaptivity_mode`, `rtw_adaptivity_th_l2h_ini`,
+`rtw_adaptivity_th_edcca_hl_diff`. devourer hard-codes `th_l2h_ini = -17` and
+the H2L gap as 7.
+
+So the answer to "how do normal drivers avoid this" is that they do not turn
+the feature on. See
+[`proposals/cca-gates-and-adaptivity.md`](proposals/cca-gates-and-adaptivity.md).
+
 ### The gain hypothesis was wrong, and driving the gain is what showed it
 
 Having built the knob (`rx_gain`, below), the obvious experiment became
@@ -172,11 +221,12 @@ what this file said before:
   went 98 -> 1150 -> 8462 and a 300-frame burst went 0.3 s -> 13 s -> 36 s ->
   over two minutes as the index rose from 0x1c to 0x2e.
 
-Disabling carrier sense remains the only thing that reliably recovers
-transmission (90.5%). And `SetCcaMode` clears **two** bits in 0x520 — bit 15
-(EDCCA) and bit 14 (primary CCA defer) — which have never been separated. If
-the primary CCA defer is what is stopping transmission, the entire EDCCA and
-gain line of inquiry was the wrong tree, and that is the next experiment.
+Disabling carrier sense recovers transmission (90.5%), and the section above
+now says which half of it was doing the damage: EDCCA, not primary CCA. The
+gain was the wrong *lever* on the right gate — IGI only moves the EDCCA
+threshold across a narrow coupled range, and even at the permissive end of
+that range the threshold is still far too low. The threshold constant itself
+(`th_l2h_ini`) is the lever, and the vendor makes it a module parameter.
 
 ### What driving the gain took
 

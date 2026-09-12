@@ -431,6 +431,21 @@ Json op_radio_rx_paths(const Json &req) {
   return ok(s->rx_paths_json());
 }
 
+Json op_radio_cca_gates(const Json &req) {
+  std::string err;
+  auto s = find_session(req, err);
+  if (!s)
+    return fail("no_session", err);
+  const bool has = req.at("primary_cca_disabled").is_boolean() ||
+                   req.at("edcca_disabled").is_boolean();
+  if (has) {
+    if (!s->set_cca_gates(req.at("primary_cca_disabled").boolean(false),
+                          req.at("edcca_disabled").boolean(false), err))
+      return fail("unsupported", err);
+  }
+  return ok(s->cca_gates_json());
+}
+
 Json op_radio_rx_gain(const Json &req) {
   std::string err;
   auto s = find_session(req, err);
@@ -719,6 +734,8 @@ Json dispatch(const Json &req) {
     return op_radio_rx_energy(req);
   if (op == "radio.rx_gain")
     return op_radio_rx_gain(req);
+  if (op == "radio.cca_gates")
+    return op_radio_cca_gates(req);
   if (op == "radio.cca")
     return op_radio_cca(req);
   if (op == "tx.send")

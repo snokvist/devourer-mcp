@@ -126,7 +126,14 @@ needs a fixed transmitter and the two receivers swapped between positions — a
 multi-witness experiment, which is the feature above.
 
 **Whether the RTL8812AU's EDCCA threshold can be raised rather than bypassed.**
-Answered halfway. The deferral is now understood: the gain index sits at
+Answered. EDCCA is the gate that blocks injection on Jaguar1 (94% recovered by
+turning it off alone, with primary CCA left on and still deferring properly to
+a real flooder), devourer enables it where the vendor driver ships it off, and
+the thresholds it hard-codes are vendor module parameters. See
+[`proposals/cca-gates-and-adaptivity.md`](proposals/cca-gates-and-adaptivity.md).
+The receive-gain work below was the right gate and the wrong lever.
+
+Previously recorded as answered halfway: The deferral is now understood: the gain index sits at
 0x1C, which is the bottom of DIG's range, and the vendor re-derives the EDCCA
 threshold from it — so the threshold is the most sensitive value the adaptive
 loop can produce, on every channel, and no channel choice moves it. See
