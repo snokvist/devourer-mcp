@@ -1,0 +1,8 @@
+# Pinned upstream OpenIPC Devourer. Do not edit vendor/devourer by hand —
+# see tools/host/vendor-devourer.sh and vendor/patches/.
+repository = https://github.com/OpenIPC/devourer.git
+ref        = master
+commit     = 30d248e021f35be0a8fe85c84939a57a45756901
+committed  = 2026-09-11T15:52:37+03:00
+subject    = mt7612u: access-point support — hardware beacon behind IRadio, open and WPA2-PSK verified on air (#424)
+vendored   = 2026-09-12T08:55:20+02:00
