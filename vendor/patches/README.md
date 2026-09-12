@@ -33,5 +33,7 @@ at a time, because on Jaguar1 the two bits do opposite things and
 the measurement it enabled is that EDCCA alone costs an 8812AU injector 94%
 of its frames, which inverts the Jaguar3 result devourer documents as general.
 
-Retire it the moment it lands upstream.
+Upstream as [OpenIPC/devourer#427](https://github.com/OpenIPC/devourer/pull/427)
+(derived against a pristine tree — this file carries the same change stacked
+on 0001, which is why the two differ in context). Retire it when that lands.
 

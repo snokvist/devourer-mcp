@@ -3,6 +3,13 @@
 For OpenIPC/devourer. Built and measured on this bench first; the patch is
 `vendor/patches/0002-cca-gates.patch`.
 
+**Item 1 (the gate split) is upstream as
+[OpenIPC/devourer#427](https://github.com/OpenIPC/devourer/pull/427)**,
+implemented and hardware-verified on Jaguar1 and Jaguar3. Items 2-4 — the
+EDCCA-on-by-default policy, the hard-coded thresholds, and scoping the
+`CLAUDE.md` claim — are raised in that PR's description but deliberately not
+in its diff: they are policy calls for the maintainer, not bugs.
+
 ## The measurement
 
 An RTL8812AU injecting 300 broadcast frames at 6M on ch6, carrier sense in
