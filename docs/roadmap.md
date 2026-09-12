@@ -132,10 +132,17 @@ threshold from it — so the threshold is the most sensitive value the adaptive
 loop can produce, on every channel, and no channel choice moves it. See
 `hardware-evidence.md`.
 
-What is left is the lever. Devourer's fixed-IGI override is Jaguar2 only, so
-on a wave-1 part raising the gain means writing BB 0x8a4 directly, which is
-below the boundary this project keeps. Either devourer grows a Jaguar1
-equivalent upstream, or this stays a documented property of the part.
+What is left is the lever, and it is a two-line change in devourer rather than
+a missing capability. `DeviceConfig.rx.igi` is documented as a fixed
+initial-gain override and has exactly one consumer in the tree
+(`HalJaguar2.cpp:2597`); Jaguar1 ignores it and
+`HalModule::phydm_SetIgiFloor_Jaguar()` hard-writes `0x1c`. Making that
+`_cfg.rx.igi.value_or(0x1c)` costs nothing by default and makes IGI a
+sweepable axis here, because this bridge already passes DeviceConfig at open.
+
+It is not reachable without that change: `RtlJaguarDevice` publishes
+`ReadBBReg` and no write. This is an upstream contribution, not a local patch
+— `vendor/patches/` is empty and should stay that way.
 
 ---
 

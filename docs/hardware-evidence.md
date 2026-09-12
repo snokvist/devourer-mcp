@@ -129,6 +129,81 @@ shares libusb's transfer queue with the TX bulk path — it measured
 4500 → 1000 TX submits in 10 s under sustained TX — so leave it off outside
 this kind of investigation; our 200-frame bursts are too short to show it.
 
+### What it would take to drive the gain
+
+Not a missing capability in devourer — a missing way in. Everything needed is
+already implemented:
+
+| Piece | Where |
+|---|---|
+| the IGI write | `PhydmWatchdog::DigWriteIgi` — `phy_set_bb_reg(0xc50/0xe50, 0xff, igi)` |
+| the floor write at bring-up | `HalModule::phydm_SetIgiFloor_Jaguar()`, hard-coded `0x1c` |
+| DIG's clamps | `PhydmWatchdog::_rx_gain_range_min/_max` |
+| a documented config field for exactly this | `DeviceConfig.rx.igi` ("fixed initial-gain index override") |
+
+**`rx.igi` has exactly one consumer in the whole tree: `HalJaguar2.cpp:2597`.**
+Jaguar1 never reads it. So the override is documented, plumbed as far as the
+config struct, and ignored by the family that needs it here.
+
+**It is not reachable from this side.** `RtlJaguarDevice` publishes
+`ReadBBReg(addr, mask)` and no write; every BB write goes through its private
+`_device`. We can read the gain — `channel_energy` already reports it — and we
+cannot set it without changing devourer.
+
+The smallest change that fixes it is two lines: make
+`phydm_SetIgiFloor_Jaguar()` write `_cfg.rx.igi.value_or(0x1c)` instead of a
+literal `0x1c`. Existing field, unchanged default, and `DEVOURER_IGI` then
+means the same thing on Jaguar1 as on Jaguar2. With that, this bridge sets it
+at open the way it already sets `noise_floor` and `adaptive_gain`, and IGI
+becomes a sweepable axis from 0x1C to 0x2A against delivery — which is the
+measurement that would turn the gain hypothesis into a result.
+
+Worth knowing why the floor is written at all. The comment at the call site is
+explicit: without phydm's watchdog "devourer's IGI never moves from the 0x20
+BB-table seed and runs ~4 dB less sensitive than the kernel driver. Match
+kernel by writing the floor once here." It is a deliberate choice to maximise
+sensitivity, which is right for a distant link and wrong at 30 cm.
+
+### The MT7612U is pinned too — just in a better place
+
+The obvious reading of the role swap is that MediaTek's 1 Hz gain tracker
+adapts and Realtek's does not. That is not what the port does.
+`mt7612u_phy_tick` runs `phy_update_channel_gain` every second, but its input
+is hard-coded:
+
+```c
+const int avg = -75;   /* mt76's monitor-mode substitute */
+```
+
+A monitor consumer has no associated-station table, so mt76 substitutes -75
+and this port pins it there. With thresholds of -68/-82 at 20 MHz that fixes
+`low_gain` at 1 — the MIDDLE of three gain classes — and the port notes the
+`low_gain == 2` arms are unreachable today.
+
+So both radios run at a fixed gain. The Realtek is pinned at **maximum**
+(IGI 0x1C, DIG's floor); the MT7612U is pinned at the **middle class**. That
+difference, not adaptivity, is the most likely reason one transmits at bench
+distance and the other does not.
+
+MediaTek's structure is still the better one for this problem, for a reason
+worth separating from the measurement: it keys gain off received signal
+strength, which is the variable that matters at 30 cm, while phydm's DIG keys
+off the false-alarm rate and therefore concludes "clean, use maximum
+sensitivity" exactly when a strong near neighbour makes that wrong. The port
+says the RSSI arms "become live the moment a real per-peer RSSI source
+exists".
+
+### It is not deafness
+
+Worth being precise, because "over-sensitive at bench distance" suggests a
+receiver too saturated to decode, and that is not what was measured. The
+RTL8812AU took in 192, 200 and 198 of 200 frames from an adapter inches away,
+and 3194 of 3200 in the pacing sweep. It hears perfectly well.
+
+What saturates is the energy detector feeding CCA: the NHM histogram put every
+sample in its top bucket on all three channels. The symptom is not a radio
+that cannot hear — it is a "channel busy" verdict stuck at yes.
+
 **Two absences worth recording rather than re-deriving.** The absolute
 frame-free noise floor is unreachable on this part through this bridge:
 devourer measures it inside `IRadio::Init` and the bridge brings radios up
