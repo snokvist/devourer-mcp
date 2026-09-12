@@ -431,11 +431,43 @@ Json op_radio_rx_paths(const Json &req) {
   return ok(s->rx_paths_json());
 }
 
+/* Refuse a request carrying a field this op does not know.
+ *
+ * These ops read their mutating fields by name and return the current state
+ * either way, so a misspelling used to come back `ok` with the state
+ * unchanged — "radio.rx_gain(index_min=..)" reported the range it had failed
+ * to set, which reads exactly like success. That is the same "reported a
+ * write that never happened" failure the not-ported defaults exist to avoid,
+ * and it is worse here because the caller is usually a model reading the
+ * reply as confirmation. Envelope keys are always allowed.
+ */
+Json unknown_field(const Json &req, std::initializer_list<const char *> known) {
+  for (const auto &kv : req.fields()) {
+    const std::string &k = kv.first;
+    if (k == "id" || k == "op" || k == "session")
+      continue;
+    bool found = false;
+    for (const char *n : known)
+      if (k == n) { found = true; break; }
+    if (!found) {
+      std::string accepted;
+      for (const char *n : known)
+        accepted += (accepted.empty() ? "" : ", ") + std::string(n);
+      return fail("bad_request", "unknown field \"" + k + "\" — this op "
+                                 "accepts: " + accepted);
+    }
+  }
+  return Json();
+}
+
 Json op_radio_cca_gates(const Json &req) {
   std::string err;
   auto s = find_session(req, err);
   if (!s)
     return fail("no_session", err);
+  if (Json bad = unknown_field(req, {"primary_cca_disabled", "edcca_disabled"});
+      !bad.is_null())
+    return bad;
   /* Reject a wrong-typed gate rather than defaulting it: `"true"` or `1`
    * would otherwise read as false and turn a gate ON while the reply said
    * success. The sibling radio.cca op guards the same way. */
@@ -466,6 +498,8 @@ Json op_radio_rx_gain(const Json &req) {
   auto s = find_session(req, err);
   if (!s)
     return fail("no_session", err);
+  if (Json bad = unknown_field(req, {"min_index", "max_index"}); !bad.is_null())
+    return bad;
   if (req.at("min_index").is_number() || req.at("max_index").is_number()) {
     int64_t lo = 0, hi = 0;
     if (!ranged(req, "min_index", 0, 127, lo, err) ||

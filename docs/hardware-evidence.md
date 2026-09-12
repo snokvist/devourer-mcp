@@ -359,6 +359,117 @@ finishes exactly on schedule with the frames consumed and not aired; on ch11
 the same loop blocks for ten seconds and 43-45% get out. A stalled queue and a
 silent discard report identically to the host.
 
+## The upstream review round, and what the bench said about it
+
+`OpenIPC/devourer#427` (the gate split) drew a bot review and a maintainer
+review. Every point was checked against hardware here before being answered;
+two of them were real bugs that a Jaguar1-only bench could not have found, and
+one claim of the maintainer's turned out to need correcting in the other
+direction.
+
+**`0x524[11]` is EDCCA-scoped, and calling it undocumented was wrong.** It is
+`BIT_EDCCA_MSK_CNTDOWN_EN` in `REG_RD_CTRL`, named identically on 8822B,
+8822C and 8822E in the vendor HALMAC headers. The split first moved it with
+the *pair*, on the reasoning that an unmeasured bit should not be guessed at.
+That reasoning produced the wrong answer: in the EDCCA-off arm this work
+recommends, EDCCA went on masking the backoff countdown. Measured on the
+8812CU, before and after, reading the chip in every state:
+
+| state | `0x520[14]` | `0x520[15]` | `0x524[11]` before | after |
+|---|---|---|---|---|
+| primary on, EDCCA on | 0 | 0 | 1 | 1 |
+| **primary on, EDCCA off** | 0 | 1 | **1** | **0** |
+| primary off, EDCCA on | 1 | 0 | 1 | 1 |
+| primary off, EDCCA off | 1 | 1 | 0 | 0 |
+| `SetCcaMode(true)` | 1 | 1 | 0 | 0 |
+| `SetCcaMode(false)` | 0 | 0 | 1 | 1 |
+
+Exactly one row moves, and it is the recommended arm. The legacy path stays
+byte-identical, which is the property the whole change rests on.
+
+**The phydm watchdog kept re-enabling what the caller turned off.** Jaguar3
+handed `edcca_track` the all-or-nothing flag, so with EDCCA off and primary
+CCA on the ~2 s tick went on rewriting the BB thresholds. Sampling `0x84c`
+cannot see this — `PhydmRuntimeJaguar3::edcca()` recomputes the same value
+from a static IGI, so an active tracker writes identical bytes and looks
+exactly like an idle one. The discriminating test is to poke the register
+with a value the tracker would never choose and see whether it is restored:
+
+| arm | PR as it stood | with the fix |
+|---|---|---|
+| both gates on (default) | restored — tracking | restored — tracking |
+| **EDCCA off, primary CCA on** | **restored — tracking** | **survived — stopped** |
+| both gates off | survived — stopped | survived — stopped |
+
+**The state survives a retune on both families — but only one of them means
+it.** The review asserted Jaguar1 loses it, and the first draft of the
+contract said so. Measured, it does not: with EDCCA off and primary CCA on,
+an 8812AU keeps `0x520[15]` set and its BB thresholds parked at `7f/7f`
+across a same-band retune *and* across a 5 GHz/2.4 GHz band change, and an
+8822C does the same. The difference is mechanism, not outcome: Jaguar3
+records the pair and re-asserts it in `SetMonitorChannel`, while Jaguar1 has
+no re-assert at all and survives only because its channel path happens not to
+rewrite those registers. That is worth nobody's dependency, and
+`IRtlRadio.h` now says so rather than claiming either that it is lost or that
+it is guaranteed.
+
+## An unported family is worth having on the bench
+
+The MT7612U was swapped out for an **RTL8733BU** mid-session. It is the first
+adapter here that derives from `IRtlRadio` but implements neither the gate
+split nor the receive-gain contract, and it immediately found things two
+Realtek adapters that *do* implement them could not:
+
+- `radio.cca_gates` told a brought-up 8733BU that it was **not brought up**.
+  The bridge inferred the reason from `dynamic_cast`, which until now had
+  been the same question as "supports the split". Three reasons are now
+  distinguished: not a Realtek radio, not brought up, ported-but-not-here.
+- `radio.describe` reported `primary_cca_disabled: false` / `edcca_disabled:
+  false` on a backend that cannot report either — defaults presented as
+  measurements. It now emits them only when `GetCcaGates` actually answers.
+- The stall test's flooder exclusion never fired. It ranked candidates by
+  `backend`, which `radio.list` leaves **empty** for every probe-required
+  device — including the RTL8812AU the rule exists to exclude, whose backend
+  is only known after an open. The 8733BU could not be stalled at all,
+  because its flooder was a deaf 8812AU. The test said so rather than
+  passing: *"the frame buffer never filled, so nothing below is evidence."*
+
+The device also confirms the not-ported defaults on real silicon rather than
+in a fixture: both gate calls and all three gain calls refuse, `SetCcaMode`
+still throws its documented refusal, and the registers are byte-identical
+between a patched build and a pristine one.
+
+The flooder arm was re-run with the 8733BU as the interferer rather than the
+MT7612U that is no longer attached: EDCCA off with primary CCA on gives 95.7%
+idle and 88.0% under the flooder, against 0.3% with both gates off. A
+different interferer moves the flooded number (78.0% with the MT7612U) and
+leaves the conclusion where it was — keeping primary CCA on costs single-digit
+percent and stops the collapse.
+
+## Two patches, and an A/B that had to be done at the registers
+
+The vendor patches must not change any default. The RF proof of that is weak
+on this bench — the 8812AU's default-path delivery is dominated by ambient
+occupancy, and a first A/B over n=4 showed baseline 1.0–3.7% against patched
+7.0–11.0%, which looks like an effect. It is not. Re-run with the build order
+reversed and n=10 the sign flips (baseline median 4.3%, patched 2.3%, patched
+higher in 3 of 10 pairs); the spread is the channel, not the code.
+
+The register comparison is not subject to that. Bringing each adapter up
+through a pristine build and through the patched build and reading the
+carrier-sense registers out of band gives, on all three adapters and in every
+mode:
+
+| | `0x520` | `0x524` | `0x8a4` |
+|---|---|---|---|
+| RTL8812AU bring-up default | `0f 3f 00 00` | `0f 4f ff 21` | `05 fe` |
+| RTL8822C bring-up default | `0f 3f 00 00` | `0f c8 ff 00` | `95 24` |
+| RTL8733BU bring-up default | `6f 2f 00 80` | `0f cf 00 00` | `95 24` |
+
+— identical baseline versus patched, in the bring-up default and in both
+`SetCcaMode` states. **When an RF measurement and a register comparison
+disagree about whether something changed, the registers are the evidence.**
+
 ## The MT7612U's pacing floor is airtime plus ~112 us a frame
 
 Sixteen points, MT7612U to MT7612U on ch6 at MCS5/20, with an RTL8812AU as a

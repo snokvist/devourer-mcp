@@ -200,6 +200,16 @@ public:
    * both. It feeds the "this radio transmits without listening" warning, and
    * a radio with only the energy gate off still belongs in that warning. */
   bool cca_disabled() const { return _cca_primary_disabled || _cca_edcca_disabled; }
+  /* Why the carrier-sense gate split is unavailable: not a Realtek radio,
+   * not brought up, or a Realtek backend that has not ported it. */
+  const char *cca_split_unavailable_reason(bool is_rtl) const;
+  /* The one place that reads the gates off the hardware: does the cast, the
+   * bring-up check and the try/catch, so no caller can forget one. `is_rtl`
+   * comes back for cca_split_unavailable_reason. A register read throws on a
+   * dying adapter, and that must read as "no answer", never as an exception
+   * escaping an accessor. CALLER MUST HOLD _life_mu — this touches _radio
+   * and _up and takes no lock of its own. */
+  bool read_cca_gates(bool &primary, bool &edcca, bool &is_rtl) const;
 
   SessionStats stats() const;
   Json stats_json() const;
@@ -255,7 +265,6 @@ private:
   uint32_t _max_frame_bytes = 4096;
   /* From AdapterCaps at open; stamped into every frame record. */
   uint8_t _rx_chains = 0;
-  bool _cca_disabled = false;
   bool _cca_primary_disabled = false;
   bool _cca_edcca_disabled = false;
 };

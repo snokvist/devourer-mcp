@@ -1040,10 +1040,15 @@ void RtlJaguarDevice::apply_cca(bool primary_disabled, bool edcca_disabled) {
    * this family too; [14] is the primary-CCA defer. A set bit DISABLES its
    * gate. */
   uint32_t v520 = _device.rtw_read<uint32_t>(0x0520);
-  if (primary_disabled) v520 |= (1u << 14); else v520 &= ~(1u << 14);
-  if (edcca_disabled)   v520 |= (1u << 15); else v520 &= ~(1u << 15);
+  if (primary_disabled)
+    v520 |= (1u << 14);
+  else
+    v520 &= ~(1u << 14);
+  if (edcca_disabled)
+    v520 |= (1u << 15);
+  else
+    v520 &= ~(1u << 15);
   _device.rtw_write<uint32_t>(0x0520, v520);
-  const bool disabled = edcca_disabled;
 
   /* BB EDCCA thresholds (rEDCCA_Jaguar 0x8a4: L2H byte0 / H2L byte1). The
    * BB init table parks them at 0x7f/0x7f = never-trigger — the vendor's
@@ -1052,7 +1057,7 @@ void RtlJaguarDevice::apply_cca(bool primary_disabled, bool edcca_disabled) {
    * honour — enable must program the vendor operating point from the live
    * IGI for EDCCA to exist at all; disable re-parks. */
   const auto ic = _eepromManager->version_id.ICType;
-  if (disabled) {
+  if (edcca_disabled) {
     _device.phy_set_bb_reg(0x8a4, 0xFFFF, 0x7f7f);
   } else {
     const int8_t th_ini = ic == CHIP_8814A ? -14 : -17;
@@ -1073,7 +1078,7 @@ void RtlJaguarDevice::apply_cca(bool primary_disabled, bool edcca_disabled) {
   /* With the watchdog running, DIG walks IGI — hand it the re-track so the
    * threshold follows (vendor couples them per adaptivity cycle). */
   if (auto *wd = _halModule.phydm_watchdog())
-    wd->SetEdccaTrack(!disabled);
+    wd->SetEdccaTrack(!edcca_disabled);
 }
 
 bool RtlJaguarDevice::SetAmpduMode(const devourer::AmpduMode &mode) {

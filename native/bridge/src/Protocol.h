@@ -38,7 +38,14 @@
 namespace bridge {
 
 inline constexpr int kProtocolVersionMajor = 1;
-inline constexpr int kProtocolVersionMinor = 1; /* +rx_chains in FrameRecord */
+/* 2: radio.rx_gain and radio.cca_gates reject a field they do not recognise
+ * instead of ignoring it. Strictly this narrows an op's contract, which the
+ * rule above would put in a major bump — but both ops are newer than the
+ * last release and have no client, and the behaviour being removed was a
+ * misspelled request silently doing nothing and reporting the unchanged
+ * state as if it had. Nothing that worked stops working, so: minor, and
+ * recorded here rather than decided silently. */
+inline constexpr int kProtocolVersionMinor = 2;
 
 /* 'D','V','R','F' — present on every frame record so a desynchronized reader
  * fails loudly at the next record instead of interpreting payload as a

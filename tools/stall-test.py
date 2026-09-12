@@ -195,6 +195,40 @@ def open_radio(c, dev, **kw):
             time.sleep(0.25)
 
 
+def resolve_backends(devices):
+    """Fill in `backend` for every adapter, by opening it if need be.
+
+    `radio.list` only knows the backend for adapters in devourer's static
+    VID:PID table; everything dispatched on a SYS_CFG2 chip-id read reports
+    `identification=probe_required` and an EMPTY backend until it is opened.
+    The flooder choice below turns on the backend, so reading the field as
+    listed silently classified an unopened RTL8812AU as "not Jaguar1" — the
+    exact adapter the rule exists to exclude. Probe once, up front, and the
+    rule works on the answer instead of on the absence of one.
+    """
+    unknown = [d for d in devices if not d.get("backend")]
+    if not unknown:
+        return
+    c = Control()
+    try:
+        for d in unknown:
+            try:
+                r = open_radio(c, d)
+                try:
+                    desc = c.call("radio.describe", session=r["session"])
+                    d["backend"] = (desc.get("capabilities", {})
+                                        .get("generation", "")) or ""
+                finally:
+                    c.call("radio.close", timeout=60, session=r["session"])
+            except (RuntimeError, IOError) as e:
+                # An adapter that will not open cannot be a flooder either;
+                # leave the backend unknown and say so rather than guessing.
+                note(f"{d['usb_id']}: backend unresolved ({e})")
+    finally:
+        c.close()
+    print()
+
+
 def watch(c, session, seconds):
     """Poll monitor.stats, returning the worst call latency and last stats."""
     worst, last = 0.0, {}
@@ -375,6 +409,27 @@ def main():
     finally:
         c.close()
 
+    # resolve_backends opens (and therefore USB-resets) each probe-required
+    # adapter, and a reset can land it at a NEW bus address — this test has
+    # already died once on "no USB device at bus 5 address 3" for exactly
+    # that reason. Re-list afterwards so every bus/address below is current.
+    # Only the flooder choice needs the backend, so skip the whole pre-pass
+    # (and its resets) when there will be no flooder.
+    if not args.no_flood:
+        resolve_backends(devices)
+        # Keyed by port_path, not usb_id: two identical adapters share a
+        # usb_id (the pair of MT7612Us on this bench did), and the bus
+        # address is the thing the reset may have just changed.
+        known = {d.get("port_path", "") + "@" + str(d["bus"]): d.get("backend", "")
+                 for d in devices}
+        c = Control()
+        try:
+            devices = c.call("radio.list").get("devices", [])
+        finally:
+            c.close()
+        for d in devices:
+            if not d.get("backend"):
+                d["backend"] = known.get(d.get("port_path", "") + "@" + str(d["bus"]), "")
     all_devices = list(devices)
     devices = [d for d in devices if args.only in d["usb_id"]]
     if not devices:
@@ -396,10 +451,14 @@ def main():
             # "buffer never filled" guard rather than on the thing under
             # test. An 8811AU or 8814AU would have slipped past a check on
             # 0bda:8812 alone.
-            args.flood_from = next(
-                (o for o in others if not (o.get("backend") or "").startswith("jaguar1")),
-                others[0] if others else None,
-            )
+            # Resolved backends (see resolve_backends): an adapter whose
+            # backend is still unknown ranks below a known-good one but above
+            # a known Jaguar1, so an unopenable adapter degrades the choice
+            # instead of silently becoming the first pick.
+            def rank(o):
+                b = o.get("backend") or ""
+                return 2 if b.startswith("jaguar1") else (1 if not b else 0)
+            args.flood_from = min(others, key=rank) if others else None
         exercise(d, args)
 
     if failures:
