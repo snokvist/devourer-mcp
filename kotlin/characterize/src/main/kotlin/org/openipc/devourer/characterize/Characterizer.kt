@@ -10,7 +10,11 @@ import org.openipc.devourer.experiment.ExperimentBounds
 import org.openipc.devourer.experiment.LinkProbe
 import org.openipc.devourer.protocol.ChannelSpec
 import org.openipc.devourer.protocol.ChannelWidth
-import org.openipc.devourer.radio.RadioManager
+import org.openipc.devourer.radio.OpenRadio
+import org.openipc.devourer.radio.Radios
+import org.openipc.devourer.radio.requireChannelSupported
+import org.openipc.devourer.radio.SafetyLevel
+import org.openipc.devourer.radio.SafetyLevelException
 import org.openipc.devourer.radio.VerificationClaim
 import org.openipc.devourer.radio.VerificationState
 
@@ -24,7 +28,7 @@ import org.openipc.devourer.radio.VerificationState
  * it next.
  */
 public class Characterizer(
-    private val radios: RadioManager,
+    private val radios: Radios,
     private val store: EvidenceStore,
     private val scope: CoroutineScope,
 ) {
@@ -45,8 +49,21 @@ public class Characterizer(
         val txPeerSession: Int? = null,
         val txChannel: Int = 6,
         val txModes: List<String> = listOf("6M", "MCS0/20"),
-        /** Retry TX with carrier sense off when it delivers almost nothing. */
-        val retryWithoutCarrierSense: Boolean = true,
+        /**
+         * Retry TX with carrier sense off when it delivers almost nothing.
+         *
+         * Defaults to FALSE, and that default is load-bearing. Disabling
+         * carrier sense makes the radio transmit without listening; it is the
+         * right diagnostic when a MAC is deferring rather than a link failing,
+         * but it talks over anyone sharing the channel. It was briefly on by
+         * default here, with no way for an MCP caller to decline — a
+         * characterization run on a weak link would silently jam the air and
+         * report it as evidence-gathering. A caller now asks for it by name,
+         * and must also pass [SafetyLevel.EXPERIMENTAL].
+         */
+        val retryWithoutCarrierSense: Boolean = false,
+        /** The level the caller explicitly asked for. */
+        val safety: SafetyLevel = SafetyLevel.NORMAL,
     )
 
     public suspend fun run(session: Int, options: Options = Options()): Characterization {
@@ -141,7 +158,7 @@ public class Characterizer(
         for (ch in options.rxChannels) {
             val spec = ChannelSpec(ch, ChannelWidth.W20)
             val supported = runCatching {
-                radios.requireChannelSupported(radios.describe(session), spec)
+                requireChannelSupported(radios.describe(session), spec)
             }.getOrElse {
                 notes += "channel $ch skipped: ${it.message}"
                 continue
@@ -200,7 +217,7 @@ public class Characterizer(
         conditions["tx_peer_session"] = peer.toString()
 
         val probe = LinkProbe(radios, scope)
-        var result = probe.run(
+        var result = probe.simple(
             txSession = session,
             rxSession = peer,
             channel = channel,
@@ -214,16 +231,29 @@ public class Characterizer(
         // RTL8812AU went from 4-13% to 88-100% with it off. Retrying separates
         // the two instead of filing "TX failed" for a radio that works.
         val best = result.points.maxOfOrNull { it.deliveryRatio } ?: 0.0
+        if (best < 0.5 && !options.retryWithoutCarrierSense) {
+            notes += "TX delivered only ${"%.0f".format(best * 100)}% with carrier sense on. " +
+                "That pattern — every frame submitted, none failed, almost none received — is " +
+                "usually a MAC deferring rather than a link that cannot carry. Re-run with " +
+                "retry_without_carrier_sense=true and safety_level=\"experimental\" to tell " +
+                "the two apart. Not done automatically: it transmits without listening."
+        }
         if (best < 0.5 && options.retryWithoutCarrierSense) {
+            SafetyLevelException.require(
+                "retrying with carrier sense disabled",
+                SafetyLevel.EXPERIMENTAL,
+                options.safety,
+            )
             notes += "TX delivered only ${"%.0f".format(best * 100)}% with carrier sense on; " +
                 "retrying with it off to separate MAC deferral from a poor link."
-            result = probe.run(
+            result = probe.simple(
                 txSession = session,
                 rxSession = peer,
                 channel = channel,
                 modes = options.txModes,
                 bounds = ExperimentBounds(framesPerPoint = 100, intervalUs = 2_000),
                 carrierSense = false,
+                safety = options.safety,
             )
             carrierSense = false
             conditions["tx_carrier_sense"] = "disabled"
@@ -325,7 +355,7 @@ public class Characterizer(
     )
 
     private fun file(
-        radio: RadioManager.OpenRadio,
+        radio: OpenRadio,
         runId: String,
         started: Long,
         conditions: MutableMap<String, String>,

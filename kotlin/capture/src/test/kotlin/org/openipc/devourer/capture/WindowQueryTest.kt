@@ -3,6 +3,7 @@ package org.openipc.devourer.capture
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.openipc.devourer.protocol.SyntheticFrames as Fixtures
 
 /**
  * Trailing-window queries, which the scratchpad's live metrics depend on

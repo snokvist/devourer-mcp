@@ -92,7 +92,24 @@ struct FrameRecord {
   /* --- flags (one byte each: a bitfield would save 2 bytes and cost every
    *     reader a mask table, on a record already dominated by its payload) --- */
   uint8_t  physt;       /* raw descriptor PHY-status bit */
-  uint8_t  phy_fill;    /* PhyStsFill: 0 none, 1 power, 2 full */
+  /* Was phy_fill, carrying devourer's PhyStsFill (None/Power/Full) — which of
+   * the signal fields a PHY-status report actually wrote. It shipped
+   * hardwired to 0, i.e. "nothing filled", on every frame from every chip,
+   * which is a worse answer than no answer: it contradicts physt and a
+   * non-zero rssi, and a reader that believed it would discard real
+   * measurements.
+   *
+   * It cannot be filled from here. PhyStsFill is a local at devourer's parse
+   * site (jaguar2, jaguar3; no other generation computes one) and never
+   * reaches rx_pkt_attrib, so surfacing it means a vendored patch adding a
+   * field to that struct and setting it in both device paths — worth doing
+   * upstream, and not worth faking here. Neither adapter on this bench is a
+   * Jaguar2/3 part, so such a patch could not be verified either.
+   *
+   * Kept as a reserved byte rather than removed so that every offset after
+   * it, and sizeof(FrameRecord), stay exactly where FrameRecord.kt and
+   * FrameRecordTest expect them. */
+  uint8_t  _reserved_phy_fill;
   uint8_t  crc_err;
   uint8_t  icv_err;
   uint8_t  bdecrypted;

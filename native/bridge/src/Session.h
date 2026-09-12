@@ -84,6 +84,11 @@ public:
   void stop_monitor();
   bool set_channel(SelectedChannel ch, std::string &err);
 
+  /* Guards attach/detach against each other. Separate from _life_mu so a
+   * client attaching cannot block a control op, and never nested inside
+   * _buf_mu. */
+  mutable std::mutex _sink_mu;
+
   /* Adopt the client's frame-stream socket. Takes ownership of the fd. */
   void attach_sink(int fd);
   void detach_sink();
@@ -126,6 +131,8 @@ private:
   Session(uint32_t id, DeviceInfo info);
 
   void on_packet(const Packet &pkt);
+  void detach_sink_locked();
+  void _logger_error(const std::string &msg);
   void writer_loop();
   void stop_writer();
 
@@ -140,6 +147,18 @@ private:
   std::thread _rx_thread;
 
   /* --- frame buffer --- */
+  /* Serialises everything that touches _radio/_dev: open, close, bring-up,
+   * monitor start/stop, send, describe. NOT taken by on_packet — the RX hot
+   * path must never wait on a control op.
+   *
+   * Without it, two concurrent radio.close (or one racing a control-connection
+   * drop, which triggers release_sessions_of) both reached _rx_thread.join() —
+   * concurrent join on one std::thread is UB — and both ran _dev.reset(),
+   * destroying the IRadio twice. send_frame meanwhile dereferenced _radio with
+   * no lock while the other thread nulled it. */
+  mutable std::recursive_mutex _life_mu;
+  bool _closed = false;
+
   mutable std::mutex _buf_mu;
   std::condition_variable _buf_cv;
   std::vector<uint8_t> _buf; /* contiguous FIFO; compacted on drain */

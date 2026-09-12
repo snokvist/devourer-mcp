@@ -5,6 +5,9 @@
 #include <algorithm>
 #include <cerrno>
 #include <cstring>
+#include <fcntl.h>
+#include <poll.h>
+#include <sys/socket.h>
 #include <ctime>
 #include <unistd.h>
 
@@ -137,7 +140,19 @@ Json bw_list(uint8_t mask) {
 Session::Session(uint32_t id, DeviceInfo info)
     : _id{id}, _info{std::move(info)} {}
 
-Session::~Session() { close(); }
+Session::~Session() {
+  /* close() calls into the vendor HAL, whose own Stop() wraps StopRxLoop in a
+   * try/catch precisely because "the logging inside StopRxLoop is the
+   * realistic thrower". A throw out of a destructor is implicitly terminate. */
+  try {
+    close();
+  } catch (...) {
+  }
+}
+
+void Session::_logger_error(const std::string &msg) {
+  std::fprintf(stderr, "devourer-bridge session %u: %s\n", _id, msg.c_str());
+}
 
 std::unique_ptr<Session> Session::open(uint32_t id, const OpenOptions &opts,
                                        std::string &code, std::string &msg) {
@@ -257,6 +272,7 @@ std::unique_ptr<Session> Session::open(uint32_t id, const OpenOptions &opts,
 }
 
 Json Session::describe() {
+  std::lock_guard<std::recursive_mutex> life(_life_mu);
   Json j;
   j.set("session", _id);
   Json dev;
@@ -385,6 +401,7 @@ Json Session::describe() {
 }
 
 bool Session::bring_up(SelectedChannel ch, std::string &err) {
+  std::lock_guard<std::recursive_mutex> life(_life_mu);
   if (_radio == nullptr) {
     err = "session has no radio";
     return false;
@@ -405,6 +422,7 @@ bool Session::bring_up(SelectedChannel ch, std::string &err) {
 }
 
 bool Session::set_channel(SelectedChannel ch, std::string &err) {
+  std::lock_guard<std::recursive_mutex> life(_life_mu);
   if (!_up) {
     err = "radio is not brought up";
     return false;
@@ -420,23 +438,41 @@ bool Session::set_channel(SelectedChannel ch, std::string &err) {
 }
 
 bool Session::start_monitor(std::string &err) {
+  std::lock_guard<std::recursive_mutex> life(_life_mu);
   if (!_up) {
     err = "radio is not brought up";
     return false;
   }
-  if (_rx_running) {
+  bool expected = false;
+  if (!_rx_running.compare_exchange_strong(expected, true)) {
     err = "already monitoring";
     return false;
   }
-  _rx_running = true;
+  /* The loop can exit on its own (unplug, USB error), leaving the thread
+   * joinable with _rx_running false. Assigning over a joinable std::thread is
+   * std::terminate, so reap it first. */
+  if (_rx_thread.joinable())
+    _rx_thread.join();
   _rx_thread = std::thread([this] {
-    _radio->StartRxLoop([this](const Packet &p) { on_packet(p); });
+    /* Nothing may escape this thread. Mt7612uRadio::StartRxLoop throws on
+     * three conditions, and an exception out of a thread entry is
+     * std::terminate — which would abort the process with every OTHER adapter
+     * still claimed and undrained, i.e. inflict the USB wedge via the error
+     * path. */
+    try {
+      _radio->StartRxLoop([this](const Packet &p) { on_packet(p); });
+    } catch (const std::exception &e) {
+      _logger_error(std::string("RX loop threw: ") + e.what());
+    } catch (...) {
+      _logger_error("RX loop threw a non-std exception");
+    }
     _rx_running = false;
   });
   return true;
 }
 
 void Session::stop_monitor() {
+  std::lock_guard<std::recursive_mutex> life(_life_mu);
   if (!_rx_thread.joinable())
     return;
   _radio->StopRxLoop();
@@ -474,7 +510,7 @@ void Session::on_packet(const Packet &pkt) {
   std::memcpy(h.snr, a.snr, 4);
   std::memcpy(h.evm, a.evm, 4);
   h.physt = a.physt ? 1 : 0;
-  h.phy_fill = 0; /* PhyStsFill is parser-local; not on rx_pkt_attrib */
+  h._reserved_phy_fill = 0; /* see Protocol.h: never a measurement */
   h.crc_err = a.crc_err ? 1 : 0;
   h.icv_err = a.icv_err ? 1 : 0;
   h.bdecrypted = a.bdecrypted ? 1 : 0;
@@ -527,7 +563,15 @@ void Session::on_packet(const Packet &pkt) {
 }
 
 void Session::attach_sink(int fd) {
-  detach_sink();
+  std::lock_guard<std::mutex> sink_lk(_sink_mu);
+  detach_sink_locked();
+  /* Non-blocking, so the writer can never park in write() where neither the
+   * stop flag nor the condvar can reach it. A paused client used to hang
+   * stop_writer()'s join forever, which hung session teardown, which at
+   * shutdown hung the whole daemon under g_mu. */
+  const int flags = ::fcntl(fd, F_GETFL, 0);
+  if (flags >= 0)
+    ::fcntl(fd, F_SETFL, flags | O_NONBLOCK);
   {
     std::lock_guard<std::mutex> lk(_buf_mu);
     _sink_fd = fd;
@@ -539,6 +583,11 @@ void Session::attach_sink(int fd) {
 }
 
 void Session::detach_sink() {
+  std::lock_guard<std::mutex> sink_lk(_sink_mu);
+  detach_sink_locked();
+}
+
+void Session::detach_sink_locked() {
   stop_writer();
   std::lock_guard<std::mutex> lk(_buf_mu);
   if (_sink_fd >= 0) {
@@ -553,6 +602,15 @@ void Session::stop_writer() {
   if (!_writer.joinable())
     return;
   _writer_stop = true;
+  /* shutdown() before join(): it makes any in-flight or subsequent write on
+   * the socket fail immediately, so a writer blocked on a full send buffer
+   * returns instead of being joined forever. Do NOT close() here — the writer
+   * still holds the fd. */
+  {
+    std::lock_guard<std::mutex> lk(_buf_mu);
+    if (_sink_fd >= 0)
+      ::shutdown(_sink_fd, SHUT_RDWR);
+  }
   _buf_cv.notify_all();
   _writer.join();
 }
@@ -591,19 +649,42 @@ void Session::writer_loop() {
         off += static_cast<size_t>(w);
         continue;
       }
-      if (w < 0 && (errno == EINTR))
+      if (w < 0 && errno == EINTR)
         continue;
+      if (w < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+        /* The socket is non-blocking now, so a full send buffer lands here
+         * rather than parking the thread. Wait for room, but bounded, so
+         * _writer_stop is re-checked at a known cadence. */
+        if (_writer_stop)
+          return;
+        pollfd pfd{_sink_fd, POLLOUT, 0};
+        ::poll(&pfd, 1, 200);
+        continue;
+      }
       /* The client went away mid-record. There is no honest recovery: the
-       * stream is now truncated at an arbitrary byte, so drop the sink and let
-       * the client reattach (which resets the buffer). */
-      std::lock_guard<std::mutex> sl(_stats_mu);
-      _stats.write_errors++;
+       * stream is truncated at an arbitrary byte. Actually drop the sink —
+       * this used to only bump a counter, so the fd leaked, monitor.stats kept
+       * reporting sink_attached:true, and frames piled up to the cap forever. */
+      {
+        std::lock_guard<std::mutex> lk(_buf_mu);
+        if (_sink_fd >= 0) {
+          ::close(_sink_fd);
+          _sink_fd = -1;
+        }
+        _buf.clear();
+        _buf_head = 0;
+      }
+      {
+        std::lock_guard<std::mutex> sl(_stats_mu);
+        _stats.write_errors++;
+      }
       return;
     }
   }
 }
 
 bool Session::send_frame(const uint8_t *data, size_t len, std::string &err) {
+  std::lock_guard<std::recursive_mutex> life(_life_mu);
   if (!_up) {
     err = "radio is not brought up";
     return false;
@@ -620,6 +701,7 @@ bool Session::send_frame(const uint8_t *data, size_t len, std::string &err) {
 }
 
 Json Session::rx_paths_json() {
+  std::lock_guard<std::recursive_mutex> life(_life_mu);
   Json j;
   j.set("session", _id);
   if (_radio == nullptr) {
@@ -685,6 +767,7 @@ Json Session::rx_paths_json() {
 }
 
 bool Session::set_cca(bool disabled, std::string &err) {
+  std::lock_guard<std::recursive_mutex> life(_life_mu);
   if (_radio == nullptr) {
     err = "session has no radio";
     return false;
@@ -707,6 +790,7 @@ bool Session::set_cca(bool disabled, std::string &err) {
 }
 
 Json Session::tx_stats_json() {
+  std::lock_guard<std::recursive_mutex> life(_life_mu);
   Json j;
   j.set("session", _id);
   if (_radio == nullptr) {
@@ -755,6 +839,10 @@ Json Session::stats_json() const {
 }
 
 void Session::close() {
+  std::lock_guard<std::recursive_mutex> life(_life_mu);
+  if (_closed)
+    return; /* idempotent: two clients can close the same session concurrently */
+  _closed = true;
   stop_monitor();
   detach_sink();
   if (_radio != nullptr && _up) {

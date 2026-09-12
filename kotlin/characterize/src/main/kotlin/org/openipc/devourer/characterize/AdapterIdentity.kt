@@ -2,7 +2,7 @@ package org.openipc.devourer.characterize
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
-import org.openipc.devourer.radio.RadioManager
+import org.openipc.devourer.radio.OpenRadio
 
 /**
  * Which physical adapter this is, and how confidently we know.
@@ -49,7 +49,7 @@ public data class AdapterIdentity(
     }
 
     public companion object {
-        public fun of(radio: RadioManager.OpenRadio): AdapterIdentity {
+        public fun of(radio: OpenRadio): AdapterIdentity {
             val mac = radio.permanentMac?.takeIf { it.isNotBlank() && it != "00:00:00:00:00:00" }
             return AdapterIdentity(
                 permanentMac = mac,

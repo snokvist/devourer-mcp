@@ -55,6 +55,20 @@ public class UiServer(
         val bytes = body.toByteArray(StandardCharsets.UTF_8)
         ex.responseHeaders.add("Content-Type", contentType)
         ex.responseHeaders.add("Cache-Control", "no-store")
+        /*
+         * Defence in depth behind the escaping. `connect-src 'self'` is the
+         * load-bearing directive: it turns any injection that still gets
+         * through from "reads the capture and POSTs it anywhere" into a
+         * defaced page. The inline script is ours, hence 'unsafe-inline';
+         * there is no external resource of any kind, hence default-src 'none'.
+         */
+        ex.responseHeaders.add(
+            "Content-Security-Policy",
+            "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; " +
+                "connect-src 'self'; img-src 'none'; base-uri 'none'; form-action 'none'",
+        )
+        ex.responseHeaders.add("X-Content-Type-Options", "nosniff")
+        ex.responseHeaders.add("Referrer-Policy", "no-referrer")
         ex.sendResponseHeaders(200, bytes.size.toLong())
         ex.responseBody.use { it.write(bytes) }
     }
@@ -98,7 +112,15 @@ public class UiServer(
     }
 
     private fun num(d: Double): String =
-        if (d.isNaN() || d.isInfinite()) "null" else String.format("%.4f", d).trimEnd('0').trimEnd('.')
+        if (d.isNaN() || d.isInfinite()) {
+            "null"
+        } else {
+            // Locale.ROOT or a comma decimal separator under de_DE/fr_FR/sv_SE
+            // splices `1,5` into the JSON unquoted, the page's fetch throws,
+            // and the live view shows "disconnected" forever with nothing
+            // logged anywhere.
+            String.format(java.util.Locale.ROOT, "%.4f", d).trimEnd('0').trimEnd('.')
+        }
 
     private fun quote(s: String): String {
         val sb = StringBuilder("\"")
@@ -109,6 +131,19 @@ public class UiServer(
                 '\n' -> sb.append("\\n")
                 '\r' -> sb.append("\\r")
                 '\t' -> sb.append("\\t")
+                /*
+                 * `<` and `>` are escaped even though JSON does not require it,
+                 * because this JSON is embedded in a <script> element. The HTML
+                 * parser leaves script-data state on the literal text
+                 * "</script" regardless of JavaScript string context, so a
+                 * series name or widget title containing it closed the script
+                 * and ran attacker-authored JS at the loopback origin — with
+                 * same-origin read of /data and unrestricted network egress.
+                 * That defeats the entire point of the HTTP allowlist.
+                 */
+                '<' -> sb.append("\\u003c")
+                '>' -> sb.append("\\u003e")
+                '&' -> sb.append("\\u0026")
                 else -> if (c < ' ') sb.append("\\u%04x".format(c.code)) else sb.append(c)
             }
         }
@@ -182,7 +217,12 @@ function build(){
   specs.forEach((w,i)=>{
     const el = document.createElement("div");
     el.className = "card";
-    el.innerHTML = "<h2>"+(w.title||w.kind)+"</h2><div class='body'></div>";
+    // textContent, not innerHTML: w.title is model-authored.
+    const h = document.createElement("h2");
+    h.textContent = w.title || w.kind;
+    const b = document.createElement("div");
+    b.className = "body";
+    el.append(h, b);
     main.appendChild(el);
     cards.push({spec:w, body:el.querySelector(".body")});
   });
@@ -241,11 +281,19 @@ function drawChart(body, spec, data){
     });
     ctx.stroke();
   });
-  legend.innerHTML = names.map((n,i)=>{
+  // Series names are model-authored, so they are set as text and never parsed
+  // as markup. The swatch is the only element carrying style, and its colour
+  // comes from our own fixed palette, not from the program.
+  legend.replaceChildren(...names.map((n,i)=>{
     const s = data.series[n];
     const v = s && s.last!=null ? fmt(s.last) : "—";
-    return "<span><span class='swatch' style='background:"+COLORS[i%COLORS.length]+"'></span>"+n+" "+v+"</span>";
-  }).join("");
+    const wrap = document.createElement("span");
+    const sw = document.createElement("span");
+    sw.className = "swatch";
+    sw.style.background = COLORS[i%COLORS.length];
+    wrap.append(sw, document.createTextNode(n+" "+v));
+    return wrap;
+  }));
 }
 
 function render(data){
@@ -260,25 +308,50 @@ function render(data){
     if(spec.kind==="stat"||spec.kind==="gauge"){
       const n = spec.series[0];
       const s = n ? data.series[n] : null;
-      body.innerHTML = s
-        ? "<div class='stat'>"+fmt(s.last)+"<span class='unit'>"+(spec.unit||"")+"</span></div>"+
-          "<div class='sub'>min "+fmt(s.min)+" · mean "+fmt(s.mean)+" · max "+fmt(s.max)+" · n="+s.count+"</div>"
-        : "<div class='empty'>waiting for data</div>";
+      body.replaceChildren();
+      if(!s){
+        const e = document.createElement("div"); e.className="empty";
+        e.textContent = "waiting for data"; body.append(e); return;
+      }
+      const stat = document.createElement("div"); stat.className="stat";
+      stat.textContent = fmt(s.last);
+      const unit = document.createElement("span"); unit.className="unit";
+      unit.textContent = spec.unit || "";           // model-authored
+      stat.append(unit);
+      const sub = document.createElement("div"); sub.className="sub";
+      sub.textContent = "min "+fmt(s.min)+" · mean "+fmt(s.mean)+" · max "+fmt(s.max)+" · n="+s.count;
+      body.append(stat, sub);
       return;
     }
     if(spec.kind==="log"){
-      body.innerHTML = "<pre>"+(data.log.length?data.log.join("\n"):"no messages")+"</pre>";
+      // Log lines quote allowlist hosts, capture ids and exception text — all
+      // of it model- or environment-derived.
+      body.replaceChildren();
+      const pre = document.createElement("pre");
+      pre.textContent = data.log.length ? data.log.join("\n") : "no messages";
+      body.append(pre);
       return;
     }
     const names = spec.series.length ? spec.series : Object.keys(data.series).sort();
-    if(!names.length){ body.innerHTML="<div class='empty'>waiting for data</div>"; return; }
-    body.innerHTML = "<table><tr><th>series</th><th>last</th><th>min</th><th>mean</th><th>max</th><th>n</th></tr>"+
-      names.map(n=>{
-        const s = data.series[n];
-        return "<tr><td>"+n+"</td><td>"+(s?fmt(s.last):"—")+"</td><td>"+(s?fmt(s.min):"—")+
-               "</td><td>"+(s?fmt(s.mean):"—")+"</td><td>"+(s?fmt(s.max):"—")+
-               "</td><td>"+(s?s.count:0)+"</td></tr>";
-      }).join("")+"</table>";
+    body.replaceChildren();
+    if(!names.length){
+      const e = document.createElement("div"); e.className="empty";
+      e.textContent = "waiting for data"; body.append(e); return;
+    }
+    // The table is the DEFAULT widget when a program declares none, so this
+    // sink is reachable by every program — series names must be text.
+    const t = document.createElement("table");
+    const head = t.insertRow();
+    ["series","last","min","mean","max","n"].forEach(h=>{
+      const th = document.createElement("th"); th.textContent = h; head.append(th);
+    });
+    names.forEach(n=>{
+      const s = data.series[n];
+      const row = t.insertRow();
+      [n, s?fmt(s.last):"—", s?fmt(s.min):"—", s?fmt(s.mean):"—", s?fmt(s.max):"—", s?String(s.count):"0"]
+        .forEach(v=>{ row.insertCell().textContent = v; });
+    });
+    body.append(t);
   });
 }
 

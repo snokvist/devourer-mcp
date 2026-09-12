@@ -19,7 +19,11 @@ tools/smoke-test.py                           # end-to-end against real adapters
 ```
 
 `tools/host/devourer-mcp` is the command an MCP host should point at. It pins
-the JDK and starts the bridge itself.
+the JDK and starts the bridge itself. While it runs, the dashboard is at
+<http://127.0.0.1:8910/> — radios, captures, experiments, scratchpads and a
+live feed of every tool call. `--dashboard-port N` moves it, a negative value
+turns it off, and a port already in use is logged and skipped rather than
+being fatal.
 
 Needs a JDK 21 toolchain and the Gradle wrapper does the rest. Gradle
 auto-detects the usual locations and honours `JAVA_HOME` / `DEVOURER_MCP_JDK`;
@@ -52,10 +56,11 @@ LLM ──MCP(stdio)──▶ Kotlin runtime ──UDS control + frame stream─
 | `kotlin/protocol/` | Wire types. `FrameRecord` hardcodes byte offsets — see below. |
 | `kotlin/radio/` | Bridge client, capability model, verification ladder. |
 | `kotlin/capture/` | Frame store, queries, summaries, PCAP. |
-| `kotlin/experiment/` | `LinkProbe` — the two-radio TX verification. |
+| `kotlin/experiment/` | `LinkProbe`, sweeps, roles, and the run registry that makes an experiment cancellable. |
 | `kotlin/characterize/` | Evidence database, one JSON per adapter. |
 | `kotlin/scratchpad/` | Declarative micro-app runtime + live UI. |
-| `kotlin/mcp/` | The 23 tools. The only process the model talks to. |
+| `kotlin/dashboard/` | The persistent dashboard on `127.0.0.1:8910`. Reads in-process state only; never calls the bridge. |
+| `kotlin/mcp/` | The 25 tools. The only process the model talks to. |
 | `var/` | Runtime state: captures, `characterization/`, `scratchpads/`. Gitignored. |
 
 ### Why a separate bridge process
@@ -115,9 +120,11 @@ adapter is brought up. Realtek has it from construction.
 ## Testing
 
 ```sh
-./gradlew test                                   # 53 Kotlin tests, no hardware
+./gradlew test                                   # 147 Kotlin tests, no hardware
 ctest --test-dir build/native-bridge             # 63 vendored selftests
 tools/smoke-test.py                              # needs adapters; never passes vacuously
+tools/stall-test.py                              # needs adapters; a sink that stops reading
+tools/backpressure-test.py                       # needs two adapters; sustained overload
 ```
 
 Hardware-dependent tests are excluded unless `-PwithHardware` so their absence
@@ -144,7 +151,7 @@ testing is currently the Python smoke test.
 
 ## Picking up
 
-The highest-value next step is closing `IRadio` coverage — the bridge calls 9 of
+The highest-value next step is closing `IRadio` coverage — the bridge calls 11 of
 52 methods, and that single number explains most of what this cannot yet do.
 `radio.tx_stats` and `radio.cca` are the pattern to copy: a bridge op, a
 `RadioManager` method, an MCP tool with a description that says what the result

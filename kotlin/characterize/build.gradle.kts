@@ -12,6 +12,8 @@ dependencies {
     api(project(":capture"))
     api(project(":experiment"))
     implementation(libs.coroutines.core)
+    testImplementation(testFixtures(project(":radio")))
+    testImplementation(testFixtures(project(":experiment")))
     testImplementation(kotlin("test"))
     testImplementation(libs.junit.jupiter)
     testImplementation(libs.coroutines.test)

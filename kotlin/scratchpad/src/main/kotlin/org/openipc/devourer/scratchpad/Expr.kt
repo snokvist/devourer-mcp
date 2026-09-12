@@ -108,17 +108,39 @@ public object Expr {
             }
         }
 
+        /*
+         * The depth cap guards THREE recursive paths, not one. It originally
+         * covered only parentheses, so `----…----1` and `2^2^2^…` recursed
+         * freely: 50 000 unary operators overflowed the stack in 4 ms. It was
+         * contained only accidentally, by a `runCatching` upstream that happens
+         * to catch Throwable — and the run then repeated the blow-up every
+         * sample period for the rest of its life.
+         */
         private fun unary(): Double {
             skipWs()
-            if (eat('-')) return -unary()
-            if (eat('+')) return unary()
-            return power()
+            // `eat` has a side effect, so it must be called exactly once per
+            // branch test — a stray extra `eat('-')` silently swallows the sign
+            // and turns -5 into 5.
+            return when {
+                eat('-') -> guarded { -unary() }
+                eat('+') -> guarded { unary() }
+                else -> power()
+            }
         }
 
         private fun power(): Double {
             val base = primary()
             skipWs()
-            return if (eat('^')) base.pow(unary()) else base
+            return if (eat('^')) guarded { base.pow(unary()) } else base
+        }
+
+        private inline fun <T> guarded(body: () -> T): T {
+            if (++depth > MAX_DEPTH) fail("expression nested too deeply")
+            try {
+                return body()
+            } finally {
+                depth--
+            }
         }
 
         private fun primary(): Double {

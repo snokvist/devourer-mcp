@@ -9,62 +9,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import org.openipc.devourer.protocol.FrameRecord
 import org.openipc.devourer.protocol.FrameType
-
-/** Builds synthetic frames so the whole analysis path is testable with no radio. */
-internal object Fixtures {
-
-    fun record(
-        index: Long = 0,
-        hostNanos: Long = index * 1_000_000L,
-        rssi: IntArray = intArrayOf(70, 68, 0, 0),
-        snr: IntArray = intArrayOf(0, 0, 0, 0),
-        crcError: Boolean = false,
-        aggregated: Boolean = false,
-        dataRate: Int = 0,
-        tsfl: Long = 12345,
-        fcsPresent: Boolean = true,
-        rxChains: Int = 2,
-        payload: ByteArray = beacon(),
-    ): FrameRecord {
-        val b = ByteBuffer.allocate(FrameRecord.HEADER_BYTES).order(ByteOrder.LITTLE_ENDIAN)
-        b.putInt(0, FrameRecord.MAGIC)
-        b.putLong(8, index)
-        b.putLong(16, hostNanos)
-        b.putInt(24, 1)
-        b.putInt(28, payload.size)
-        b.putShort(32, payload.size.toShort())
-        b.putShort(36, dataRate.toShort())
-        b.putInt(40, tsfl.toInt())
-        for (i in 0 until 4) b.put(52 + i, rssi[i].toByte())
-        for (i in 0 until 4) b.put(56 + i, snr[i].toByte())
-        b.put(66, if (crcError) 1 else 0)
-        b.put(73, if (aggregated) 1 else 0)
-        b.put(74, if (fcsPresent) 1 else 0)
-        b.put(78, rxChains.toByte())
-        return FrameRecord.decode(b, payload)
-    }
-
-    /** A beacon with a known BSSID and transmitter. */
-    fun beacon(bssid: Int = 0xAA): ByteArray {
-        val f = ByteArray(40)
-        f[0] = 0x80.toByte() // mgmt / beacon
-        f[1] = 0x00
-        for (i in 0 until 6) f[4 + i] = 0xFF.toByte() // addr1 broadcast
-        for (i in 0 until 6) f[10 + i] = (0x10 + i).toByte() // addr2 transmitter
-        for (i in 0 until 6) f[16 + i] = (bssid + i).toByte() // addr3 bssid
-        return f
-    }
-
-    fun qosData(retry: Boolean): ByteArray {
-        val f = ByteArray(34)
-        f[0] = 0x88.toByte() // data / qos-data
-        f[1] = if (retry) 0x08 else 0x00
-        for (i in 0 until 6) f[4 + i] = (0x20 + i).toByte()
-        for (i in 0 until 6) f[10 + i] = (0x30 + i).toByte()
-        for (i in 0 until 6) f[16 + i] = (0x40 + i).toByte()
-        return f
-    }
-}
+import org.openipc.devourer.protocol.SyntheticFrames as Fixtures
 
 class CaptureStoreTest {
 

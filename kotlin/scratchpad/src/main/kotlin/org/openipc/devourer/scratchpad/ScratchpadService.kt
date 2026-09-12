@@ -36,6 +36,11 @@ public class ScratchpadService(
     private val counter = AtomicInteger(0)
     private val savedDir: Path = varDir.resolve("scratchpads")
 
+    private companion object {
+        const val MAX_CONCURRENT_RUNS = 8
+        const val MAX_RETAINED = 16
+    }
+
     init {
         Files.createDirectories(savedDir)
     }
@@ -116,6 +121,17 @@ public class ScratchpadService(
                 "program rejected: ${inspection.problems.joinToString("; ")}",
             )
         }
+        // A finished run that nobody explicitly stopped used to keep its UI
+        // server alive forever: 2 threads and 3 file descriptors per run, with
+        // no cap on runs. A few hundred short runs exhausted a default 1024-fd
+        // budget and took the bridge socket — and every live capture — with it.
+        val live = runs.values.count { it.state.finishedAtEpochMs == 0L }
+        require(live < MAX_CONCURRENT_RUNS) {
+            "$live scratchpads are already running (limit $MAX_CONCURRENT_RUNS); " +
+                "stop one with scratchpad_stop first"
+        }
+        evictFinished()
+
         val id = "pad-${counter.incrementAndGet()}"
         val state = RunState(grant.maxSamples)
         val ui = if (withUi && grant.has(Capability.UI)) {
@@ -134,7 +150,13 @@ public class ScratchpadService(
             } catch (e: Throwable) {
                 run.error = e.message ?: e::class.simpleName
                 state.log("run failed: ${run.error}")
+            } finally {
+                // Release the listening socket and its threads however the run
+                // ended — duration expiry, cancellation or a throw. Only
+                // scratchpad_stop used to do this, so every run that simply
+                // finished leaked its server.
                 state.finish()
+                runCatching { ui?.close() }
             }
         }
         run = Run(id, program, grant, state, ui, job)
@@ -171,6 +193,20 @@ public class ScratchpadService(
 
     public fun stopAll() {
         runs.keys.toList().forEach { stop(it) }
+    }
+
+    /**
+     * Drops the oldest finished runs beyond [MAX_RETAINED].
+     *
+     * Finished runs are kept so their numbers stay readable after the fact,
+     * but retaining every one of them turns a long session into an unbounded
+     * heap of `RunState`s holding up to `maxSamples` per series.
+     */
+    private fun evictFinished() {
+        val finished = runs.values
+            .filter { it.state.finishedAtEpochMs > 0 }
+            .sortedBy { it.state.finishedAtEpochMs }
+        finished.dropLast(MAX_RETAINED).forEach { runs.remove(it.id) }
     }
 
     /** Snapshot of a run's series, for a caller that wants the numbers not the page. */

@@ -1,8 +1,9 @@
 package org.openipc.devourer.mcp
 
 import org.openipc.devourer.capture.FrameQuery
-import org.openipc.devourer.radio.RadioManager
+import org.openipc.devourer.radio.Radios
 import org.openipc.devourer.scratchpad.ScratchpadHost
+import org.openipc.devourer.capture.CaptureService
 
 /**
  * The bridge between a scratchpad's declared primitives and the real services.
@@ -13,7 +14,7 @@ import org.openipc.devourer.scratchpad.ScratchpadHost
  * whether a program is allowed — only what a permitted read answers.
  */
 internal class McpScratchpadHost(
-    private val radios: RadioManager,
+    private val radios: Radios,
     private val captures: CaptureService,
 ) : ScratchpadHost {
 
