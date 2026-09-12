@@ -436,11 +436,26 @@ Json op_radio_cca_gates(const Json &req) {
   auto s = find_session(req, err);
   if (!s)
     return fail("no_session", err);
-  const bool has = req.at("primary_cca_disabled").is_boolean() ||
-                   req.at("edcca_disabled").is_boolean();
-  if (has) {
-    if (!s->set_cca_gates(req.at("primary_cca_disabled").boolean(false),
-                          req.at("edcca_disabled").boolean(false), err))
+  /* Reject a wrong-typed gate rather than defaulting it: `"true"` or `1`
+   * would otherwise read as false and turn a gate ON while the reply said
+   * success. The sibling radio.cca op guards the same way. */
+  for (const char *k : {"primary_cca_disabled", "edcca_disabled"}) {
+    const Json &v = req.at(k);
+    if (!v.is_null() && !v.is_boolean())
+      return fail("bad_request", std::string(k) + " must be a boolean");
+  }
+  const bool set_primary = req.at("primary_cca_disabled").is_boolean();
+  const bool set_edcca = req.at("edcca_disabled").is_boolean();
+  if (set_primary || set_edcca) {
+    /* Read-modify-write. An op documented as "one bit at a time" has to
+     * leave the other bit alone; defaulting the absent one to false
+     * silently re-enabled whichever gate the caller did not mention. */
+    bool primary = false, edcca = false;
+    if (!s->get_cca_gates(primary, edcca, err))
+      return fail("unsupported", err);
+    if (set_primary) primary = req.at("primary_cca_disabled").boolean(false);
+    if (set_edcca) edcca = req.at("edcca_disabled").boolean(false);
+    if (!s->set_cca_gates(primary, edcca, err))
       return fail("unsupported", err);
   }
   return ok(s->cca_gates_json());

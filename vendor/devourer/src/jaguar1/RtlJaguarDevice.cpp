@@ -997,6 +997,10 @@ void RtlJaguarDevice::ClearAckResponder() {
 }
 
 bool RtlJaguarDevice::GetCcaGates(bool &primary_disabled, bool &edcca_disabled) {
+  /* The MAC register is meaningless before bring-up, and reporting whatever
+   * the bus returns as the gate state would be a fabricated measurement. */
+  if (!_brought_up)
+    return false;
   const uint32_t v = _device.rtw_read<uint32_t>(0x0520);
   primary_disabled = (v & (1u << 14)) != 0;
   edcca_disabled = (v & (1u << 15)) != 0;
@@ -1004,9 +1008,12 @@ bool RtlJaguarDevice::GetCcaGates(bool &primary_disabled, bool &edcca_disabled) 
 }
 
 bool RtlJaguarDevice::SetCcaGates(bool primary_disabled, bool edcca_disabled) {
+  if (!_brought_up)
+    return false;
   apply_cca(primary_disabled, edcca_disabled);
-  /* Remembered for the gain path's re-apply: "disabled" means both gates
-   * are off, which is the only state SetCcaMode can express. */
+  _cca_primary_disabled = primary_disabled;
+  _cca_edcca_disabled = edcca_disabled;
+  /* "disabled" is both gates off, the only state SetCcaMode can express. */
   _cca_disabled = primary_disabled && edcca_disabled;
   _logger->info("Jaguar1: CCA gates primary={} edcca={}",
                 primary_disabled ? "OFF" : "on",
@@ -1019,6 +1026,8 @@ void RtlJaguarDevice::SetCcaMode(bool disabled) {
    * thresholds this path programs are derived from IGI, so they are stale
    * the moment the gain moves. */
   _cca_disabled = disabled;
+  _cca_primary_disabled = disabled;
+  _cca_edcca_disabled = disabled;
   apply_cca(disabled, disabled);
   _logger->info("Jaguar1: MAC carrier-sense {}",
                 disabled ? "DISABLED (dis_cca: CCA+EDCCA)"
@@ -2342,8 +2351,10 @@ bool RtlJaguarDevice::SetRxGainRange(uint8_t min, uint8_t max) {
                   unsigned(min), unsigned(max), unsigned(cur));
   }
   /* The EDCCA threshold is derived from IGI, so re-apply carrier sense to
-   * pick the new value up rather than leaving the gate on the old one. */
-  SetCcaMode(_cca_disabled);
+   * pick the new value up rather than leaving the gate on the old one.
+   * Re-apply the GATES, not SetCcaMode: a caller who disabled one of them
+   * would otherwise have it switched back on by an unrelated gain change. */
+  apply_cca(_cca_primary_disabled, _cca_edcca_disabled);
   return true;
 }
 

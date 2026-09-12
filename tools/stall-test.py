@@ -388,11 +388,16 @@ def main():
         if not args.no_flood:
             others = [o for o in all_devices
                       if (o["bus"], o["address"]) != (d["bus"], d["address"])]
-            # Prefer a MediaTek: on this bench the RTL8812AU's EDCCA defers
-            # 90% of what it is asked to transmit, so it makes a poor load
-            # generator and a weak test.
+            # Never a Jaguar1 if anything else is available, and picked by
+            # BACKEND rather than USB id: the whole family enables EDCCA at
+            # bring-up and defers essentially everything it is asked to
+            # transmit at the default (measured: 0-8% delivered on an idle
+            # channel), so it cannot generate load and the run fails on the
+            # "buffer never filled" guard rather than on the thing under
+            # test. An 8811AU or 8814AU would have slipped past a check on
+            # 0bda:8812 alone.
             args.flood_from = next(
-                (o for o in others if not o["usb_id"].startswith("0bda")),
+                (o for o in others if not (o.get("backend") or "").startswith("jaguar1")),
                 others[0] if others else None,
             )
         exercise(d, args)

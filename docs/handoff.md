@@ -125,6 +125,11 @@ ctest --test-dir build/native-bridge             # 63 vendored selftests
 tools/smoke-test.py                              # needs adapters; never passes vacuously
 tools/stall-test.py                              # needs adapters; a sink that stops reading
 tools/backpressure-test.py                       # needs two adapters; sustained overload
+
+# A/B a vendor change against a pristine build before proposing it — the
+# pattern that caught a 96% result which turned out to be session state:
+#   git worktree add --detach <scratch> <commit-before-the-patch>
+#   build both, run the same battery against each, alternate the builds
 ```
 
 Hardware-dependent tests are excluded unless `-PwithHardware` so their absence
@@ -148,6 +153,32 @@ testing is currently the Python smoke test.
   on the failure path.
 
 ---
+
+## Where the carrier-sense investigation landed
+
+Settled, with evidence in [`hardware-evidence.md`](hardware-evidence.md):
+
+- **EDCCA, not primary CCA, is what stops a Jaguar1 injector.** Turning it
+  off alone recovers 94%; primary CCA off alone recovers almost nothing. That
+  inverts what devourer documents (measured on Jaguar3, where the 8812AU was
+  only ever the flooder).
+- **You do not disable carrier sense to fix it.** EDCCA off with primary CCA
+  left on gives 95% idle and still defers to a real flooder (78%). Both gates
+  off is *worse* — the injector collides, 0.3%.
+- **Normal drivers do not hit this because they never enable the feature.**
+  The Realtek vendor driver ships `CONFIG_RTW_ADAPTIVITY_EN 0` and exposes
+  `th_l2h_ini` / `th_edcca_hl_diff` as module parameters; devourer enables
+  EDCCA at Jaguar1 bring-up and hard-codes both.
+- **Receive gain was the right gate and the wrong lever.** IGI moves the
+  EDCCA threshold only across a narrow coupled range (`L2H = th_l2h_ini +
+  0x32 - IGI`, clamped to 10) and even its permissive end leaves delivery at
+  ~4%.
+
+Two vendored patches carry the work, both hardware-verified before being
+proposed: `0001-rx-gain-range.patch` (the `RxGain*` contract) and
+`0002-cca-gates.patch` (the gate split). The gate split is upstream as
+[OpenIPC/devourer#427](https://github.com/OpenIPC/devourer/pull/427). Retire
+each patch when it lands.
 
 ## Picking up
 

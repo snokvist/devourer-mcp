@@ -8,6 +8,12 @@ to look at what changed upstream.
 
 Empty is the goal. A patch here is a debt — upstream it.
 
+**Paths must be devourer-relative** (`a/src/...`, not
+`a/vendor/devourer/src/...`). `tools/host/vendor-devourer.sh` replays with
+`git apply --directory=devourer`, which prepends the prefix itself; a
+repo-relative patch doubles it and the sync aborts. Generate with
+`git diff --relative=vendor/devourer <from> <to> -- vendor/devourer`.
+
 ## 0001-rx-gain-range.patch
 
 A vendor-neutral receive-gain contract — `GetRxGainCaps` / `GetRxGainState` /
@@ -33,5 +39,7 @@ at a time, because on Jaguar1 the two bits do opposite things and
 the measurement it enabled is that EDCCA alone costs an 8812AU injector 94%
 of its frames, which inverts the Jaguar3 result devourer documents as general.
 
-Retire it the moment it lands upstream.
+Upstream as [OpenIPC/devourer#427](https://github.com/OpenIPC/devourer/pull/427)
+(derived against a pristine tree — this file carries the same change stacked
+on 0001, which is why the two differ in context). Retire it when that lands.
 

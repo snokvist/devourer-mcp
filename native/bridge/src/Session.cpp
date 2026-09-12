@@ -441,7 +441,13 @@ Json Session::describe() {
   j.set("state", Json()
                      .set("brought_up", _up.load())
                      .set("monitoring", _rx_running.load())
-                     .set("cca_disabled", _cca_disabled));
+                     /* Either gate off, not both: a radio with only the
+                      * energy gate disabled is still transmitting without
+                      * fully listening, and this field is what the
+                      * dashboard's warning and the MCP reply key off. */
+                     .set("cca_disabled", cca_disabled())
+                     .set("primary_cca_disabled", _cca_primary_disabled)
+                     .set("edcca_disabled", _cca_edcca_disabled));
   if (_up) {
     j.set("channel", Json()
                          .set("channel", _channel.Channel)
@@ -854,9 +860,13 @@ Json Session::cca_gates_json() {
   if (rtl == nullptr || !rtl->GetCcaGates(primary, edcca)) {
     j.set("supported", false)
         .set("why",
-             "splitting the carrier-sense gate is a Realtek 0x520 facility "
-             "(IRtlRadio::GetCcaGates) and is not ported for this backend; "
-             "radio.cca still turns both gates off together")
+             rtl == nullptr
+                 ? "splitting the carrier-sense gate is a Realtek 0x520 "
+                   "facility (IRtlRadio::GetCcaGates) and is not ported for "
+                   "this backend; radio.cca still turns both gates off "
+                   "together"
+                 : "the radio is not brought up — set a channel first; the "
+                   "gate register is meaningless before then")
         .set("cca_disabled", _cca_disabled);
     return j;
   }
@@ -865,11 +875,39 @@ Json Session::cca_gates_json() {
       .set("edcca_disabled", edcca)
       .set("note",
            "primary CCA defers to a DECODABLE PREAMBLE; EDCCA defers to raw "
-           "in-band ENERGY. Devourer's own on-air work (tests/"
-           "dis_cca_tx_onair.sh, Jaguar3) found primary CCA costing an "
-           "injector 41-45% against a co-channel flooder while the energy "
-           "bit alone was null. Both disabled is the antisocial setting.");
+           "in-band ENERGY. Which one matters is FAMILY-SPECIFIC and the two "
+           "measured families disagree: on Jaguar3 primary CCA costs an "
+           "injector 41-45% against a co-channel flooder and the energy bit "
+           "alone is null (devourer tests/dis_cca_tx_onair.sh); on Jaguar1 it "
+           "inverts — turning EDCCA off alone recovers 94% on an idle "
+           "channel while primary CCA off alone recovers almost nothing. "
+           "Measure before assuming either.");
+  if (primary || edcca)
+    j.set("warning",
+          "a carrier-sense gate is OFF: this radio transmits without fully "
+          "listening first. Turning BOTH off is also worse for your own "
+          "delivery on a busy channel — measured 0.3% against 78% with "
+          "primary CCA left on, because the injector collides instead of "
+          "waiting for a gap.");
   return j;
+}
+
+bool Session::get_cca_gates(bool &primary_disabled, bool &edcca_disabled,
+                            std::string &err) {
+  std::lock_guard<std::recursive_mutex> life(_life_mu);
+  if (_radio == nullptr) {
+    err = "session has no radio";
+    return false;
+  }
+  auto *rtl = dynamic_cast<IRtlRadio *>(_radio);
+  if (rtl == nullptr || !rtl->GetCcaGates(primary_disabled, edcca_disabled)) {
+    err = _up ? "this backend cannot report the two carrier-sense gates "
+                "separately; use radio.cca"
+              : "radio is not brought up — set a channel first; the gate "
+                "register is meaningless before then";
+    return false;
+  }
+  return true;
 }
 
 bool Session::set_cca_gates(bool primary_disabled, bool edcca_disabled,
@@ -879,12 +917,27 @@ bool Session::set_cca_gates(bool primary_disabled, bool edcca_disabled,
     err = "session has no radio";
     return false;
   }
-  auto *rtl = dynamic_cast<IRtlRadio *>(_radio);
-  if (rtl == nullptr || !rtl->SetCcaGates(primary_disabled, edcca_disabled)) {
-    err = "this backend cannot address the two carrier-sense gates "
-          "separately; use radio.cca";
+  if (!_up) {
+    err = "radio is not brought up — set a channel first";
     return false;
   }
+  auto *rtl = dynamic_cast<IRtlRadio *>(_radio);
+  if (rtl == nullptr)
+    return (err = "this backend cannot address the two carrier-sense gates "
+                  "separately; use radio.cca"), false;
+  try {
+    if (!rtl->SetCcaGates(primary_disabled, edcca_disabled)) {
+      err = "the backend refused the gate change";
+      return false;
+    }
+  } catch (const std::exception &e) {
+    /* Same shape as set_cca: a backend that refuses loudly must not reach
+     * the caller as internal_error. */
+    err = std::string("carrier-sense gates: ") + e.what();
+    return false;
+  }
+  _cca_primary_disabled = primary_disabled;
+  _cca_edcca_disabled = edcca_disabled;
   _cca_disabled = primary_disabled && edcca_disabled;
   return true;
 }
