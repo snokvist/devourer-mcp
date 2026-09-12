@@ -27,6 +27,51 @@ uint64_t now_ns() {
          static_cast<uint64_t>(ts.tv_nsec);
 }
 
+/* Who holds the devourer USB lock for this adapter, as "name (pid N)".
+ *
+ * devourer's UsbDeviceLock writes the owner's pid into /tmp/devourer-usb-<bus>-<port>.lock
+ * as a diagnostic stamp (the lock itself is the flock, not the contents). The
+ * stamp can be stale — a crashed process leaves its pid behind while the flock
+ * is long released — so it is only reported when that pid is still alive, and
+ * never used to decide anything. */
+std::string lock_holder(uint8_t bus, const std::string &port_path) {
+  if (port_path.empty())
+    return {};
+  const std::string path = "/tmp/devourer-usb-" + std::to_string(bus) + "-" +
+                           port_path + ".lock";
+  FILE *f = std::fopen(path.c_str(), "r");
+  if (f == nullptr)
+    return {};
+  long pid = 0;
+  const bool got = std::fscanf(f, "%ld", &pid) == 1;
+  std::fclose(f);
+  if (!got || pid <= 0)
+    return {};
+
+  /* Naming ourselves back to the caller is useless — "devourer-bridge holds it"
+   * when devourer-bridge is who you are asking tells nobody anything. What the
+   * caller needs is that ANOTHER SESSION in this same bridge has it, which is a
+   * different fix (close that session) from a foreign process (stop it). */
+  if (pid == static_cast<long>(::getpid()))
+    return "this bridge — another session already has it; close that session "
+           "first (see the `sessions` op)";
+
+  const std::string comm_path = "/proc/" + std::to_string(pid) + "/comm";
+  FILE *cf = std::fopen(comm_path.c_str(), "r");
+  if (cf == nullptr)
+    return {}; /* pid is gone: a stale stamp, so say nothing rather than guess */
+  char name[256] = {0};
+  if (std::fgets(name, sizeof name, cf) == nullptr)
+    name[0] = '\0';
+  std::fclose(cf);
+  std::string n{name};
+  while (!n.empty() && (n.back() == '\n' || n.back() == '\r'))
+    n.pop_back();
+  if (n.empty())
+    return "pid " + std::to_string(pid);
+  return n + " (pid " + std::to_string(pid) + ")";
+}
+
 Logger_t make_logger() {
   /* One logger for every session. Devourer's Logger writes to stderr, which is
    * what we want: stdout belongs to whoever launched the bridge, and mixing
@@ -140,9 +185,23 @@ std::unique_ptr<Session> Session::open(uint32_t id, const OpenOptions &opts,
   if (rc != 0) {
     dev_session->adopt_handle(handle); /* so the unwind closes it */
     code = (rc == LIBUSB_ERROR_BUSY) ? "busy" : "claim_failed";
-    msg = (rc == LIBUSB_ERROR_BUSY)
-              ? "adapter is already in use by another process"
-              : std::string("claim/reset: ") + libusb_error_name(rc);
+    if (rc == LIBUSB_ERROR_BUSY) {
+      /* "In use by another process" is a fact, not a diagnosis. Devourer stamps
+       * the holder's pid into its lock file precisely so a refusal can be
+       * traced, so name the process — on a bench with an FPV ground station or
+       * a second tool running, that is the whole answer. */
+      const auto holder = lock_holder(info.bus, info.port_path);
+      if (holder.empty()) {
+        msg = "adapter is already in use by another process";
+      } else if (holder.rfind("this bridge", 0) == 0) {
+        msg = "adapter is already in use by " + holder;
+      } else {
+        msg = "adapter is already in use by " + holder +
+              ". Stop that process, or use a different adapter.";
+      }
+    } else {
+      msg = std::string("claim/reset: ") + libusb_error_name(rc);
+    }
     return nullptr;
   }
   dev_session->adopt_handle(handle);

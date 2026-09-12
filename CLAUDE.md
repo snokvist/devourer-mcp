@@ -51,12 +51,18 @@ Three rules that shape everything:
 The JVM toolchain is user-local; nothing is installed system-wide.
 
 ```sh
-export JAVA_HOME=/home/snokvist/dev-tools/jdk-21
-./gradlew build                  # Kotlin: compile + test
-./gradlew :kotlin:mcp:run        # MCP server on stdio
-tools/host/build-bridge.sh       # CMake build of vendor/devourer + native/bridge
-ctest --test-dir build/native    # native tests
+cmake -S native -B build/native-bridge -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build/native-bridge -j          # devourer + the bridge
+./gradlew build                                # Kotlin: compile + test (no hardware)
+./gradlew :mcp:installDist                     # build the MCP server
+
+tools/host/bridge-ctl.sh start                 # start|stop|restart|status|log
+tools/host/devourer-mcp                        # MCP server on stdio (starts the bridge)
+tools/host/smoke-test.py                       # end-to-end check against real adapters
 ```
+
+`tools/host/devourer-mcp` is the command an MCP host should be pointed at: it
+pins the JDK and starts the bridge first.
 
 Gradle 9.7.1 and Temurin JDK 21 live in `/home/snokvist/dev-tools/`.
 Devourer needs `libusb-1.0-dev`, CMake ≥ 3.15 and a C++17 compiler.
@@ -93,7 +99,7 @@ Owned by the user, physically attached, and the routine subject of this work.
 
 | Device | USB ID | Kernel driver | Devourer backend |
 |---|---|---|---|
-| MediaTek MT7612U ×2 | `0e8d:7612` | `mt76x2u` | `src/mt7612u` (C, standalone) |
+| MediaTek MT7612U ×2 | `0e8d:7612` | `mt76x2u` | `mt7612u` (behind `IRadio`; build with `DEVOURER_MT7612U=ON`, which upstream defaults OFF) |
 | Realtek RTL8812AU | `0bda:8812` | `rtw_8812au` | Jaguar1 |
 | MediaTek MT7922 (internal) | `0e8d:0616` | — | **off limits** |
 
