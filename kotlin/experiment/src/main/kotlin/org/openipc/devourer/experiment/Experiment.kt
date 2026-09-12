@@ -96,9 +96,19 @@ public data class PointResult(
     /** The swept variable's value, e.g. "MCS5/20" or "ch36/80". */
     val point: String,
     @SerialName("frames_sent") val framesSent: Int,
-    /** Distinct burst sequence numbers the receiver actually saw. */
-    @SerialName("frames_received") val framesReceived: Int,
-    @SerialName("delivery_ratio") val deliveryRatio: Double,
+    /**
+     * Distinct burst sequence numbers the receiver actually saw, or null when
+     * this point was never measured.
+     *
+     * Null and zero are different answers and the difference is the whole
+     * point of this project. A point whose transmit call did not return
+     * within its deadline delivered no evidence at all; reporting that as
+     * `0` puts a measured-looking dot on a chart where there is no
+     * measurement. Serialization drops nulls, so an unmeasured point carries
+     * neither field rather than a confident zero.
+     */
+    @SerialName("frames_received") val framesReceived: Int?,
+    @SerialName("delivery_ratio") val deliveryRatio: Double?,
     /** Frames seen more than once — retransmission or a capture-side duplicate. */
     val duplicates: Int = 0,
     /** Received with a sequence lower than one already seen. */

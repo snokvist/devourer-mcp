@@ -14,6 +14,8 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.buffer
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -111,52 +113,78 @@ public class BridgeClient(
      */
     public fun frames(session: Int): Flow<FrameRecord> = callbackFlow {
         val ch = openChannel()
-        try {
-            writeLine(ch, """{"attach":$session}""")
-            val ack = readLine(ch) ?: throw IOException("bridge closed before acknowledging attach")
-            val parsed = BridgeJson.format.decodeFromString(BridgeResponse.serializer(), ack)
-            if (!parsed.ok) {
-                val e = parsed.error
-                throw BridgeCallException(e?.code ?: "unknown", e?.message ?: "", "attach")
-            }
+        /*
+         * The read loop is a CHILD coroutine, not this block's body.
+         *
+         * `awaitClose` is the only place a callbackFlow can register its
+         * teardown, and it only runs once the block reaches it. With the loop
+         * inline it never did, so on a live stream nothing was registered —
+         * and cancelling the flow could not stop it, because a thread blocked
+         * in SocketChannel.read is not interruptible by coroutine
+         * cancellation. On a quiet channel that blocks forever: an experiment
+         * joining its collectors during cleanup hung for ten minutes with the
+         * radio still claimed.
+         *
+         * Running the loop as a child means this block reaches awaitClose
+         * immediately, so cancellation closes the socket, the blocked read
+         * throws, and the child finishes. Cancelling the flow now actually
+         * stops it.
+         */
+        val reader = launch(ioDispatcher) {
+            try {
+                writeLine(ch, """{"attach":$session}""")
+                val ack = readLine(ch)
+                    ?: throw IOException("bridge closed before acknowledging attach")
+                val parsed = BridgeJson.format.decodeFromString(BridgeResponse.serializer(), ack)
+                if (!parsed.ok) {
+                    val e = parsed.error
+                    throw BridgeCallException(e?.code ?: "unknown", e?.message ?: "", "attach")
+                }
 
-            val header = ByteBuffer.allocate(FrameRecord.HEADER_BYTES).order(ByteOrder.LITTLE_ENDIAN)
-            while (true) {
-                if (!readFully(ch, header)) break
-                header.flip()
-                val frameLength = header.getInt(28)
-                require(frameLength in 0..MAX_FRAME_BYTES) {
-                    "frame length $frameLength out of range — stream desynchronized"
+                val header = ByteBuffer.allocate(FrameRecord.HEADER_BYTES)
+                    .order(ByteOrder.LITTLE_ENDIAN)
+                while (true) {
+                    if (!readFully(ch, header)) break
+                    header.flip()
+                    val frameLength = header.getInt(28)
+                    require(frameLength in 0..MAX_FRAME_BYTES) {
+                        "frame length $frameLength out of range — stream desynchronized"
+                    }
+                    val payload = ByteArray(frameLength)
+                    if (frameLength > 0) {
+                        val body = ByteBuffer.wrap(payload)
+                        if (!readFully(ch, body)) break
+                    }
+                    /*
+                     * send, not trySend. The old code threw the moment the
+                     * channel was full, which killed the whole capture — at
+                     * 3300 frames/s the default ~64 slots are 20ms of slack,
+                     * so any GC pause or slow consumer ended the stream and
+                     * the caller saw a broken flow rather than a drop count.
+                     *
+                     * Suspending here is the policy the rest of the system is
+                     * already built around: the reader stops draining the
+                     * socket, the bridge's own buffer fills, and the bridge
+                     * drops whole records and reports them in monitor.stats.
+                     * That path is bounded and counted. Blocking the bridge's
+                     * RX callback is what must never happen, and it cannot
+                     * happen from here: the bridge's writer is non-blocking
+                     * and its buffer swap is O(1).
+                     */
+                    send(FrameRecord.decode(header, payload))
+                    header.clear()
                 }
-                val payload = ByteArray(frameLength)
-                if (frameLength > 0) {
-                    val body = ByteBuffer.wrap(payload)
-                    if (!readFully(ch, body)) break
-                }
-                /*
-                 * send, not trySend. The old code threw the moment the
-                 * channel was full, which killed the whole capture — at
-                 * 3300 frames/s the default ~64 slots are 20ms of slack, so
-                 * any GC pause or slow consumer ended the stream and the
-                 * caller saw a broken flow rather than a drop count.
-                 *
-                 * Suspending here is the policy the rest of the system is
-                 * already built around: the reader stops draining the
-                 * socket, the bridge's own buffer fills, and the bridge
-                 * drops whole records and reports them in monitor.stats.
-                 * That path is bounded and counted. Blocking the bridge's RX
-                 * callback is what must never happen, and it cannot happen
-                 * from here: the bridge's writer is non-blocking and its
-                 * buffer swap is O(1).
-                 */
-                send(FrameRecord.decode(header, payload))
-                header.clear()
+                close()
+            } catch (e: Throwable) {
+                // A socket closed by the teardown below is the normal way this
+                // ends, not a fault to report to the collector.
+                if (isActive) close(e) else close()
             }
-            close()
-        } catch (e: Throwable) {
-            close(e)
         }
-        awaitClose { runCatching { ch.close() } }
+        awaitClose {
+            runCatching { ch.close() }
+            reader.cancel()
+        }
     }
         /*
          * Fuses with the callbackFlow channel rather than adding a second

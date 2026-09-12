@@ -230,7 +230,7 @@ public class Characterizer(
         // deferring rather than a bad link — measured on this bench, an
         // RTL8812AU went from 4-13% to 88-100% with it off. Retrying separates
         // the two instead of filing "TX failed" for a radio that works.
-        val best = result.points.maxOfOrNull { it.deliveryRatio } ?: 0.0
+        val best = result.points.mapNotNull { it.deliveryRatio }.maxOrNull() ?: 0.0
         if (best < 0.5 && !options.retryWithoutCarrierSense) {
             notes += "TX delivered only ${"%.0f".format(best * 100)}% with carrier sense on. " +
                 "That pattern — every frame submitted, none failed, almost none received — is " +
@@ -257,7 +257,7 @@ public class Characterizer(
             )
             carrierSense = false
             conditions["tx_carrier_sense"] = "disabled"
-            val retryBest = result.points.maxOfOrNull { it.deliveryRatio } ?: 0.0
+            val retryBest = result.points.mapNotNull { it.deliveryRatio }.maxOrNull() ?: 0.0
             if (retryBest >= 0.5) {
                 notes += "With carrier sense off delivery reached " +
                     "${"%.0f".format(retryBest * 100)}%. This adapter transmits; its MAC " +
@@ -267,8 +267,8 @@ public class Characterizer(
             conditions["tx_carrier_sense"] = "enabled"
         }
 
-        val delivered = result.points.maxOfOrNull { it.deliveryRatio } ?: 0.0
-        val heard = result.points.any { it.framesReceived > 0 }
+        val delivered = result.points.mapNotNull { it.deliveryRatio }.maxOrNull() ?: 0.0
+        val heard = result.points.any { (it.framesReceived ?: 0) > 0 }
         return claim(
             "tx",
             if (heard) VerificationState.TX_VERIFIED else VerificationState.FAILED,
@@ -283,8 +283,11 @@ public class Characterizer(
                 put("channel", channel.toString())
                 put("carrier_sense", carrierSense.toString())
                 put("witness", result.roles["RX_PEER"] ?: peer.toString())
-                result.points.forEach {
-                    put("delivery_${it.point}", "%.2f".format(it.deliveryRatio))
+                result.points.forEach { p ->
+                    put(
+                        "delivery_${p.point}",
+                        p.deliveryRatio?.let { "%.2f".format(it) } ?: "not measured",
+                    )
                 }
             },
         )

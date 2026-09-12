@@ -11,6 +11,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.int
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.openipc.devourer.capture.CaptureSummary
 import org.openipc.devourer.capture.analyseChainBalance
@@ -287,10 +288,9 @@ internal class Tools(
                 text(reply("capture_id" to id, "stopped" to true, "discarded" to captures.discard(id)))
             } else {
                 val c = captures.stop(id)
-                    ?: return@register text(errorReply("no capture $id"), isError = true)
-                text(
-                    """{"capture_id": "$id", "stopped": true, "frames_retained": ${c.store.size}}""",
-                )
+                    ?: return@register text(noSuchCapture(id), isError = true)
+                text(reply("capture_id" to id, "stopped" to true,
+                    "frames_retained" to c.store.size))
             }
         }
 
@@ -405,7 +405,7 @@ internal class Tools(
             ),
         ) { request ->
             val capture = captures.get(request.stringOr("capture_id", ""))
-                ?: return@register text(errorReply("no such capture"), isError = true)
+                ?: return@register text(noSuchCapture(request.stringOr("capture_id", "")), isError = true)
             val summary = capture.store.summarize(request.toQuery())
             text(
                 json.encodeToString(
@@ -441,7 +441,7 @@ internal class Tools(
             ),
         ) { request ->
             val capture = captures.get(request.stringOr("capture_id", ""))
-                ?: return@register text(errorReply("no such capture"), isError = true)
+                ?: return@register text(noSuchCapture(request.stringOr("capture_id", "")), isError = true)
             val rows = capture.store
                 // Clamped, not merely defaulted. "MCP is the control plane, not
                 // the packet data plane" is a rule of the architecture, and a
@@ -474,7 +474,7 @@ internal class Tools(
             ),
         ) { request ->
             val capture = captures.get(request.stringOr("capture_id", ""))
-                ?: return@register text(errorReply("no such capture"), isError = true)
+                ?: return@register text(noSuchCapture(request.stringOr("capture_id", "")), isError = true)
             val index = request.longOr("index", -1)
             val stored = capture.store.frame(index)
                 ?: return@register text(
@@ -552,7 +552,7 @@ internal class Tools(
             ),
         ) { request ->
             val capture = captures.get(request.stringOr("capture_id", ""))
-                ?: return@register text(errorReply("no such capture"), isError = true)
+                ?: return@register text(noSuchCapture(request.stringOr("capture_id", "")), isError = true)
             val frames = capture.store
                 .query(
                     request.toQuery().copy(newestFirst = false),
@@ -1244,7 +1244,7 @@ internal class Tools(
                     durationMs = elapsed(),
                     ok = result.isError != true,
                     error = (result.content.firstOrNull() as? TextContent)
-                        ?.text?.takeIf { result.isError == true },
+                        ?.text?.takeIf { result.isError == true }?.let(::errorText),
                 )
                 result
             } catch (e: Throwable) {
@@ -1259,6 +1259,22 @@ internal class Tools(
             }
         }
     }
+
+    /**
+     * The human-readable part of a failed reply.
+     *
+     * Error bodies are pretty-printed JSON, so their first line is `{` — the
+     * feed showed that, which told a reader nothing at all. Pull the `error`
+     * field out when it is there and fall back to the first line that
+     * carries something.
+     */
+    private fun errorText(body: String): String =
+        runCatching {
+            Json.parseToJsonElement(body).jsonObject["error"]?.jsonPrimitive?.content
+        }.getOrNull()
+            ?: body.lineSequence().map { it.trim() }
+                .firstOrNull { it.length > 1 && it != "{" && it != "}" }
+            ?: body.take(200)
 
     /**
      * Arguments as one readable line.
@@ -1306,6 +1322,25 @@ internal class Tools(
 
     private fun errorReply(message: String?, vararg extra: Pair<String, Any?>): String =
         reply("error" to (message ?: "unknown error"), *extra)
+
+    /**
+     * The refusal for a capture-id argument that names nothing.
+     *
+     * Says which argument it wanted and what is open, because the mistake
+     * this is usually reporting is a session id passed where a capture id
+     * belongs — the two tools sit next to each other and take different
+     * handles. "no capture" alone leaves the caller to guess which.
+     */
+    private fun noSuchCapture(id: String): String = errorReply(
+        if (id.isBlank()) {
+            "capture_id is required (a capture id like \"cap-1\" from monitor_start, " +
+                "NOT a radio session id)"
+        } else {
+            "no capture '$id' — if that was a session id, this tool takes the " +
+                "capture_id monitor_start returned"
+        },
+        "open_captures" to captures.all().joinToString(", ") { it.id }.ifEmpty { "none" },
+    )
 
     private fun schema(type: String, description: String): JsonObject = buildJsonObject {
         put("type", JsonPrimitive(type))

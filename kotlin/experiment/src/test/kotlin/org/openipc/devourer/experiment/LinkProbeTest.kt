@@ -5,6 +5,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.test.runTest
@@ -71,7 +72,7 @@ class LinkProbeTest {
         assertEquals(VerificationState.TX_VERIFIED, result.verification)
         val point = result.points.single()
         assertEquals(93, point.framesReceived)
-        assertEquals(0.93, point.deliveryRatio, 1e-9)
+        assertEquals(0.93, point.deliveryRatio!!, 1e-9)
         // The witness records the strongest reporting chain, not a chain average.
         assertEquals(70.0, point.rssiMean)
         assertTrue("TX_VERIFIED" in result.conclusion)
@@ -219,7 +220,12 @@ class LinkProbeTest {
 
         assertTrue(result.truncated)
         assertTrue(result.caveats.any { "did not complete within" in it }, result.caveats.toString())
-        assertNotNull(result.points.single().note)
+        val timedOut = result.points.single()
+        assertNotNull(timedOut.note)
+        // Absent, not zero. A timed-out point delivered no evidence at all,
+        // and reporting 0% would put a measured-looking dot on a chart.
+        assertNull(timedOut.deliveryRatio)
+        assertNull(timedOut.framesReceived)
         assertEquals(VerificationState.FAILED, result.verification)
         assertFalse(radios.isMonitoring(2), "cleanup runs after a timeout too")
     }
@@ -252,6 +258,24 @@ class LinkProbeTest {
         assertTrue(
             LinkProbe(radios, backgroundScope).run(spec()).caveats.isNotEmpty(),
         )
+    }
+
+    @Test
+    fun `a monitor left running on a witness does not fail the run`() = runTest {
+        // The bridge refuses monitor.start on a session already monitoring.
+        // An experiment that depends on what happened before it started is
+        // the kind that only fails when it matters.
+        val radios = fake()
+        radios.startMonitor(2, ChannelSpec(11))
+        radios.onProbe = { p ->
+            radios.deliverTo(p, to = 2, frames = 40)
+            FakeRadios.TxOutcome(accepted = p.count)
+        }
+
+        val result = LinkProbe(radios, backgroundScope).run(spec())
+
+        assertEquals(VerificationState.TX_VERIFIED, result.verification)
+        assertEquals(40, result.points.single().framesReceived)
     }
 
     @Test

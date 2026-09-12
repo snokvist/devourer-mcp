@@ -10,6 +10,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.openipc.devourer.protocol.ChannelSpec
@@ -102,7 +103,7 @@ public class LinkProbe(
                 progress?.startingPoint(point.label)
 
                 if (point.channel.text != tuned) {
-                    retuneAll(spec, witnesses, point.channel.spec(), firstTime = tuned == null)
+                    retuneAll(spec, witnesses, point.channel.spec())
                     tuned = point.channel.text
                 }
 
@@ -120,9 +121,11 @@ public class LinkProbe(
                     results += PointResult(
                         point = point.label,
                         framesSent = spec.bounds.framesPerPoint,
-                        framesReceived = 0,
-                        deliveryRatio = 0.0,
-                        note = "timed out after ${spec.bounds.pointTimeoutMs}ms; not a measurement",
+                        framesReceived = null,
+                        deliveryRatio = null,
+                        note = "timed out after ${spec.bounds.pointTimeoutMs}ms. NOT a " +
+                            "measurement: the transmit call never returned, so nothing " +
+                            "about delivery at this point is known.",
                     )
                     break
                 }
@@ -138,7 +141,23 @@ public class LinkProbe(
                 // to the bridge, and returning while it is still unwinding
                 // leaves the previous run's sink attached during the next
                 // one. Joining makes "the run is over" mean it.
-                jobs.forEach { it.cancelAndJoin() }
+                //
+                // Bounded, because an unbounded join in a cleanup path is how
+                // a run hangs with the radio still claimed — which it did,
+                // for ten minutes, when a collector could not be cancelled
+                // out of a blocking socket read. That cause is fixed in
+                // BridgeClient; this is so the next one degrades instead.
+                val joined = withTimeoutOrNull(CLEANUP_JOIN_MS) {
+                    jobs.forEach { it.cancelAndJoin() }
+                    true
+                }
+                if (joined == null) {
+                    jobs.forEach { it.cancel() }
+                    caveats += "A frame collector did not stop within " +
+                        "${CLEANUP_JOIN_MS}ms of being cancelled. The run's " +
+                        "measurements stand, but something is holding a frame " +
+                        "socket open — check monitor.stats and the bridge log."
+                }
                 witnesses.forEach { w -> runCatching { radios.stopMonitor(w.session) } }
                 if (!spec.carrierSense) {
                     runCatching { radios.setCarrierSense(spec.transmitter, enabled = true) }
@@ -187,13 +206,18 @@ public class LinkProbe(
         spec: ExperimentSpec,
         witnesses: List<Witness>,
         channel: ChannelSpec,
-        firstTime: Boolean,
     ) {
         // Both ends on the same channel. The witnesses monitor; the
         // transmitter only needs bring-up, which retune performs.
         radios.retune(spec.transmitter, channel)
         witnesses.forEach { w ->
-            if (!firstTime) runCatching { radios.stopMonitor(w.session) }
+            // Stop unconditionally, including before the first point. The
+            // bridge refuses monitor.start on a session already monitoring,
+            // so an experiment would otherwise fail outright because someone
+            // left a capture running on one of its witnesses — a failure that
+            // depends on what happened before the run, which is the kind that
+            // only appears when it matters.
+            runCatching { radios.stopMonitor(w.session) }
             radios.startMonitor(w.session, channel)
         }
     }
@@ -260,8 +284,9 @@ public class LinkProbe(
         caveats: MutableList<String>,
         truncated: Boolean,
     ): ExperimentResult {
-        val best = points.maxByOrNull { it.deliveryRatio }
-        val anyHeard = points.any { p -> p.witnesses.values.any { it.framesReceived > 0 } }
+        val measured = points.filter { it.deliveryRatio != null }
+        val best = measured.maxByOrNull { it.deliveryRatio ?: 0.0 }
+        val anyHeard = measured.any { p -> p.witnesses.values.any { it.framesReceived > 0 } }
         val primaryLabel = witnesses.first().radio.label
 
         // The verification state is derived from the evidence, never asserted.
@@ -274,7 +299,7 @@ public class LinkProbe(
         val axes = spec.sweep.axes
         val swept = if (axes.isEmpty()) "" else " (swept ${axes.joinToString(", ")})"
         val conclusion = when {
-            points.isEmpty() -> "no measurement points ran"
+            measured.isEmpty() -> "no point produced a measurement"
             !anyHeard ->
                 "${tx.label} transmitted but no witness heard anything$swept. The TX path " +
                     "accepted the frames, so this is NOT TX_VERIFIED: check antennas, that " +
@@ -282,13 +307,13 @@ public class LinkProbe(
                     "range of each other."
             best != null ->
                 "TX_VERIFIED: $primaryLabel independently received frames from ${tx.label}" +
-                    "$swept. Best delivery ${pct(best.deliveryRatio)} at ${best.point}" +
+                    "$swept. Best delivery ${pct(best.deliveryRatio ?: 0.0)} at ${best.point}" +
                     (best.rssiMean?.let { ", mean RSSI ${"%.1f".format(it)}" } ?: "") + "."
-            else -> "no measurement points ran"
+            else -> "no point produced a measurement"
         }
 
-        val poor = points.isNotEmpty() &&
-            points.count { it.deliveryRatio < 0.5 } * 2 > points.size
+        val poor = measured.isNotEmpty() &&
+            measured.count { (it.deliveryRatio ?: 0.0) < 0.5 } * 2 > measured.size
         if (spec.carrierSense && (poor || !anyHeard)) {
             caveats += "Delivery was poor with carrier sense ON. Before blaming the link, " +
                 "re-run with carrier_sense=false: a MAC whose EDCCA threshold is too " +
@@ -347,7 +372,7 @@ public class LinkProbe(
      * the receivers or their positions.
      */
     private fun disagreementNote(points: List<PointResult>, witnesses: List<Witness>): String {
-        val spreads = points.mapNotNull { p ->
+        val spreads = points.filter { it.deliveryRatio != null }.mapNotNull { p ->
             val counts = p.witnesses.values.map { it.framesReceived }
             if (counts.size < 2) null else (counts.max() - counts.min())
         }
@@ -370,6 +395,11 @@ public class LinkProbe(
 
     private fun newId(started: Long, runId: Int) =
         "exp-${started.toString(36)}-${runId.toString(16)}"
+
+    private companion object {
+        /** How long cleanup waits for a frame collector to stop. */
+        const val CLEANUP_JOIN_MS = 5_000L
+    }
 
     /**
      * One listening adapter, and what it heard.
