@@ -6,6 +6,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.openipc.devourer.protocol.SyntheticFrames as Fixtures
 
 /**
  * The analysis path's cost, pinned as behaviour rather than left to chance.

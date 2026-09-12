@@ -1,45 +1,161 @@
 package org.openipc.devourer.experiment
 
-import java.util.concurrent.atomic.AtomicInteger
 import kotlin.random.Random
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.openipc.devourer.protocol.ChannelSpec
 import org.openipc.devourer.protocol.FrameRecord
-import org.openipc.devourer.radio.RadioManager
+import org.openipc.devourer.radio.OpenRadio
+import org.openipc.devourer.radio.Radios
 import org.openipc.devourer.radio.SafetyLevel
 import org.openipc.devourer.radio.VerificationState
+import org.openipc.devourer.radio.requireChannelSupported
 
 /**
- * Transmit a bounded burst on one radio, count what an independent radio hears.
+ * Transmit a bounded burst on one radio, count what independent radios hear.
  *
- * This is the experiment that makes [VerificationState.TX_VERIFIED] reachable.
- * A transmitting radio reporting success proves only that its own TX path
- * accepted the frames; the PA could be dead, the antenna disconnected, the
- * channel misprogrammed. A second adapter hearing tagged frames on the air is
- * the first evidence that anything was actually transmitted — which is why the
- * receiver here is a different physical device, never the transmitter itself.
+ * This is the experiment that makes [VerificationState.TX_VERIFIED]
+ * reachable. A transmitting radio reporting success proves only that its own
+ * TX path accepted the frames; the PA could be dead, the antenna
+ * disconnected, the channel misprogrammed. A second adapter hearing tagged
+ * frames on the air is the first evidence that anything was actually
+ * transmitted — which is why every receiver here is a different physical
+ * device, never the transmitter itself.
  *
- * It is also the primitive the rate sweeps are built from: "the highest
- * reliable MCS" is this, run once per rate.
+ * It is also the primitive the sweeps are built from: "the highest reliable
+ * MCS", "the channel with the best margin", "does frame size matter here" are
+ * all this, run once per point.
  */
 public class LinkProbe(
-    private val radios: RadioManager,
+    private val radios: Radios,
     private val scope: CoroutineScope,
 ) {
-    /**
-     * @param txSession the transmitter.
-     * @param rxSession the independent receiver. Must not be [txSession] — a
-     *  radio cannot witness itself, and allowing it would produce a result that
-     *  looks like evidence and is not.
-     * @param modes TX mode specs to sweep, e.g. `["6M", "MCS0/20", "MCS5/20"]`.
-     */
     public suspend fun run(
+        spec: ExperimentSpec,
+        progress: ExperimentRunner.ProgressSink? = null,
+    ): ExperimentResult {
+        val points = spec.sweep.expand(spec.basePoint)
+        if (points.isEmpty()) throw ExperimentException("the sweep expanded to no points")
+
+        val runId = Random.nextInt(1, 0xFFFFFF)
+        val started = System.currentTimeMillis()
+        val id = progress?.id ?: newId(started, runId)
+
+        val tx = radios.describe(spec.transmitter)
+        val witnesses = spec.witnesses.map { (role, session) ->
+            Witness(role, session, radios.describe(session), runId)
+        }
+        val caveats = mutableListOf<String>()
+
+        if (!tx.capabilities.tx.supported) {
+            throw ExperimentException("${tx.label} reports no TX capability")
+        }
+        // Check every channel the sweep will visit, on every radio, before
+        // transmitting anything. Discovering on point 9 of 12 that a witness
+        // cannot tune ch149 wastes the run and leaves it half-comparable.
+        points.map { it.channel }.distinct().forEach { label ->
+            val ch = label.spec()
+            requireChannelSupported(tx, ch)?.let { caveats += "transmitter at ${label.text}: $it" }
+            witnesses.forEach { w ->
+                requireChannelSupported(w.radio, ch)?.let {
+                    caveats += "${w.role} at ${label.text}: $it"
+                }
+            }
+        }
+
+        if (!spec.carrierSense) {
+            radios.setCarrierSense(spec.transmitter, enabled = false, safety = spec.safety)
+            caveats += "Carrier sense was DISABLED on the transmitter for this run. The " +
+                "delivery ratio therefore measures the radio link alone, with the MAC's " +
+                "own decision to defer removed. It is not comparable to a run with " +
+                "carrier sense on, and it is not what this adapter would achieve on a " +
+                "shared channel."
+        }
+
+        val results = mutableListOf<PointResult>()
+        var truncated = false
+        var tuned: String? = null
+        // One collector per witness for the whole run, started before any
+        // transmission so nothing is missed between points.
+        val jobs = mutableListOf<Job>()
+        try {
+            witnesses.forEach { w ->
+                jobs += scope.launch { radios.frames(w.session).collect { w.offer(it) } }
+            }
+
+            for (point in points) {
+                if (System.currentTimeMillis() - started > spec.bounds.maxDurationMs) {
+                    truncated = true
+                    caveats += "stopped after ${spec.bounds.maxDurationMs}ms: " +
+                        "${points.size - results.size} of ${points.size} points not run"
+                    break
+                }
+                progress?.startingPoint(point.label)
+
+                if (point.channel.text != tuned) {
+                    retuneAll(spec, witnesses, point.channel.spec(), firstTime = tuned == null)
+                    tuned = point.channel.text
+                }
+
+                val measured = try {
+                    withTimeout(spec.bounds.pointTimeoutMs) {
+                        measure(spec, point, runId, witnesses)
+                    }
+                } catch (e: TimeoutCancellationException) {
+                    truncated = true
+                    caveats += "point '${point.label}' did not complete within " +
+                        "${spec.bounds.pointTimeoutMs}ms and the run was stopped there. A " +
+                        "transmit call that does not return is a wedged adapter or a " +
+                        "stalled bridge, not a slow link — check monitor.stats and the " +
+                        "bridge log before re-running."
+                    results += PointResult(
+                        point = point.label,
+                        framesSent = spec.bounds.framesPerPoint,
+                        framesReceived = 0,
+                        deliveryRatio = 0.0,
+                        note = "timed out after ${spec.bounds.pointTimeoutMs}ms; not a measurement",
+                    )
+                    break
+                }
+                results += measured
+                progress?.finishedPoint()
+            }
+        } finally {
+            // Cleanup must survive cancellation: a cancelled run that left
+            // carrier sense off would keep the radio transmitting deaf until
+            // someone noticed.
+            withContext(NonCancellable) {
+                // cancelAndJoin, not cancel: a frame collector holds a socket
+                // to the bridge, and returning while it is still unwinding
+                // leaves the previous run's sink attached during the next
+                // one. Joining makes "the run is over" mean it.
+                jobs.forEach { it.cancelAndJoin() }
+                witnesses.forEach { w -> runCatching { radios.stopMonitor(w.session) } }
+                if (!spec.carrierSense) {
+                    runCatching { radios.setCarrierSense(spec.transmitter, enabled = true) }
+                }
+            }
+        }
+
+        return conclude(id, started, tx, witnesses, spec, points, results, caveats, truncated)
+    }
+
+    /**
+     * The common two-radio case, without building a spec by hand.
+     *
+     * Kept because most callers — including characterization — want exactly
+     * "this transmitter, that witness, these rates".
+     */
+    public suspend fun simple(
         txSession: Int,
         rxSession: Int,
         channel: ChannelSpec,
@@ -49,182 +165,131 @@ public class LinkProbe(
         carrierSense: Boolean = true,
         safety: SafetyLevel = SafetyLevel.NORMAL,
     ): ExperimentResult {
-        if (txSession == rxSession) {
-            throw ExperimentException(
-                "the transmitter cannot be its own witness: tx and rx must be " +
-                    "different adapters, or the result proves nothing about the air",
-            )
-        }
         if (modes.isEmpty()) throw ExperimentException("no TX modes given")
-
-        val runId = Random.nextInt(1, 0xFFFFFF)
-        val started = System.currentTimeMillis()
-        val id = "exp-${started.toString(36)}-${runId.toString(16)}"
-
-        val tx = radios.describe(txSession)
-        val rx = radios.describe(rxSession)
-        val caveats = mutableListOf<String>()
-
-        radios.requireChannelSupported(tx, channel)?.let { caveats += "transmitter: $it" }
-        radios.requireChannelSupported(rx, channel)?.let { caveats += "receiver: $it" }
-        if (!tx.capabilities.tx.supported) {
-            throw ExperimentException("${tx.label} reports no TX capability")
-        }
-
-        // Both ends on the same channel. The receiver monitors; the transmitter
-        // only needs bring-up, which retune performs.
-        radios.retune(txSession, channel)
-        radios.startMonitor(rxSession, channel)
-
-        if (!carrierSense) {
-            radios.setCarrierSense(txSession, enabled = false, safety = safety)
-            caveats += "Carrier sense was DISABLED on the transmitter for this run. The " +
-                "delivery ratio therefore measures the radio link alone, with the MAC's " +
-                "own decision to defer removed. It is not comparable to a run with " +
-                "carrier sense on, and it is not what this adapter would achieve on a " +
-                "shared channel."
-        }
-
-        val frame = ProbeFrame.build(runId, frameBytes)
-        val frameHex = ProbeFrame.toHex(frame)
-        val points = mutableListOf<PointResult>()
-        var truncated = false
-
-        // One collector for the whole run, started before any transmission so
-        // nothing is missed between points.
-        val seen = Collector(runId)
-        val job: Job = scope.launch {
-            radios.frames(rxSession).collect { seen.offer(it) }
-        }
-        try {
-            for (mode in modes) {
-                if (System.currentTimeMillis() - started > bounds.maxDurationMs) {
-                    truncated = true
-                    caveats += "stopped after ${bounds.maxDurationMs}ms: " +
-                        "${modes.size - points.size} of ${modes.size} modes not run"
-                    break
-                }
-                points += runPoint(txSession, mode, frameHex, bounds, seen)
-            }
-        } finally {
-            job.cancel()
-            runCatching { radios.stopMonitor(rxSession) }
-            // Restore carrier sense even if the run threw. Leaving a radio
-            // transmitting without listening is not a state to walk away from.
-            if (!carrierSense) runCatching { radios.setCarrierSense(txSession, enabled = true) }
-        }
-
-        return conclude(
-            id = id,
-            started = started,
-            txLabel = tx.label,
-            rxLabel = rx.label,
-            channel = channel,
-            bounds = bounds,
-            points = points,
-            caveats = caveats,
-            truncated = truncated,
-            carrierSense = carrierSense,
+        return run(
+            ExperimentSpec(
+                roles = mapOf(RadioRole.TX_PEER to txSession, RadioRole.RX_PEER to rxSession),
+                sweep = Sweep(modes = modes),
+                bounds = bounds,
+                basePoint = SweepPoint(
+                    mode = modes.first(),
+                    channel = ChannelLabel.of(channel),
+                    frameBytes = frameBytes,
+                    intervalUs = bounds.intervalUs,
+                ),
+                carrierSense = carrierSense,
+                safety = safety,
+            ),
         )
     }
 
-    private suspend fun runPoint(
-        txSession: Int,
-        mode: String,
-        frameHex: String,
-        bounds: ExperimentBounds,
-        seen: Collector,
+    private suspend fun retuneAll(
+        spec: ExperimentSpec,
+        witnesses: List<Witness>,
+        channel: ChannelSpec,
+        firstTime: Boolean,
+    ) {
+        // Both ends on the same channel. The witnesses monitor; the
+        // transmitter only needs bring-up, which retune performs.
+        radios.retune(spec.transmitter, channel)
+        witnesses.forEach { w ->
+            if (!firstTime) runCatching { radios.stopMonitor(w.session) }
+            radios.startMonitor(w.session, channel)
+        }
+    }
+
+    private suspend fun measure(
+        spec: ExperimentSpec,
+        point: SweepPoint,
+        runId: Int,
+        witnesses: List<Witness>,
     ): PointResult {
-        seen.reset()
+        witnesses.forEach { it.reset() }
+        val frameHex = ProbeFrame.toHex(ProbeFrame.build(runId, point.frameBytes))
         val txResult: JsonObject = radios.sendProbe(
-            session = txSession,
+            session = spec.transmitter,
             frameHex = frameHex,
-            mode = mode,
-            count = bounds.framesPerPoint,
-            intervalUs = bounds.intervalUs,
+            mode = point.mode,
+            count = spec.bounds.framesPerPoint,
+            intervalUs = point.intervalUs,
             sequenceOffset = ProbeFrame.SEQUENCE_OFFSET,
         )
-        val accepted = txResult["sent"]?.jsonPrimitive?.content?.toIntOrNull() ?: 0
-        val elapsedNs = txResult["elapsed_ns"]?.jsonPrimitive?.content?.toLongOrNull() ?: 0L
-        val lateFrames = txResult["late_frames"]?.jsonPrimitive?.content?.toIntOrNull() ?: 0
-        val maxLateUs = txResult["max_late_us"]?.jsonPrimitive?.content?.toLongOrNull() ?: 0L
+        val accepted = txResult.int("sent")
+        val elapsedNs = txResult.long("elapsed_ns")
 
-        // Frames in flight when the last one is submitted still have to arrive,
-        // be parsed and cross the frame socket. Declaring loss without waiting
-        // would systematically under-count delivery at every rate.
-        delay(bounds.settleMs)
+        // Frames in flight when the last one is submitted still have to
+        // arrive, be parsed and cross the frame socket. Declaring loss without
+        // waiting would systematically under-count delivery at every rate.
+        delay(spec.bounds.settleMs)
 
-        val s = seen.snapshot()
+        val sent = spec.bounds.framesPerPoint
+        val perWitness = witnesses.associate { w ->
+            w.role.name to w.result(sent)
+        }
+        val primary = perWitness[RadioRole.RX_PEER.name] ?: perWitness.values.first()
         return PointResult(
-            point = mode,
-            framesSent = bounds.framesPerPoint,
-            framesReceived = s.distinct,
-            deliveryRatio = if (bounds.framesPerPoint > 0) {
-                s.distinct.toDouble() / bounds.framesPerPoint
-            } else {
-                0.0
-            },
-            duplicates = s.duplicates,
-            outOfOrder = s.outOfOrder,
-            longestGap = s.longestGap,
-            rssiMean = s.rssiMean,
-            rssiMin = s.rssiMin,
-            rssiMax = s.rssiMax,
-            snrMean = s.snrMean,
-            crcErrors = s.crcErrors,
+            point = point.label,
+            framesSent = sent,
+            framesReceived = primary.framesReceived,
+            deliveryRatio = primary.deliveryRatio,
+            duplicates = primary.duplicates,
+            outOfOrder = primary.outOfOrder,
+            longestGap = primary.longestGap,
+            rssiMean = primary.rssiMean,
+            rssiMin = primary.rssiMin,
+            rssiMax = primary.rssiMax,
+            snrMean = primary.snrMean,
+            crcErrors = primary.crcErrors,
             txAccepted = accepted,
             txElapsedMs = elapsedNs / 1e6,
-            txLateFrames = lateFrames,
-            txMaxLateUs = maxLateUs,
-            note = if (accepted < bounds.framesPerPoint) {
-                "TX path accepted only $accepted of ${bounds.framesPerPoint}"
-            } else {
-                null
-            },
+            txLateFrames = txResult.int("late_frames"),
+            txMaxLateUs = txResult.long("max_late_us"),
+            witnesses = perWitness,
+            note = if (accepted < sent) "TX path accepted only $accepted of $sent" else null,
         )
     }
 
     private fun conclude(
         id: String,
         started: Long,
-        txLabel: String,
-        rxLabel: String,
-        channel: ChannelSpec,
-        bounds: ExperimentBounds,
+        tx: OpenRadio,
+        witnesses: List<Witness>,
+        spec: ExperimentSpec,
+        planned: List<SweepPoint>,
         points: List<PointResult>,
         caveats: MutableList<String>,
         truncated: Boolean,
-        carrierSense: Boolean,
     ): ExperimentResult {
         val best = points.maxByOrNull { it.deliveryRatio }
-        val anyHeard = points.any { it.framesReceived > 0 }
+        val anyHeard = points.any { p -> p.witnesses.values.any { it.framesReceived > 0 } }
+        val primaryLabel = witnesses.first().radio.label
 
         // The verification state is derived from the evidence, never asserted.
         // Nothing heard means FAILED — a zero delivery ratio reported as a
         // successful experiment is exactly the kind of quiet lie this project
         // is built to avoid.
-        val verification = when {
-            !anyHeard -> VerificationState.FAILED
-            else -> VerificationState.TX_VERIFIED
-        }
+        val verification =
+            if (anyHeard) VerificationState.TX_VERIFIED else VerificationState.FAILED
 
+        val axes = spec.sweep.axes
+        val swept = if (axes.isEmpty()) "" else " (swept ${axes.joinToString(", ")})"
         val conclusion = when {
+            points.isEmpty() -> "no measurement points ran"
             !anyHeard ->
-                "$txLabel transmitted but $rxLabel heard nothing on $channel. The TX " +
-                    "path accepted the frames, so this is NOT TX_VERIFIED: check antennas, " +
-                    "that both radios are on the same channel and width, and that they are " +
-                    "in range of each other."
+                "${tx.label} transmitted but no witness heard anything$swept. The TX path " +
+                    "accepted the frames, so this is NOT TX_VERIFIED: check antennas, that " +
+                    "every radio is on the same channel and width, and that they are in " +
+                    "range of each other."
             best != null ->
-                "TX_VERIFIED: $rxLabel independently received frames from $txLabel on " +
-                    "$channel. Best delivery ${"%.1f".format(best.deliveryRatio * 100)}% " +
-                    "at ${best.point}" +
+                "TX_VERIFIED: $primaryLabel independently received frames from ${tx.label}" +
+                    "$swept. Best delivery ${pct(best.deliveryRatio)} at ${best.point}" +
                     (best.rssiMean?.let { ", mean RSSI ${"%.1f".format(it)}" } ?: "") + "."
             else -> "no measurement points ran"
         }
 
         val poor = points.isNotEmpty() &&
             points.count { it.deliveryRatio < 0.5 } * 2 > points.size
-        if (carrierSense && (poor || !anyHeard)) {
+        if (spec.carrierSense && (poor || !anyHeard)) {
             caveats += "Delivery was poor with carrier sense ON. Before blaming the link, " +
                 "re-run with carrier_sense=false: a MAC whose EDCCA threshold is too " +
                 "sensitive defers nearly every transmission while still reporting every " +
@@ -249,6 +314,7 @@ public class LinkProbe(
                     "that should not happen from retries, so suspect a second receiver " +
                     "path or reflection rather than MAC-layer retransmission."
             }
+            if (witnesses.size > 1) caveats += disagreementNote(points, witnesses)
         }
 
         return ExperimentResult(
@@ -256,29 +322,68 @@ public class LinkProbe(
             kind = "link_probe",
             startedAtEpochMs = started,
             durationMs = System.currentTimeMillis() - started,
-            roles = mapOf(
-                RadioRole.TX_PEER.name to txLabel,
-                RadioRole.RX_PEER.name to rxLabel,
-            ),
-            channel = channel.toString(),
-            bounds = bounds,
+            roles = buildMap {
+                put(RadioRole.TX_PEER.name, tx.label)
+                witnesses.forEach { put(it.role.name, it.radio.label) }
+            },
+            channel = planned.map { it.channel.text }.distinct().joinToString(", "),
+            bounds = spec.bounds,
             points = points,
             verification = verification,
             conclusion = conclusion,
             caveats = caveats,
             truncated = truncated,
-            carrierSenseEnabled = carrierSense,
+            carrierSenseEnabled = spec.carrierSense,
         )
     }
 
     /**
-     * Counts what arrived, per burst.
+     * What two simultaneous witnesses disagreeing about means.
+     *
+     * Agreement is the load-bearing result: when two receivers hear exactly
+     * the same frames from one burst, the missing frames were never
+     * transmitted, and the transmitter is the fault. Disagreement is the
+     * opposite finding and is equally useful — it localises the difference to
+     * the receivers or their positions.
+     */
+    private fun disagreementNote(points: List<PointResult>, witnesses: List<Witness>): String {
+        val spreads = points.mapNotNull { p ->
+            val counts = p.witnesses.values.map { it.framesReceived }
+            if (counts.size < 2) null else (counts.max() - counts.min())
+        }
+        val worst = spreads.maxOrNull() ?: 0
+        val roles = witnesses.joinToString(" and ") { it.role.name }
+        return if (worst == 0) {
+            "$roles received exactly the same frames at every point. Two independent " +
+                "receivers agreeing frame-for-frame means the frames that are missing " +
+                "were never aired: the loss is at the transmitter, not in the air or the " +
+                "receiver."
+        } else {
+            "$roles disagreed by up to $worst frames at a point. The loss is therefore " +
+                "not purely transmit-side; the difference belongs to the receivers, their " +
+                "antennas or their positions — which is only separable by swapping them " +
+                "and re-running."
+        }
+    }
+
+    private fun pct(v: Double) = "%.1f%%".format(v * 100)
+
+    private fun newId(started: Long, runId: Int) =
+        "exp-${started.toString(36)}-${runId.toString(16)}"
+
+    /**
+     * One listening adapter, and what it heard.
      *
      * Sequence numbers are tracked as a set rather than a high-water mark so
      * duplicates and reordering are visible. A max-only counter would report a
      * burst that delivered frames 0 and 199 as complete.
      */
-    private class Collector(private val runId: Int) {
+    private class Witness(
+        val role: RadioRole,
+        val session: Int,
+        val radio: OpenRadio,
+        private val runId: Int,
+    ) {
         private val lock = Any()
         private var sequences = HashSet<Int>()
         private var dupes = 0
@@ -287,12 +392,10 @@ public class LinkProbe(
         private var crcErrors = 0
         private val rssi = mutableListOf<Int>()
         private val snr = mutableListOf<Int>()
-        private val total = AtomicInteger(0)
 
         fun offer(record: FrameRecord) {
             val seq = ProbeFrame.sequenceOf(record, runId) ?: return
             synchronized(lock) {
-                total.incrementAndGet()
                 if (!sequences.add(seq)) dupes++
                 if (seq < highest) reordered++ else highest = seq
                 if (record.crcError) crcErrors++
@@ -304,7 +407,7 @@ public class LinkProbe(
             }
         }
 
-        fun reset() = synchronized(lock) {
+        fun reset(): Unit = synchronized(lock) {
             sequences = HashSet()
             dupes = 0
             reordered = 0
@@ -312,20 +415,23 @@ public class LinkProbe(
             crcErrors = 0
             rssi.clear()
             snr.clear()
-            total.set(0)
         }
 
-        fun snapshot(): Snapshot = synchronized(lock) {
-            Snapshot(
-                distinct = sequences.size,
+        fun result(sent: Int): WitnessResult = synchronized(lock) {
+            WitnessResult(
+                role = role.name,
+                label = radio.label,
+                session = session,
+                framesReceived = sequences.size,
+                deliveryRatio = if (sent > 0) sequences.size.toDouble() / sent else 0.0,
                 duplicates = dupes,
                 outOfOrder = reordered,
                 longestGap = longestGap(sequences),
-                crcErrors = crcErrors,
                 rssiMean = rssi.averageOrNull(),
                 rssiMin = rssi.minOrNull(),
                 rssiMax = rssi.maxOrNull(),
                 snrMean = snr.averageOrNull(),
+                crcErrors = crcErrors,
             )
         }
 
@@ -340,19 +446,12 @@ public class LinkProbe(
             return worst
         }
 
-        private fun List<Int>.averageOrNull(): Double? =
-            if (isEmpty()) null else average()
-
-        data class Snapshot(
-            val distinct: Int,
-            val duplicates: Int,
-            val outOfOrder: Int,
-            val longestGap: Int,
-            val crcErrors: Int,
-            val rssiMean: Double?,
-            val rssiMin: Int?,
-            val rssiMax: Int?,
-            val snrMean: Double?,
-        )
+        private fun List<Int>.averageOrNull(): Double? = if (isEmpty()) null else average()
     }
 }
+
+private fun JsonObject.int(key: String): Int =
+    this[key]?.jsonPrimitive?.content?.toIntOrNull() ?: 0
+
+private fun JsonObject.long(key: String): Long =
+    this[key]?.jsonPrimitive?.content?.toLongOrNull() ?: 0L

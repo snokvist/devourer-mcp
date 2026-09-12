@@ -41,6 +41,7 @@ Three rules that shape everything:
 | `kotlin/experiment/` | Experiment engine: deterministic local execution of AI-defined experiments. |
 | `kotlin/characterize/` | Adapter characterization + the evidence database. |
 | `kotlin/scratchpad/` | Sandboxed micro-app runtime (capability-gated) + the on-demand UI server. |
+| `kotlin/dashboard/` | Persistent loopback dashboard: live radios, captures, experiments, and every tool call as it happens. |
 | `kotlin/mcp/` | MCP server; composes the above. The only process the LLM talks to. |
 | `tools/host/` | Host setup: udev rules, helper scripts. |
 | `var/` | Runtime state: captures, evidence DB, scratchpads. Not source. |
@@ -178,8 +179,11 @@ Every TX path must be bounded by duration or packet count, and cancellable.
 ## Scratchpad runtime
 
 When the fixed MCP surface cannot answer a request, the model composes a
-temporary program from primitives (radio, capture, tx, http, tcp/udp, timers,
-metrics, storage, math, UI).
+temporary program from the primitives that actually exist: capture reads,
+radio description, HTTP GET, timers, metrics, expression math and a UI.
+Declared-but-unimplemented capabilities were deleted — advertising one is
+worse than not having it, because a program is written against the
+advertisement.
 
 This is **not** unrestricted code execution in the MCP process. Generated
 programs declare the capabilities they need, are validated against that
@@ -187,6 +191,28 @@ declaration, and run in an isolated worker receiving only the APIs they asked
 for. No ambient filesystem, no process execution, no native/JNI, no arbitrary
 host access. A scratchpad that proves useful can be promoted to a saved,
 reusable tool.
+
+## Watching it work
+
+A dashboard runs on `127.0.0.1:8910` for as long as the MCP server does
+(`--dashboard-port`, negative to disable). It shows the open radios and what
+they are tuned to, live capture counters, experiment progress with a stop
+button, running scratchpads with links to their own live views, the
+characterization database, and **every MCP tool call as it happens** with its
+arguments and duration.
+
+Three rules it keeps:
+
+- **It never calls the bridge.** Everything on the page is in-process state.
+  A page polling once a second must not queue behind the model on the
+  serialized control connection, and must still render when the bridge has
+  stopped answering — which is exactly when someone is looking at it.
+- **The page is a constant.** No value is ever interpolated into the HTML;
+  dynamic data arrives as serializer-built JSON and is written to the DOM as
+  text. The escaping bug class has nowhere to live.
+- **One thing it can change.** `POST /api/experiment/{id}/cancel`, guarded by
+  a custom header and an origin check. An instrument that transmits needs a
+  stop control that does not share a queue with the thing being stopped.
 
 ## Testing
 

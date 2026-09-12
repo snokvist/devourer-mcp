@@ -1,5 +1,8 @@
 plugins {
     alias(libs.plugins.kotlin.serialization)
+    // Synthetic frames are shared so the hand-maintained FrameRecord offsets
+    // have exactly one test-side writer.
+    `java-test-fixtures`
 }
 
 kotlin {

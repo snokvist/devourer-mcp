@@ -11,6 +11,7 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.buffer
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.sync.Mutex
@@ -132,7 +133,23 @@ public class BridgeClient(
                     val body = ByteBuffer.wrap(payload)
                     if (!readFully(ch, body)) break
                 }
-                trySend(FrameRecord.decode(header, payload)).getOrThrow()
+                /*
+                 * send, not trySend. The old code threw the moment the
+                 * channel was full, which killed the whole capture — at
+                 * 3300 frames/s the default ~64 slots are 20ms of slack, so
+                 * any GC pause or slow consumer ended the stream and the
+                 * caller saw a broken flow rather than a drop count.
+                 *
+                 * Suspending here is the policy the rest of the system is
+                 * already built around: the reader stops draining the
+                 * socket, the bridge's own buffer fills, and the bridge
+                 * drops whole records and reports them in monitor.stats.
+                 * That path is bounded and counted. Blocking the bridge's RX
+                 * callback is what must never happen, and it cannot happen
+                 * from here: the bridge's writer is non-blocking and its
+                 * buffer swap is O(1).
+                 */
+                send(FrameRecord.decode(header, payload))
                 header.clear()
             }
             close()
@@ -140,7 +157,15 @@ public class BridgeClient(
             close(e)
         }
         awaitClose { runCatching { ch.close() } }
-    }.flowOn(ioDispatcher)
+    }
+        /*
+         * Fuses with the callbackFlow channel rather than adding a second
+         * one. Sized as time, not as frames: ~0.6s of slack at the 3300
+         * frames/s this bench has measured, which absorbs a GC pause or a
+         * summarize() without reaching the bridge, and costs a few MB.
+         */
+        .buffer(FRAME_BUFFER_SLOTS)
+        .flowOn(ioDispatcher)
 
     private fun openChannel(): SocketChannel {
         if (!socketPath.toFile().exists()) {
@@ -165,6 +190,9 @@ public class BridgeClient(
          * lost alignment and is interpreting payload as a length.
          */
         const val MAX_FRAME_BYTES = 65535
+
+        /** Frames held locally before backpressure reaches the bridge. */
+        const val FRAME_BUFFER_SLOTS = 2048
 
         fun writeLine(ch: SocketChannel, line: String) {
             val buf = ByteBuffer.wrap((line + "\n").toByteArray())

@@ -510,7 +510,7 @@ void Session::on_packet(const Packet &pkt) {
   std::memcpy(h.snr, a.snr, 4);
   std::memcpy(h.evm, a.evm, 4);
   h.physt = a.physt ? 1 : 0;
-  h.phy_fill = 0; /* PhyStsFill is parser-local; not on rx_pkt_attrib */
+  h._reserved_phy_fill = 0; /* see Protocol.h: never a measurement */
   h.crc_err = a.crc_err ? 1 : 0;
   h.icv_err = a.icv_err ? 1 : 0;
   h.bdecrypted = a.bdecrypted ? 1 : 0;

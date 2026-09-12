@@ -16,10 +16,18 @@ The architecture is proven end to end on real hardware:
 LLM ──MCP(stdio)──▶ Kotlin runtime ──UDS──▶ devourer-bridge ──libusb──▶ adapter
 ```
 
-23 MCP tools across DISCOVER / OBSERVE / INSPECT / TRANSMIT / EXPERIMENT /
-CHARACTERIZE / BUILD TOOL. 82 offline tests plus 63 vendored Devourer selftests,
-none of which need hardware. A hardware smoke test that refuses to pass
-vacuously.
+25 MCP tools across DISCOVER / OBSERVE / INSPECT / TRANSMIT / EXPERIMENT /
+CHARACTERIZE / BUILD TOOL. 147 offline tests plus 63 vendored Devourer
+selftests, none of which need hardware. Three hardware tests that refuse to
+pass vacuously: the end-to-end smoke test, a stalled-sink test, and a
+sustained-overload test.
+
+A persistent dashboard runs on `127.0.0.1:8910` for as long as the server
+does. It shows the open radios, live capture counters, experiment progress
+with a stop button, running scratchpads, and every MCP tool call as it
+happens. It reads in-process state only — it never touches the bridge, so
+watching the instrument cannot slow it and a stalled bridge does not take the
+page down with it.
 
 | Subsystem | State | Notes |
 |---|---|---|
@@ -29,10 +37,11 @@ vacuously.
 | Monitor capture | done | ~1500–3300 frames/s, zero drops |
 | Capture store, query, PCAP | done | radiotap synthesized; raw bytes always reachable |
 | TX (structured + raw) | done | paced against absolute deadlines |
-| Experiment engine | first experiment | `link_probe` only; see below |
+| Experiment engine | one experiment, four sweep axes | `link_probe`, multi-witness, cancellable; see below |
 | Characterization DB | done | per-adapter JSON, accumulating runs |
 | Scratchpad runtime | done | declarative, capability-gated, live UI |
 | Dynamic UI | done | loopback HTTP, charts/stats/tables/log |
+| Dashboard | done | fixed loopback port, live state + tool-call feed, read-only bar one stop button |
 
 ### Hardware proven
 
@@ -77,23 +86,32 @@ set. Roughly in value order:
 
 ## Experiment engine
 
-`link_probe` works and is the primitive the rest build on. What it does not yet
-do:
+`link_probe` is the primitive the rest build on. It now sweeps four axes — TX
+mode, channel, frame size and frame spacing — expanded as a bounded cartesian
+product with the channel outermost, because retuning costs ~130ms on a Realtek
+and a sweep that interleaved channels would pay it on every point.
 
-- **Sweep more than TX mode.** The master model calls for channel, bandwidth,
-  packet size, retries, TX power, aggregation and timing. The `PointResult`
-  shape already supports arbitrary point labels; the runner sweeps one
-  dimension.
-- **More than two roles.** `RadioRole` defines DUT / TX_PEER / RX_PEER /
-  MONITOR / MONITOR_2, and the two-witness test was run by hand against the
-  bridge. Multi-witness belongs in `LinkProbe` — it is what made the
-  carrier-sense finding conclusive.
+Roles are a `Map<RadioRole, Int>`, so one burst can be heard by up to three
+independent receivers simultaneously. That is a qualitatively different
+measurement rather than a repeat: two witnesses agreeing frame-for-frame means
+the missing frames were never aired, which localises the loss to the
+transmitter. It is how the carrier-sense finding became conclusive, and it is
+what an answer to the open antenna question needs.
+
+Each point has a hard deadline and the whole run is registered, so it can be
+stopped from the dashboard while it runs. Cancellation still restores carrier
+sense and stops the monitors — that cleanup runs under `NonCancellable`, which
+is the difference between a stopped run and a radio left transmitting deaf.
+
+What it still does not do:
+
 - **`experiment.compare`.** Two results, one diff, with the caveats that make
   them comparable or not. Nothing compares runs today.
-- **Cancellation mid-run.** Bounded by duration, but a caller cannot stop one
-  early.
-- **Persisted results.** Experiments are returned, not stored. They should land
-  next to characterizations so a sweep can be re-read later.
+- **Persisted results.** Experiments are returned and retained in memory for
+  the session, not stored. They should land next to characterizations so a
+  sweep can be re-read later.
+- **Anything but delivery.** Every axis is swept against the same measurement.
+  A power sweep needs `SetTxPower` first; see the coverage table above.
 
 ---
 
@@ -122,9 +140,10 @@ and would be the better fix.
 - **Hardware-tagged tests.** The Gradle build excludes JUnit tag `hardware`
   unless `-PwithHardware`, but no test carries the tag yet — hardware testing is
   the Python smoke test. Worth converting.
-- **Scratchpad primitives.** `tx`, `tcp/udp` and `storage` are declared in
-  `Capability` but have no source or step implementing them. Declared and
-  unimplemented is a worse state than absent; either build them or drop them.
+- **A second experiment.** The engine's seam is a function, deliberately, and
+  there is exactly one experiment through it. A spectrum dwell or a retune
+  timing measurement would be the first test of whether that seam is the right
+  shape.
 - **Android.** The architecture does NOT currently hold, contrary to an earlier
   claim here. Six concrete blockers: `UnixDomainSocketAddress` — the entire
   Kotlin↔native transport — is Android **API 34**, not 28;

@@ -101,6 +101,58 @@ through the open-path USB reset (the soft wedge; the hard one needs a replug).
 Fixed with an O(1) buffer swap. Removing that contention also removed a 13.8 s
 burst time that had nothing to do with the radio.
 
+## What happens when the reader stops reading
+
+The failure mode this whole architecture is arranged around, finally provoked
+on purpose rather than by accident. `tools/stall-test.py` attaches a frame
+sink that never reads, shrinks the bridge's buffer to its 1MiB minimum, and
+drives a bounded broadcast burst from the peer adapter so the buffer actually
+fills — ambient traffic here is nowhere near enough, and a test whose buffer
+never fills proves nothing about what happens when it does.
+
+| | RTL8812AU | MT7612U bus5 | MT7612U bus2 |
+|---|---|---|---|
+| records dropped, sink stalled | 38 554 | 35 695 | 38 496 |
+| worst control call during it | 0 ms | 0 ms | 0 ms |
+| `monitor.stop`, sink still stalled | 1 ms | 52 ms | 51 ms |
+| `radio.close` | 4 ms | 49 ms | 26 ms |
+| sink reset → buffer | 1 MiB → 0 | 1 MiB → 0 | 1 MiB → 0 |
+| receiving afterwards | 5 987 frames | 5 368 | 6 000 |
+
+Both MT7612U units came through it. That matters specifically: Devourer warns
+that an undrained MT7612U receiver wedges below the USB level, and this
+project wedged both of them once already by holding a lock across a copy on
+the RX path. A stalled consumer now costs dropped records and nothing else.
+
+The reset case is the one that was quietly wrong before: the bridge counted a
+write error and kept the dead fd. It now closes it and clears the buffer, and
+the test asserts both (`write_errors` 0→1, buffer 1 MiB→0, `sink_attached`
+false).
+
+## Sustained capture rate: ~6 100 frames/s
+
+`tools/backpressure-test.py` points one MT7612U at another transmitting flat
+out on ch6 and runs a real MCP capture with a deliberately small 5 000-frame
+ring:
+
+```
+admitted=6081  stored=5000  evicted=1081   bridge_dropped=0  running=True
+admitted=12134 stored=5000  evicted=7134   bridge_dropped=0  running=True
+...
+111 468 frames admitted over 12s, ring held 5 000, bridge dropped 0
+```
+
+Two facts in that. The rate is roughly double the 1 500–3 300 frames/s
+recorded earlier, and the bridge dropped *nothing*, so the JVM reader kept up
+with a saturating transmitter. Both came from replacing `trySend(...)
+.getOrThrow()` with a suspending `send`: the old code ended the whole capture
+the moment its ~64-slot channel filled, which at these rates is about 20 ms of
+slack.
+
+The test's real assertion is not the rate. It is that the admitted count keeps
+*rising* for the whole burst — a flow that died would freeze within the first
+second and never move again, while the radio kept receiving.
+
 ## Antennas are not chains
 
 Both MT7612U units report 2T2R and two active chains, though one board carries
@@ -121,5 +173,11 @@ both receivers swapped between positions.
 tools/host/bridge-ctl.sh start
 ./gradlew :mcp:installDist
 tools/smoke-test.py          # RX path, all adapters
-tools/host/devourer-mcp      # MCP on stdio; then experiment_link_probe
+tools/stall-test.py          # a sink that stops reading, all adapters
+tools/backpressure-test.py   # sustained overload through a real capture
+tools/host/devourer-mcp      # MCP on stdio; dashboard on 127.0.0.1:8910
 ```
+
+The transmitting tests default to channel 6 because this bench measures it as
+empty. They are bounded bursts of broadcast frames from our own adapters; none
+of them disables carrier sense.

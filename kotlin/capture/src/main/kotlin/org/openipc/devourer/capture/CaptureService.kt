@@ -1,13 +1,13 @@
-package org.openipc.devourer.mcp
+package org.openipc.devourer.capture
 
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
-import org.openipc.devourer.capture.CaptureStore
 import org.openipc.devourer.protocol.ChannelSpec
-import org.openipc.devourer.radio.RadioManager
+import org.openipc.devourer.radio.Radios
+import org.openipc.devourer.radio.requireChannelSupported
 
 /**
  * Ties a monitoring radio session to a local [CaptureStore].
@@ -17,7 +17,7 @@ import org.openipc.devourer.radio.RadioManager
  * only summaries, query results and references ever cross the MCP boundary.
  */
 public class CaptureService(
-    private val radios: RadioManager,
+    private val radios: Radios,
     private val scope: CoroutineScope,
 ) {
     private val captures = ConcurrentHashMap<String, ActiveCapture>()
@@ -52,7 +52,7 @@ public class CaptureService(
         capacity: Int = 200_000,
     ): ActiveCapture {
         val radio = radios.describe(session)
-        val note = radios.requireChannelSupported(radio, channel)
+        val note = requireChannelSupported(radio, channel)
         radios.startMonitor(session, channel)
 
         val id = "cap-${counter.incrementAndGet()}"

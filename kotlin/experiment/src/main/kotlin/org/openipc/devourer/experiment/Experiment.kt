@@ -2,6 +2,7 @@ package org.openipc.devourer.experiment
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.Transient
 import org.openipc.devourer.protocol.ChannelSpec
 import org.openipc.devourer.radio.VerificationState
 
@@ -32,11 +33,36 @@ public data class ExperimentBounds(
         require(maxDurationMs in 1..600_000) { "max_duration_ms must be 1..600000" }
         require(framesPerPoint in 1..100_000) { "frames_per_point must be 1..100000" }
         require(intervalUs in 0..1_000_000) { "interval_us must be 0..1000000" }
+        require(settleMs in 0..60_000) { "settle_ms must be 0..60000" }
+        // Each bound is individually legal and the product is not: 100000
+        // frames at 1s spacing is a 27-hour point, which a 60-second run
+        // ceiling does nothing about because the ceiling is only checked
+        // between points. Refusing here is the difference between an
+        // experiment that is bounded and one that merely looks bounded.
+        require(estimatedPointMs <= maxDurationMs) {
+            "one point would take ${estimatedPointMs}ms (${framesPerPoint} frames at " +
+                "${intervalUs}us plus ${settleMs}ms settle) but the whole run is capped at " +
+                "${maxDurationMs}ms. The cap is only tested between points, so this would " +
+                "run to completion regardless — lower frames_per_point or interval_us."
+        }
     }
 
     /** Wall time one point will take, ignoring per-call overhead. */
     public val estimatedPointMs: Long
         get() = (framesPerPoint.toLong() * intervalUs / 1000) + settleMs
+
+    /**
+     * Hard per-point deadline.
+     *
+     * Generous relative to the estimate on purpose: the point of this is to
+     * bound a bridge that has stopped answering, not to fail a burst that ran
+     * slow. A wedged adapter is a real failure mode here — an undrained
+     * MT7612U receiver stops responding below the USB level — and without
+     * this the run waits on it forever with the radio still claimed.
+     */
+    @Transient
+    public val pointTimeoutMs: Long =
+        (estimatedPointMs * 3 + 10_000).coerceAtMost(maxDurationMs + 10_000)
 }
 
 /**
@@ -96,7 +122,38 @@ public data class PointResult(
      */
     @SerialName("tx_late_frames") val txLateFrames: Int = 0,
     @SerialName("tx_max_late_us") val txMaxLateUs: Long = 0,
+    /**
+     * Every witness that heard this point, keyed by role.
+     *
+     * The top-level fields above are the RX_PEER's view — the one the
+     * conclusion is built from. This map is what makes a *simultaneous*
+     * comparison possible, and simultaneity is the whole value: the
+     * carrier-sense finding on this bench only became conclusive when two
+     * MT7612U receivers witnessing the same burst agreed exactly (3/3, 7/7,
+     * 13/13), which is what ruled out the receiver. Two runs, one per
+     * witness, could not have done that — the air changes between them.
+     */
+    val witnesses: Map<String, WitnessResult> = emptyMap(),
     val note: String? = null,
+)
+
+/** What one witness heard, for one point. */
+@Serializable
+public data class WitnessResult(
+    /** The [RadioRole] name this adapter played. */
+    val role: String,
+    val label: String,
+    val session: Int,
+    @SerialName("frames_received") val framesReceived: Int,
+    @SerialName("delivery_ratio") val deliveryRatio: Double,
+    val duplicates: Int = 0,
+    @SerialName("out_of_order") val outOfOrder: Int = 0,
+    @SerialName("longest_gap") val longestGap: Int = 0,
+    @SerialName("rssi_mean") val rssiMean: Double? = null,
+    @SerialName("rssi_min") val rssiMin: Int? = null,
+    @SerialName("rssi_max") val rssiMax: Int? = null,
+    @SerialName("snr_mean") val snrMean: Double? = null,
+    @SerialName("crc_errors") val crcErrors: Int = 0,
 )
 
 /**

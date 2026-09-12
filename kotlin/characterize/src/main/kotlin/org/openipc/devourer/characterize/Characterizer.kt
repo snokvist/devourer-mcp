@@ -10,7 +10,9 @@ import org.openipc.devourer.experiment.ExperimentBounds
 import org.openipc.devourer.experiment.LinkProbe
 import org.openipc.devourer.protocol.ChannelSpec
 import org.openipc.devourer.protocol.ChannelWidth
-import org.openipc.devourer.radio.RadioManager
+import org.openipc.devourer.radio.OpenRadio
+import org.openipc.devourer.radio.Radios
+import org.openipc.devourer.radio.requireChannelSupported
 import org.openipc.devourer.radio.SafetyLevel
 import org.openipc.devourer.radio.SafetyLevelException
 import org.openipc.devourer.radio.VerificationClaim
@@ -26,7 +28,7 @@ import org.openipc.devourer.radio.VerificationState
  * it next.
  */
 public class Characterizer(
-    private val radios: RadioManager,
+    private val radios: Radios,
     private val store: EvidenceStore,
     private val scope: CoroutineScope,
 ) {
@@ -156,7 +158,7 @@ public class Characterizer(
         for (ch in options.rxChannels) {
             val spec = ChannelSpec(ch, ChannelWidth.W20)
             val supported = runCatching {
-                radios.requireChannelSupported(radios.describe(session), spec)
+                requireChannelSupported(radios.describe(session), spec)
             }.getOrElse {
                 notes += "channel $ch skipped: ${it.message}"
                 continue
@@ -215,7 +217,7 @@ public class Characterizer(
         conditions["tx_peer_session"] = peer.toString()
 
         val probe = LinkProbe(radios, scope)
-        var result = probe.run(
+        var result = probe.simple(
             txSession = session,
             rxSession = peer,
             channel = channel,
@@ -244,7 +246,7 @@ public class Characterizer(
             )
             notes += "TX delivered only ${"%.0f".format(best * 100)}% with carrier sense on; " +
                 "retrying with it off to separate MAC deferral from a poor link."
-            result = probe.run(
+            result = probe.simple(
                 txSession = session,
                 rxSession = peer,
                 channel = channel,
@@ -353,7 +355,7 @@ public class Characterizer(
     )
 
     private fun file(
-        radio: RadioManager.OpenRadio,
+        radio: OpenRadio,
         runId: String,
         started: Long,
         conditions: MutableMap<String, String>,

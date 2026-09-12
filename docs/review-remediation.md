@@ -11,22 +11,40 @@ what a cold session reads to resume.
 
 ## Where this stands
 
-21 of 25 items are done and verified offline (82 Kotlin tests, 63 native
-selftests, `scripts/check-docs.sh` green). Four bridge items are **written and
-compiling but unverified**, because proving them needs an open radio session:
-they are the teardown-hang, the lifecycle race, the RX-thread exception guard
-and the write-error fd leak. Three bridge fixes WERE verifiable without a radio
-and were checked: argument range-rejection, the connection cap, and SIGTERM
-actually stopping an idle bridge (which was impossible before).
+**All 25 items are done.** 147 Kotlin tests, 63 native selftests,
+`scripts/check-docs.sh` green, and the four bridge fixes that could only be
+proven with a radio are now proven on all three adapters.
 
-Item 5 (frame-flow overflow policy) and item 18 (`phy_fill`) and item 14
-(`Radios` interface) and item 19 (experiment seam) remain.
+The bridge items were the interesting ones. They were written against a
+failure mode nobody had reproduced on purpose: a client that attaches to the
+frame stream and then stops reading. `tools/stall-test.py` provokes it — a
+1MiB frame buffer, a sink that never reads, and a bounded broadcast burst from
+the peer adapter — and measures what the review said was broken.
+
+| What | RTL8812AU | MT7612U bus5 | MT7612U bus2 |
+|---|---|---|---|
+| records dropped with the sink stalled | 38 554 | 35 695 | 38 496 |
+| worst control-plane call during it | 0 ms | 0 ms | 0 ms |
+| `monitor.stop` with the sink still stalled | 1 ms | 52 ms | 51 ms |
+| `radio.close` | 4 ms | 49 ms | 26 ms |
+| sink reset → dropped, buffer cleared | 1 MiB → 0 | 1 MiB → 0 | 1 MiB → 0 |
+| still receiving afterwards | 5 987 frames | 5 368 | 6 000 |
+
+Both MT7612U units survived this. That is the specific adapter Devourer warns
+wedges below the USB level when its receiver is not drained, and the one this
+project has already wedged once with its own backpressure.
+
+Item 5 is verified separately by `tools/backpressure-test.py`, which runs a
+real capture under a burst far larger than the ring: **111 468 frames admitted
+at ~6 100 frames/s, collector never dying, zero bridge drops.** The old code
+would have ended the stream within the first second. That rate is also roughly
+double the previously recorded peak, because the reader no longer throws away
+its own flow under load.
 
 ## Ground rule while this list is open
 
-Items marked **[HW]** cannot be verified without the bench adapters. The bench is
-shared with another session, so those are staged but NOT run. Everything else is
-verifiable with `./gradlew test` and a CMake build.
+Nothing is left staged. Items marked **[HW]** were verified on the bench
+adapters on 2026-09-12; the scripts that did it are checked in and repeatable.
 
 ---
 
@@ -34,31 +52,47 @@ verifiable with `./gradlew test` and a CMake build.
 
 | # | Item | Severity | Needs HW | Status |
 |---|---|---|---|---|
-| 1 | `SafetyLevel` exists and gates TX / CCA | critical | no (verify: yes) | **DONE** `SafetyLevel` + tests |
-| 2 | `characterize_run` no longer auto-disables carrier sense | critical | no | **DONE** default now false, needs EXPERIMENTAL |
+| 1 | `SafetyLevel` exists and gates TX / CCA | critical | no | **DONE** `SafetyLevel` + tests |
+| 2 | `characterize_run` no longer auto-disables carrier sense | critical | no | **DONE** default false, needs EXPERIMENTAL, pinned by `CharacterizerTest` |
 | 3 | Scratchpad grant comes from the caller, not the program | critical | no | **DONE** caller intersects; `grant_capabilities` |
 | 4 | Generated UI escaped + CSP | critical | no | **DONE** escaped + CSP + locale fix |
-| 5 | Frame flow: real overflow policy, never dies | critical | **yes** | TODO |
-| 6 | `capture_summary` O(n)+Formatter storm | critical | no (fixture bench) | **DONE** window-in-lock, hex table, cached addrs, bench tests |
-| 7 | Bridge: non-blocking sink, no join-on-blocked-write | critical | **yes** | **CODE DONE, [HW] to verify** non-blocking + shutdown() |
-| 8 | Bridge: `Session` lifecycle mutex | critical | **yes** | **CODE DONE, [HW] to verify** `_life_mu`, idempotent close |
-| 9 | Bridge: try/catch on RX thread + dispatch | critical | **yes** | **CODE DONE, [HW] to verify** RX thread + dispatch + dtor |
+| 5 | Frame flow: real overflow policy, never dies | critical | **yes** | **DONE + VERIFIED** `send` not `trySend`, 2048-slot buffer; 111k frames at 6.1k/s, collector alive |
+| 6 | `capture_summary` O(n)+Formatter storm | critical | no | **DONE** window-in-lock, hex table, cached addrs, bench tests |
+| 7 | Bridge: non-blocking sink, no join-on-blocked-write | critical | **yes** | **DONE + VERIFIED** `monitor.stop` 1–52ms with the sink stalled |
+| 8 | Bridge: `Session` lifecycle mutex | critical | **yes** | **DONE + VERIFIED** `radio.close` 4–49ms mid-stall, three adapters |
+| 9 | Bridge: try/catch on RX thread + dispatch | critical | **yes** | **DONE + VERIFIED** control plane 0ms worst through 38k drops |
 | 10 | `UiServer` closed on natural completion; run caps | high | no | **DONE** closed in finally; 8 concurrent / 16 retained |
 | 11 | `Expr` depth cap on unary/power | high | no | **DONE** guard on all 3 paths + tests |
 | 12 | Delete unimplemented capabilities + `txFrameBudget` | high | no | **DONE** deleted; test pins the catalogue |
 | 13 | Clamp `capture_query` limit, `capacity`, `max_hex_bytes` | high | no | **DONE** query 500, hex 4096, capacity 2M |
-| 14 | Extract `Radios` interface; fakes; tests for exp/char/mcp | high | no | TODO |
+| 14 | Extract `Radios` interface; fakes; tests for exp/char/mcp | high | no | **DONE** `Radios` + `FakeRadios`; 0 → 55 tests across those three modules |
 | 15 | Bridge: `sigaction` without `SA_RESTART`; wake `accept()` | high | **yes** | **DONE** sigaction + self-pipe; SIGTERM verified |
-| 16 | Bridge: close sink fd on write error | high | **yes** | **CODE DONE, [HW] to verify** closes fd, clears buffer |
-| 17 | Bridge: range-check `integer()` before narrowing | high | no | **DONE** `ranged()`; verified bus 257 / buffer -1 rejected |
-| 18 | `phy_fill` — plumb it or delete it | high | **yes** (plumb) | TODO |
-| 19 | Experiment engine seam: roles, sweeps, per-point timeout | high | no | TODO |
-| 20 | Doc corrections + `scripts/check-docs.sh` | high | no | **DONE** `scripts/check-docs.sh` green |
+| 16 | Bridge: close sink fd on write error | high | **yes** | **DONE + VERIFIED** RST → `write_errors` 0→1, buffer 1MiB→0, sink detached |
+| 17 | Bridge: range-check `integer()` before narrowing | high | no | **DONE** `ranged()`; bus 257 / buffer -1 rejected |
+| 18 | `phy_fill` — plumb it or delete it | high | **yes** (plumb) | **DONE** retired to a reserved byte: it shipped hardwired to "nothing filled" and cannot be filled from the bridge — see `Protocol.h` |
+| 19 | Experiment engine seam: roles, sweeps, per-point timeout | high | no | **DONE** 4-axis `Sweep`, `Map<RadioRole,Int>`, per-point deadline, `ExperimentRunner` + cancel |
+| 20 | Doc corrections + `scripts/check-docs.sh` | high | no | **DONE** green |
 | 21 | Regulatory stance: pick one, make docs match | medium | no | **DONE** documented as deliberately unenforced |
 | 22 | Hand-built JSON in `Tools.kt` (5 sites, 2 injectable) | medium | no | **DONE** all 5 via `reply()`/`errorReply()` |
 | 23 | `CaptureStore.frame(index)` O(n) → O(1) | medium | no | **DONE** index arithmetic + eviction test |
 | 24 | Android claim corrected in roadmap | medium | no | **DONE** six blockers listed in roadmap |
-| 25 | Bridge: TX budget bounds wall-clock, checks `g_stop` | medium | **yes** | **DONE** wall-clock budget + `g_stop` (code verified) |
+| 25 | Bridge: TX budget bounds wall-clock, checks `g_stop` | medium | **yes** | **DONE** wall-clock budget + `g_stop`; exercised by every flood in the stall test |
+
+### Found while fixing these
+
+Three defects the new tests caught, none of which were in the reviews:
+
+- **A collector could outlive its run.** `LinkProbe` cancelled its frame
+  collectors without joining them, so the previous run's sink was still
+  attached during the next one. It surfaced as a characterization retry
+  measuring zero delivery. Now `cancelAndJoin`, under `NonCancellable`.
+- **`FakeRadios` was not thread-safe.** `getOrPut` is get-then-put and is not
+  atomic even on a `ConcurrentHashMap`; two racing callers each built a frame
+  flow, the second overwrote the first, and a collector sat subscribed to an
+  object nothing published to. It passed alone and hung in a suite.
+- **The dashboard showed a monitoring radio as idle.** The radio book was
+  updated only on open and describe, so the three facts anyone looks for —
+  monitoring, channel, carrier sense — were the three that were stale.
 
 ---
 
@@ -168,5 +202,16 @@ Android fd-import path we ignore.
 
 ## Continuation
 
-When resuming: read this file, then `docs/handoff.md`. Pick the top TODO whose
-**Needs HW** is `no`. Before any **[HW]** item, ask — the bench is shared.
+This list is closed. What comes next is in [`roadmap.md`](roadmap.md); the
+largest single item there is still `IRadio` coverage, at 11 of 52 methods.
+
+Three things worth keeping from how this went:
+
+- **The bench is shared.** Ask before using the adapters, and prefer ch6 for
+  anything that transmits — it is measurably empty here.
+- **Provoke the failure, do not wait for it.** Every one of the four bridge
+  fixes looked verified when the test relied on ambient traffic: the buffer
+  never filled, so teardown was only ever measured against an idle sink. The
+  test now generates its own load and fails if the buffer did not saturate.
+- **A test that passes alone and hangs in a suite is a concurrency bug in the
+  test harness, not a flake.** It was, twice.

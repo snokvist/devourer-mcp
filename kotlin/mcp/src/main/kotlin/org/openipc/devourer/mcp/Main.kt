@@ -19,9 +19,15 @@ import kotlinx.io.asSink
 import kotlinx.io.asSource
 import kotlinx.io.buffered
 import org.openipc.devourer.characterize.EvidenceStore
+import org.openipc.devourer.experiment.ExperimentRunner
 import org.openipc.devourer.radio.BridgeClient
 import org.openipc.devourer.radio.RadioManager
 import org.openipc.devourer.scratchpad.ScratchpadService
+import org.openipc.devourer.capture.CaptureService
+import org.openipc.devourer.dashboard.ActivityLog
+import org.openipc.devourer.dashboard.Dashboard
+import org.openipc.devourer.dashboard.RadioBook
+import org.openipc.devourer.dashboard.RecordingRadios
 
 /**
  * The MCP server process.
@@ -79,7 +85,12 @@ public fun main(args: Array<String>): Unit = runBlocking {
     )
 
     val scope = CoroutineScope(SupervisorJob())
-    val radios = RadioManager(bridge)
+    val activity = ActivityLog()
+    val radioBook = RadioBook()
+    // Every radio read anywhere — a tool, an experiment between sweep points,
+    // a characterization after bring-up — updates the book the dashboard
+    // draws from. Nothing on the page costs a bridge round trip.
+    val radios = RecordingRadios(RadioManager(bridge), radioBook)
     val captures = CaptureService(radios, scope)
     val evidenceDir = argValue(args, "--evidence-dir")
         ?.let { Path.of(it) }
@@ -99,11 +110,26 @@ public fun main(args: Array<String>): Unit = runBlocking {
         ),
         instructions = INSTRUCTIONS,
     )
-    Tools(radios, captures, exportDir, scope, evidence, scratchpads).registerAll(server)
+    val experiments = ExperimentRunner(scope)
+    Tools(radios, captures, exportDir, scope, evidence, scratchpads, experiments, activity)
+        .registerAll(server)
+
+    val dashboard = startDashboard(
+        port = argValue(args, "--dashboard-port")?.toIntOrNull() ?: Dashboard.DEFAULT_PORT,
+        hello = hello,
+        radioBook = radioBook,
+        activity = activity,
+        captures = captures,
+        experiments = experiments,
+        scratchpads = scratchpads,
+        evidence = evidence,
+    )
 
     Runtime.getRuntime().addShutdownHook(
         Thread {
             runBlocking {
+                runCatching { dashboard?.close() }
+                runCatching { experiments.cancelAll("the server is shutting down") }
                 runCatching { scratchpads.stopAll() }
                 runCatching { captures.stopAll() }
                 runCatching { bridge.close() }
@@ -123,6 +149,49 @@ public fun main(args: Array<String>): Unit = runBlocking {
     val done = Job()
     session.onClose { done.complete() }
     done.join()
+}
+
+/**
+ * Brings up the dashboard, or explains why it is not there.
+ *
+ * Never fatal. A port already in use is a nuisance; taking the radio server
+ * down over it would not be. `--dashboard-port 0` picks a free port and
+ * anything negative turns it off.
+ */
+private fun startDashboard(
+    port: Int,
+    hello: org.openipc.devourer.protocol.HelloResult,
+    radioBook: RadioBook,
+    activity: ActivityLog,
+    captures: CaptureService,
+    experiments: ExperimentRunner,
+    scratchpads: ScratchpadService,
+    evidence: EvidenceStore,
+): Dashboard? {
+    if (port < 0) {
+        System.err.println("dashboard disabled (--dashboard-port ${'$'}port)")
+        return null
+    }
+    return try {
+        val dashboard = Dashboard(
+            port = port,
+            hello = hello,
+            radios = radioBook,
+            activity = activity,
+            captures = captures,
+            experiments = experiments,
+            scratchpads = scratchpads,
+            evidence = evidence,
+        )
+        System.err.println("dashboard on ${'$'}{dashboard.url}")
+        dashboard
+    } catch (e: Exception) {
+        System.err.println(
+            "dashboard NOT started on port ${'$'}port: ${'$'}{e.message}. " +
+                "The instrument is unaffected; pass --dashboard-port to move it.",
+        )
+        null
+    }
 }
 
 private const val VERSION = "0.1.0"

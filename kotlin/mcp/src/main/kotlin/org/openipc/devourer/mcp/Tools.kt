@@ -14,8 +14,17 @@ import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonPrimitive
 import org.openipc.devourer.capture.CaptureSummary
 import org.openipc.devourer.capture.analyseChainBalance
+import kotlinx.coroutines.CancellationException
+import kotlinx.serialization.builtins.ListSerializer
+import org.openipc.devourer.experiment.ChannelLabel
 import org.openipc.devourer.experiment.ExperimentBounds
+import org.openipc.devourer.experiment.ExperimentException
 import org.openipc.devourer.experiment.ExperimentResult
+import org.openipc.devourer.experiment.ExperimentRunner
+import org.openipc.devourer.experiment.ExperimentSpec
+import org.openipc.devourer.experiment.RadioRole
+import org.openipc.devourer.experiment.Sweep
+import org.openipc.devourer.experiment.SweepPoint
 import org.openipc.devourer.characterize.AdapterIdentity
 import org.openipc.devourer.characterize.Characterization
 import org.openipc.devourer.characterize.Characterizer
@@ -31,9 +40,14 @@ import org.openipc.devourer.protocol.ChannelSpec
 import org.openipc.devourer.protocol.ChannelWidth
 import org.openipc.devourer.protocol.FrameAddresses
 import org.openipc.devourer.radio.CapabilityException
-import org.openipc.devourer.radio.RadioManager
+import org.openipc.devourer.radio.OpenRadio
+import org.openipc.devourer.radio.Radios
+import org.openipc.devourer.radio.centerFrequencyMhz
 import org.openipc.devourer.radio.SafetyLevel
 import org.openipc.devourer.radio.VerificationState
+import org.openipc.devourer.capture.CaptureService
+import io.modelcontextprotocol.kotlin.sdk.types.CallToolRequest
+import org.openipc.devourer.dashboard.ActivityLog
 
 /**
  * The MCP surface.
@@ -48,12 +62,14 @@ import org.openipc.devourer.radio.VerificationState
  * parses cleanly when the model wants to compute on it.
  */
 internal class Tools(
-    private val radios: RadioManager,
+    private val radios: Radios,
     private val captures: CaptureService,
     private val exportDir: Path,
     private val scope: kotlinx.coroutines.CoroutineScope,
     private val evidence: EvidenceStore,
     private val scratchpads: ScratchpadService,
+    private val experiments: ExperimentRunner,
+    private val activity: ActivityLog,
 ) {
     /**
      * `encodeDefaults` keeps counts we always compute — a zero CRC-error count
@@ -68,6 +84,9 @@ internal class Tools(
 
         /** Ceiling on raw hex from frame_inspect. */
         const val MAX_HEX_BYTES = 4096
+
+        /** Ceiling on one argument value in the activity feed. */
+        const val MAX_ARG_VALUE = 60
     }
 
     private val json = Json {
@@ -89,7 +108,8 @@ internal class Tools(
     // ---------------------------------------------------------------- DISCOVER
 
     private fun registerDiscover(server: Server) {
-        server.addTool(
+        register(
+            server,
             name = "radio_list",
             description = """
                 List USB Wi-Fi adapters this system could drive with Devourer.
@@ -131,7 +151,8 @@ internal class Tools(
             )
         }
 
-        server.addTool(
+        register(
+            server,
             name = "radio_open",
             description = """
                 Claim an adapter and read its identity and capabilities.
@@ -160,10 +181,11 @@ internal class Tools(
                 address = request.intOr("address", -1),
                 reset = request.boolOr("reset", true),
             )
-            text(json.encodeToString(RadioManager.OpenRadio.serializer(), radio))
+            text(json.encodeToString(OpenRadio.serializer(), radio))
         }
 
-        server.addTool(
+        register(
+            server,
             name = "radio_describe",
             description = "Re-read an open radio's identity, capabilities and current state.",
             inputSchema = ToolSchema(
@@ -173,13 +195,14 @@ internal class Tools(
         ) { request ->
             text(
                 json.encodeToString(
-                    RadioManager.OpenRadio.serializer(),
+                    OpenRadio.serializer(),
                     radios.describe(request.intOr("session", -1)),
                 ),
             )
         }
 
-        server.addTool(
+        register(
+            server,
             name = "radio_close",
             description = "Release an adapter: de-initializes the chip cleanly so it re-enumerates.",
             inputSchema = ToolSchema(
@@ -197,7 +220,8 @@ internal class Tools(
     // ----------------------------------------------------------------- OBSERVE
 
     private fun registerObserve(server: Server) {
-        server.addTool(
+        register(
+            server,
             name = "monitor_start",
             description = """
                 Bring up the radio in monitor mode and start capturing frames locally.
@@ -246,7 +270,8 @@ internal class Tools(
             )
         }
 
-        server.addTool(
+        register(
+            server,
             name = "monitor_stop",
             description = "Stop a capture's radio. The captured frames stay queryable until discarded.",
             inputSchema = ToolSchema(
@@ -262,14 +287,15 @@ internal class Tools(
                 text(reply("capture_id" to id, "stopped" to true, "discarded" to captures.discard(id)))
             } else {
                 val c = captures.stop(id)
-                    ?: return@addTool text(errorReply("no capture $id"), isError = true)
+                    ?: return@register text(errorReply("no capture $id"), isError = true)
                 text(
                     """{"capture_id": "$id", "stopped": true, "frames_retained": ${c.store.size}}""",
                 )
             }
         }
 
-        server.addTool(
+        register(
+            server,
             name = "monitor_status",
             description = """
                 Health of the capture pipeline: frames seen, and frames DROPPED because the reader
@@ -300,7 +326,8 @@ internal class Tools(
             text(json.encodeToString(kotlinx.serialization.builtins.ListSerializer(CaptureStatus.serializer()), rows))
         }
 
-        server.addTool(
+        register(
+            server,
             name = "antenna_check",
             description = """
                 Measure which RF chains are actually receiving, on a radio that is monitoring.
@@ -355,7 +382,8 @@ internal class Tools(
     // ----------------------------------------------------------------- INSPECT
 
     private fun registerInspect(server: Server) {
-        server.addTool(
+        register(
+            server,
             name = "capture_summary",
             description = """
                 Compact statistical account of a capture: frame kinds, per-chain RSSI and SNR, retry
@@ -377,7 +405,7 @@ internal class Tools(
             ),
         ) { request ->
             val capture = captures.get(request.stringOr("capture_id", ""))
-                ?: return@addTool text(errorReply("no such capture"), isError = true)
+                ?: return@register text(errorReply("no such capture"), isError = true)
             val summary = capture.store.summarize(request.toQuery())
             text(
                 json.encodeToString(
@@ -387,7 +415,8 @@ internal class Tools(
             )
         }
 
-        server.addTool(
+        register(
+            server,
             name = "capture_query",
             description = """
                 Frames matching a filter, newest first, with their PHY metadata and decoded addresses.
@@ -412,7 +441,7 @@ internal class Tools(
             ),
         ) { request ->
             val capture = captures.get(request.stringOr("capture_id", ""))
-                ?: return@addTool text(errorReply("no such capture"), isError = true)
+                ?: return@register text(errorReply("no such capture"), isError = true)
             val rows = capture.store
                 // Clamped, not merely defaulted. "MCP is the control plane, not
                 // the packet data plane" is a rule of the architecture, and a
@@ -424,7 +453,8 @@ internal class Tools(
             text(json.encodeToString(kotlinx.serialization.builtins.ListSerializer(FrameRow.serializer()), rows))
         }
 
-        server.addTool(
+        register(
+            server,
             name = "frame_inspect",
             description = """
                 One frame in full: every PHY/MAC field the chip reported, decoded addresses, and the
@@ -444,10 +474,10 @@ internal class Tools(
             ),
         ) { request ->
             val capture = captures.get(request.stringOr("capture_id", ""))
-                ?: return@addTool text(errorReply("no such capture"), isError = true)
+                ?: return@register text(errorReply("no such capture"), isError = true)
             val index = request.longOr("index", -1)
             val stored = capture.store.frame(index)
-                ?: return@addTool text(
+                ?: return@register text(
                     """{"error": "frame $index is no longer in the ring (evicted). Its bytes are gone; re-capture or export sooner."}""",
                     isError = true,
                 )
@@ -502,7 +532,8 @@ internal class Tools(
             )
         }
 
-        server.addTool(
+        register(
+            server,
             name = "capture_export_pcap",
             description = """
                 Write a capture to a libpcap file with synthesized radiotap headers, openable in
@@ -521,7 +552,7 @@ internal class Tools(
             ),
         ) { request ->
             val capture = captures.get(request.stringOr("capture_id", ""))
-                ?: return@addTool text(errorReply("no such capture"), isError = true)
+                ?: return@register text(errorReply("no such capture"), isError = true)
             val frames = capture.store
                 .query(
                     request.toQuery().copy(newestFirst = false),
@@ -533,7 +564,7 @@ internal class Tools(
             val written = PcapWriter.write(
                 path = path,
                 frames = frames,
-                centerFrequencyMhz = RadioManager.centerFrequencyMhz(capture.channel),
+                centerFrequencyMhz = centerFrequencyMhz(capture.channel),
             )
             text(
                 reply(
@@ -549,7 +580,8 @@ internal class Tools(
     // ---------------------------------------------------------------- TRANSMIT
 
     private fun registerTransmit(server: Server) {
-        server.addTool(
+        register(
+            server,
             name = "tx_send",
             description = """
                 Transmit a frame a bounded number of times on an open, brought-up radio.
@@ -594,33 +626,55 @@ internal class Tools(
     // -------------------------------------------------------------- EXPERIMENT
 
     private fun registerExperiment(server: Server) {
-        server.addTool(
+        register(
+            server,
             name = "experiment_link_probe",
             description = """
-                Transmit a bounded burst on one radio and count what a SECOND, independent radio
-                hears. Sweeps TX modes if given several.
+                Transmit a bounded burst on one radio and count what OTHER, independent radios
+                hear. Sweeps up to four axes: TX mode, channel, frame size and frame spacing.
 
                 This is the only tool that can establish TX_VERIFIED. A transmitting radio
                 reporting success proves its TX path accepted the frames — not that a photon left
-                the antenna. The receiver here is a different physical adapter, which is what makes
-                the result evidence rather than self-report.
+                the antenna. Every receiver here is a different physical adapter, which is what
+                makes the result evidence rather than self-report.
 
-                Probe frames are broadcast, so they are never ACKed and never retried: what the
+                Probe frames are broadcast, so they are never ACKed and never retried: what a
                 receiver counts is what the transmitter actually aired, once each. That makes the
                 delivery ratio a clean one-way measurement, and NOT a throughput figure.
 
                 Give several modes to find the highest reliable one, e.g.
-                ["6M","MCS0/20","MCS3/20","MCS5/20","MCS7/20"]. The whole run is bounded by
-                max_duration_ms and stops cleanly when it expires.
+                ["6M","MCS0/20","MCS3/20","MCS5/20","MCS7/20"].
+
+                Give witness_sessions to add a SECOND and THIRD independent receiver hearing the
+                same burst simultaneously. That is a qualitatively different measurement, not just
+                a repeat: when two receivers agree frame-for-frame, the missing frames were never
+                aired and the fault is at the transmitter. Two separate runs cannot show that,
+                because the air changes between them.
+
+                The run is bounded three ways: max_duration_ms for the whole run, a hard per-point
+                deadline that catches a wedged adapter, and a ceiling on how many points a sweep
+                may expand to. It can also be stopped early — see experiment_cancel.
             """.trimIndent(),
             inputSchema = ToolSchema(
                 properties = buildJsonObject {
                     put("tx_session", schema("integer", "Transmitting radio's session id."))
                     put("rx_session", schema("integer", "Independent receiving radio. Must differ from tx_session."))
-                    put("channel", schema("integer", "Channel both radios use."))
+                    put(
+                        "witness_sessions",
+                        schema(
+                            "array",
+                            "Additional independent receivers (up to 2), each hearing the same " +
+                                "burst at the same time. Use this to rule the receiver out: two " +
+                                "witnesses agreeing exactly means the loss is transmit-side.",
+                        ),
+                    )
+                    put("channel", schema("integer", "Channel every radio uses, unless sweep_channels is given."))
                     put("width_mhz", schema("integer", "5, 10, 20, 40, 80 or 160. Default 20."))
-                    put("modes", schema("array", "TX mode specs, e.g. [\"6M\",\"MCS5/20\"]. Default [\"6M\"]."))
-                    put("frames_per_point", schema("integer", "Frames transmitted per mode. Default 200."))
+                    put("modes", schema("array", "TX mode specs to sweep, e.g. [\"6M\",\"MCS5/20\"]. Default [\"6M\"]."))
+                    put("sweep_channels", schema("array", "Channels to sweep, as text: [\"ch1\",\"ch6/40\"]. Overrides channel."))
+                    put("sweep_frame_bytes", schema("array", "Probe MPDU sizes to sweep, 40..1500."))
+                    put("sweep_interval_us", schema("array", "Frame spacings to sweep, 0..1000000."))
+                    put("frames_per_point", schema("integer", "Frames transmitted per point. Default 200."))
                     put("interval_us", schema("integer", "Spacing between frames. Default 1000."))
                     put("frame_bytes", schema("integer", "Probe MPDU size. Default 200."))
                     put("max_duration_ms", schema("integer", "Hard ceiling on the run. Default 60000."))
@@ -639,40 +693,164 @@ internal class Tools(
                         ),
                     )
                 },
-                required = listOf("tx_session", "rx_session", "channel"),
+                required = listOf("tx_session", "rx_session"),
             ),
         ) { request ->
-            val modes = request.stringList("modes").ifEmpty { listOf("6M") }
-            val bounds = ExperimentBounds(
-                maxDurationMs = request.longOr("max_duration_ms", 60_000),
-                framesPerPoint = request.intOr("frames_per_point", 200),
-                intervalUs = request.intOr("interval_us", 1_000),
-            )
-            val result = LinkProbe(radios, scope).run(
-                txSession = request.intOr("tx_session", -1),
-                rxSession = request.intOr("rx_session", -1),
-                channel = ChannelSpec(
+            try {
+                val modes = request.stringList("modes").ifEmpty { listOf("6M") }
+                val baseChannel = ChannelSpec(
                     channel = request.intOr("channel", -1),
                     width = ChannelWidth.ofMhz(request.intOr("width_mhz", 20)),
                     band = request.intOr("band", 0),
-                ),
-                modes = modes,
-                bounds = bounds,
-                frameBytes = request.intOr("frame_bytes", 200),
-                carrierSense = request.boolOr("carrier_sense", true),
-                safety = SafetyLevel.parse(request.stringOr("safety_level", "")),
-            )
-            text(
-                json.encodeToString(ExperimentResult.serializer(), result),
-                isError = result.verification == VerificationState.FAILED,
-            )
+                )
+                val sweepChannels = request.stringList("sweep_channels")
+                if (sweepChannels.isEmpty() && baseChannel.channel < 0) {
+                    throw ExperimentException("give either channel or sweep_channels")
+                }
+                val intervalUs = request.intOr("interval_us", 1_000)
+                val bounds = ExperimentBounds(
+                    maxDurationMs = request.longOr("max_duration_ms", 60_000),
+                    framesPerPoint = request.intOr("frames_per_point", 200),
+                    intervalUs = intervalUs,
+                )
+                val witnessRoles = listOf(RadioRole.MONITOR, RadioRole.MONITOR_2)
+                val extra = request.intList("witness_sessions")
+                if (extra.size > witnessRoles.size) {
+                    throw ExperimentException(
+                        "at most ${witnessRoles.size} extra witnesses (roles " +
+                            "${witnessRoles.joinToString()}); got ${extra.size}",
+                    )
+                }
+                val spec = ExperimentSpec(
+                    roles = buildMap {
+                        put(RadioRole.TX_PEER, request.intOr("tx_session", -1))
+                        put(RadioRole.RX_PEER, request.intOr("rx_session", -1))
+                        extra.forEachIndexed { i, s -> put(witnessRoles[i], s) }
+                    },
+                    sweep = Sweep(
+                        modes = modes,
+                        channels = sweepChannels,
+                        frameBytes = request.intList("sweep_frame_bytes"),
+                        intervalUs = request.intList("sweep_interval_us"),
+                    ),
+                    bounds = bounds,
+                    basePoint = SweepPoint(
+                        mode = modes.first(),
+                        channel = sweepChannels.firstOrNull()?.let { ChannelLabel(it) }
+                            ?: ChannelLabel.of(baseChannel),
+                        frameBytes = request.intOr("frame_bytes", 200),
+                        intervalUs = intervalUs,
+                    ),
+                    carrierSense = request.boolOr("carrier_sense", true),
+                    safety = SafetyLevel.parse(request.stringOr("safety_level", "")),
+                )
+                val points = spec.sweep.expand(spec.basePoint).size
+                val id = "exp-${System.currentTimeMillis().toString(36)}"
+                val probe = LinkProbe(radios, scope)
+                // Registered before it is awaited so that the dashboard can
+                // see it run, and experiment_cancel can reach it.
+                experiments.start(id, "link_probe", points) { sink -> probe.run(spec, sink) }
+                val result = experiments.await(id)
+                text(
+                    json.encodeToString(ExperimentResult.serializer(), result),
+                    isError = result.verification == VerificationState.FAILED,
+                )
+            } catch (e: CancellationException) {
+                text(
+                    errorReply("the experiment was cancelled", "cancelled" to true),
+                    isError = true,
+                )
+            } catch (e: Exception) {
+                text(errorReply(e.message), isError = true)
+            }
+        }
+
+        register(
+            server,
+            name = "experiment_status",
+            description = """
+                What experiments have run in this session, and what is running right now.
+
+                Shows each run's phase, how many sweep points are done, and which point is in
+                flight. A finished run's full result stays retrievable here until it is evicted.
+            """.trimIndent(),
+            inputSchema = ToolSchema(
+                properties = buildJsonObject {
+                    put("id", schema("string", "One run. Omit to list all."))
+                    put("include_result", schema("boolean", "Include the full result of a finished run. Default false."))
+                },
+            ),
+        ) { request ->
+            val id = request.stringOr("id", "")
+            if (id.isBlank()) {
+                text(
+                    json.encodeToString(
+                        ListSerializer(ExperimentRunner.Progress.serializer()),
+                        experiments.all(),
+                    ),
+                )
+            } else {
+                val progress = experiments.progress(id)
+                    ?: return@register text(errorReply("no experiment '$id'"), isError = true)
+                val result = experiments.result(id).takeIf { request.boolOr("include_result", false) }
+                text(
+                    json.encodeToString(
+                        JsonObject.serializer(),
+                        buildJsonObject {
+                            put("progress", json.encodeToJsonElement(ExperimentRunner.Progress.serializer(), progress))
+                            result?.let {
+                                put("result", json.encodeToJsonElement(ExperimentResult.serializer(), it))
+                            }
+                        },
+                    ),
+                )
+            }
+        }
+
+        register(
+            server,
+            name = "experiment_cancel",
+            description = """
+                Stop a running experiment.
+
+                Cancellation lands at the next suspension point — between transmitted frames or
+                during the settle wait — so a burst already handed to the bridge finishes airing.
+                The cleanup path still runs: monitors stop and carrier sense is restored, which is
+                the part that matters if the run had it disabled.
+
+                Note that a synchronous experiment_link_probe call occupies this session until it
+                returns; the reliable way to stop a run mid-flight is the dashboard's stop button,
+                which does not share that queue.
+            """.trimIndent(),
+            inputSchema = ToolSchema(
+                properties = buildJsonObject {
+                    put("id", schema("string", "The run id, from experiment_status."))
+                    put("reason", schema("string", "Recorded against the run."))
+                },
+                required = listOf("id"),
+            ),
+        ) { request ->
+            val id = request.stringOr("id", "")
+            val reason = request.stringOr("reason", "cancelled by the model")
+            if (experiments.cancel(id, reason)) {
+                text(reply("cancelled" to id, "reason" to reason))
+            } else {
+                text(
+                    errorReply(
+                        "no running experiment '$id' — it may have already finished",
+                        "known" to experiments.all().joinToString(", ") { "${it.id}:${it.phase}" },
+                    ),
+                    isError = true,
+                )
+            }
         }
     }
 
     // ------------------------------------------------------------ CHARACTERIZE
 
     private fun registerCharacterize(server: Server) {
-        server.addTool(
+        register(
+            server,
             name = "characterize_run",
             description = """
                 Walk an adapter up the verification ladder and file the evidence.
@@ -733,7 +911,8 @@ internal class Tools(
             text(json.encodeToString(Characterization.serializer(), result))
         }
 
-        server.addTool(
+        register(
+            server,
             name = "characterize_report",
             description = """
                 Read the stored characterization for one adapter, or list every adapter on
@@ -756,7 +935,7 @@ internal class Tools(
             when {
                 key.isNotBlank() -> {
                     val rec = evidence.load(key)
-                        ?: return@addTool text(
+                        ?: return@register text(
                             errorReply("no record with key $key"), isError = true,
                         )
                     text(json.encodeToString(Characterization.serializer(), rec))
@@ -764,7 +943,7 @@ internal class Tools(
                 session >= 0 -> {
                     val identity = AdapterIdentity.of(radios.describe(session))
                     val rec = evidence.load(identity)
-                        ?: return@addTool text(
+                        ?: return@register text(
                             errorReply(
                             "no stored characterization for ${identity.describe()}; " +
                                 "run characterize_run first",
@@ -801,7 +980,8 @@ internal class Tools(
     // --------------------------------------------------------------- SCRATCHPAD
 
     private fun registerScratchpad(server: Server) {
-        server.addTool(
+        register(
+            server,
             name = "scratchpad_capabilities",
             description = """
                 List the primitives a scratchpad program can be built from, and the shape of a
@@ -818,7 +998,8 @@ internal class Tools(
             text(json.encodeToString(ScratchpadDoc.serializer(), ScratchpadDoc.build()))
         }
 
-        server.addTool(
+        register(
+            server,
             name = "scratchpad_run",
             description = """
                 Validate a scratchpad program, grant it exactly the capabilities it declared, run
@@ -845,11 +1026,11 @@ internal class Tools(
             ),
         ) { request ->
             val programJson = request.params.arguments?.get("program")
-                ?: return@addTool text(errorReply("program is required"), isError = true)
+                ?: return@register text(errorReply("program is required"), isError = true)
             val program = try {
                 scratchpads.json.decodeFromJsonElement(ScratchpadProgram.serializer(), programJson)
             } catch (e: Exception) {
-                return@addTool text(
+                return@register text(
                     errorReply(
                         "could not parse the program: ${e.message}",
                         "hint" to "call scratchpad_capabilities for the exact shape",
@@ -876,7 +1057,7 @@ internal class Tools(
             )
             val refused = requested - allowed
             if (refused.isNotEmpty()) {
-                return@addTool text(
+                return@register text(
                     errorReply(
                         "the program declares capabilities the caller did not grant: " +
                             refused.sorted().joinToString(", "),
@@ -887,7 +1068,7 @@ internal class Tools(
             }
             val inspection = scratchpads.inspect(program)
             if (!inspection.valid) {
-                return@addTool text(
+                return@register text(
                     json.encodeToString(ScratchpadService.InspectionResult.serializer(), inspection),
                     isError = true,
                 )
@@ -895,14 +1076,15 @@ internal class Tools(
             val handle = try {
                 scratchpads.start(program, grant, withUi = request.boolOr("ui", true))
             } catch (e: Exception) {
-                return@addTool text(errorReply(e.message), isError = true)
+                return@register text(errorReply(e.message), isError = true)
             }
             text(
                 json.encodeToString(ScratchpadStarted.serializer(), ScratchpadStarted(handle, inspection)),
             )
         }
 
-        server.addTool(
+        register(
+            server,
             name = "scratchpad_inspect",
             description = """
                 Validate a program and report exactly what it would touch, WITHOUT running it.
@@ -917,16 +1099,17 @@ internal class Tools(
             ),
         ) { request ->
             val programJson = request.params.arguments?.get("program")
-                ?: return@addTool text(errorReply("program is required"), isError = true)
+                ?: return@register text(errorReply("program is required"), isError = true)
             val program = try {
                 scratchpads.json.decodeFromJsonElement(ScratchpadProgram.serializer(), programJson)
             } catch (e: Exception) {
-                return@addTool text(errorReply("could not parse the program: ${e.message}", "hint" to "call scratchpad_capabilities for the exact shape"), isError = true)
+                return@register text(errorReply("could not parse the program: ${e.message}", "hint" to "call scratchpad_capabilities for the exact shape"), isError = true)
             }
             text(json.encodeToString(ScratchpadService.InspectionResult.serializer(), scratchpads.inspect(program)))
         }
 
-        server.addTool(
+        register(
+            server,
             name = "scratchpad_result",
             description = """
                 Current values of a running or finished scratchpad: per series, the last value and
@@ -944,7 +1127,7 @@ internal class Tools(
         ) { request ->
             val id = request.stringOr("run_id", "")
             val run = scratchpads.get(id)
-                ?: return@addTool text(errorReply("no run $id"), isError = true)
+                ?: return@register text(errorReply("no run $id"), isError = true)
             val window = request.longOr("window_ms", 0).takeIf { it > 0 }
             text(
                 json.encodeToString(
@@ -966,7 +1149,8 @@ internal class Tools(
             )
         }
 
-        server.addTool(
+        register(
+            server,
             name = "scratchpad_stop",
             description = "Stop a running scratchpad and close its live view.",
             inputSchema = ToolSchema(
@@ -978,7 +1162,8 @@ internal class Tools(
             text(reply("run_id" to id, "stopped" to scratchpads.stop(id)))
         }
 
-        server.addTool(
+        register(
+            server,
             name = "scratchpad_promote",
             description = """
                 Save a scratchpad as a reusable tool.
@@ -999,12 +1184,13 @@ internal class Tools(
             val path = try {
                 scratchpads.promote(request.stringOr("run_id", ""), request.stringOr("save_as", "").ifBlank { null })
             } catch (e: Exception) {
-                return@addTool text(errorReply(e.message), isError = true)
+                return@register text(errorReply(e.message), isError = true)
             }
             text(reply("saved" to path.toString(), "note" to "re-run it with scratchpad_run; capabilities are granted again per run"))
         }
 
-        server.addTool(
+        register(
+            server,
             name = "scratchpad_list",
             description = "List running scratchpads and previously promoted ones.",
             inputSchema = ToolSchema(properties = buildJsonObject {}),
@@ -1028,6 +1214,64 @@ internal class Tools(
             )
         }
     }
+
+    /**
+     * Registers one tool, and puts its call on the activity feed.
+     *
+     * Wrapping at registration rather than instrumenting each handler is what
+     * makes the feed trustworthy: a tool added later is recorded whether or
+     * not its author remembered to, and there is no second place for the
+     * error path to diverge from the success path.
+     *
+     * A handler that throws is recorded as a failure and then rethrown — the
+     * feed must never be the reason an error is swallowed.
+     */
+    private fun register(
+        server: Server,
+        name: String,
+        description: String,
+        inputSchema: ToolSchema,
+        handler: suspend (CallToolRequest) -> CallToolResult,
+    ) {
+        server.addTool(name, description, inputSchema) { request ->
+            val started = System.nanoTime()
+            fun elapsed() = (System.nanoTime() - started) / 1_000_000
+            try {
+                val result = handler(request)
+                activity.record(
+                    tool = name,
+                    arguments = summarize(request),
+                    durationMs = elapsed(),
+                    ok = result.isError != true,
+                    error = (result.content.firstOrNull() as? TextContent)
+                        ?.text?.takeIf { result.isError == true },
+                )
+                result
+            } catch (e: Throwable) {
+                activity.record(
+                    tool = name,
+                    arguments = summarize(request),
+                    durationMs = elapsed(),
+                    ok = false,
+                    error = "${e::class.simpleName}: ${e.message}",
+                )
+                throw e
+            }
+        }
+    }
+
+    /**
+     * Arguments as one readable line.
+     *
+     * Values are clipped hard. A `tx_send` carries a hex frame and a
+     * scratchpad carries a whole program; a feed that held those verbatim
+     * would be unreadable and unbounded.
+     */
+    private fun summarize(request: CallToolRequest): String =
+        request.params.arguments.orEmpty().entries.joinToString(" ") { (k, v) ->
+            val text = (v as? JsonPrimitive)?.content ?: v.toString()
+            k + "=" + if (text.length > MAX_ARG_VALUE) text.take(MAX_ARG_VALUE) + "\u2026" else text
+        }
 
     // ------------------------------------------------------------------ helpers
 
