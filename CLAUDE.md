@@ -64,7 +64,10 @@ tools/smoke-test.py                            # end-to-end check against real a
 `tools/host/devourer-mcp` is the command an MCP host should be pointed at: it
 pins the JDK and starts the bridge first.
 
-Gradle 9.7.1 and Temurin JDK 21 live in `/home/snokvist/dev-tools/`.
+The build needs a JDK 21 toolchain. Gradle auto-detects the usual locations
+and honours `JAVA_HOME` / `DEVOURER_MCP_JDK`; for a JDK somewhere unusual, add
+`org.gradle.java.installations.paths=...` to `~/.gradle/gradle.properties`
+(yours, untracked) rather than to the repo's `gradle.properties`.
 Devourer needs `libusb-1.0-dev`, CMake ≥ 3.15 and a C++17 compiler.
 
 ## Verification states — never blur these

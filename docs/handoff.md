@@ -21,8 +21,11 @@ tools/smoke-test.py                           # end-to-end against real adapters
 `tools/host/devourer-mcp` is the command an MCP host should point at. It pins
 the JDK and starts the bridge itself.
 
-Toolchain lives in `/home/snokvist/dev-tools` (Temurin 21, Gradle 9.7.1).
-Nothing is installed system-wide except the udev rules.
+Needs a JDK 21 toolchain and the Gradle wrapper does the rest. Gradle
+auto-detects the usual locations and honours `JAVA_HOME` / `DEVOURER_MCP_JDK`;
+for a JDK elsewhere, add `org.gradle.java.installations.paths=...` to
+`~/.gradle/gradle.properties`. Nothing is installed system-wide except the udev
+rules.
 
 ### Two things that will bite
 

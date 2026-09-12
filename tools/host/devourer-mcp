@@ -10,13 +10,17 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 
 # Pin the toolchain, preferring the project's JDK but accepting any modern one.
-for candidate in "${DEVOURER_MCP_JDK:-}" /home/snokvist/dev-tools/jdk-21 "$JAVA_HOME"; do
+# Environment first, then a couple of conventional locations. Nothing here may
+# be specific to one machine: this script is what an MCP host is pointed at.
+for candidate in "${DEVOURER_MCP_JDK:-}" "${JAVA_HOME:-}" \
+                 "$HOME/dev-tools/jdk-21" /usr/lib/jvm/java-21-openjdk-amd64 \
+                 /usr/lib/jvm/default-java; do
   [ -n "${candidate:-}" ] && [ -x "$candidate/bin/java" ] || continue
   ver=$("$candidate/bin/java" -version 2>&1 | head -1 | grep -oE '"[0-9]+' | tr -d '"')
   if [ "${ver:-0}" -ge 21 ]; then export JAVA_HOME="$candidate"; break; fi
 done
 if [ -z "${JAVA_HOME:-}" ] || [ ! -x "$JAVA_HOME/bin/java" ]; then
-  echo "devourer-mcp: need a JDK 21+; set DEVOURER_MCP_JDK or JAVA_HOME" >&2
+  echo "devourer-mcp: need a JDK 21 or newer. Set DEVOURER_MCP_JDK or JAVA_HOME." >&2
   exit 1
 fi
 
