@@ -1,0 +1,115 @@
+{
+  "permissions": {
+    "defaultMode": "auto",
+    "allow": [
+      "Bash",
+      "Read",
+      "Write",
+      "Edit",
+      "Glob",
+      "Grep",
+      "WebFetch",
+      "WebSearch",
+
+      "Bash(cmake:*)",
+      "Bash(ctest:*)",
+      "Bash(make:*)",
+      "Bash(ninja:*)",
+      "Bash(gcc:*)",
+      "Bash(g++:*)",
+      "Bash(ar:*)",
+      "Bash(nm:*)",
+      "Bash(ldd:*)",
+      "Bash(objdump:*)",
+      "Bash(readelf:*)",
+      "Bash(pkg-config:*)",
+
+      "Bash(./gradlew:*)",
+      "Bash(gradle:*)",
+      "Bash(java:*)",
+      "Bash(javac:*)",
+      "Bash(jar:*)",
+      "Bash(kotlin:*)",
+      "Bash(kotlinc:*)",
+
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git branch:*)",
+      "Bash(git checkout:*)",
+      "Bash(git switch:*)",
+      "Bash(git restore:*)",
+      "Bash(git stash:*)",
+      "Bash(git rev-parse:*)",
+      "Bash(git ls-files:*)",
+      "Bash(git clone:*)",
+      "Bash(git fetch:*)",
+      "Bash(git remote:*)",
+
+      "Bash(lsusb:*)",
+      "Bash(usb-devices:*)",
+      "Bash(udevadm:*)",
+      "Bash(ip:*)",
+      "Bash(iw:*)",
+      "Bash(rfkill:*)",
+      "Bash(dmesg:*)",
+      "Bash(lspci:*)",
+      "Bash(lsmod:*)",
+      "Bash(tcpdump:*)",
+      "Bash(capinfos:*)",
+      "Bash(tshark:*)",
+
+      "Bash(sudo modprobe:*)",
+      "Bash(sudo rmmod:*)",
+      "Bash(sudo udevadm:*)",
+      "Bash(sudo ip:*)",
+      "Bash(sudo iw:*)",
+      "Bash(sudo rfkill:*)",
+      "Bash(sudo dmesg:*)",
+      "Bash(sudo apt-get install:*)",
+      "Bash(sudo apt install:*)",
+
+      "Bash(curl:*)",
+      "Bash(wget:*)",
+      "Bash(tar:*)",
+      "Bash(unzip:*)",
+      "Bash(sha256sum:*)",
+
+      "Bash(python3:*)",
+      "Bash(jq:*)",
+      "Bash(rsync:*)",
+
+      "mcp__local-gemma__ask_local_gemma"
+    ],
+    "deny": [
+      "Read(**/*.pem)",
+      "Read(**/id_rsa*)"
+    ]
+  },
+  "autoMode": {
+    "soft_deny": [
+      "$defaults",
+      "Bash(git push:*) — never push this repo or any vendored upstream without an explicit instruction from the user",
+      "Bash(gh pr create:*) and Bash(gh release:*) — outward-facing publication needs an explicit ask",
+      "Any write inside /home/snokvist/dev/devourer or the sibling devourer-* checkouts — those are the user's own upstream working trees; vendor/devourer is the only Devourer copy this project edits",
+      "Transmitting on channels or powers outside the configured regulatory profile, or any sustained TX not bounded by a duration or packet-count limit"
+    ],
+    "environment": [
+      "### Project: devourer-mcp",
+      "**What this is**: An AI-operable wireless instrument. A Kotlin control/application runtime exposes OpenIPC Devourer (vendored C++/C, libusb) over MCP so an LLM can discover radios, run monitor capture, inject frames, run bounded experiments, characterize adapters, and compose sandboxed micro-apps.",
+      "**Primary use of Claude Code**: software development on this repo — C++/C native bridge, Kotlin multi-module Gradle build, MCP server, and on-hardware radio validation.",
+      "**Repository**: /home/snokvist/dev/devourer-mcp, local git only, branch `main`, no remote configured. Private local work — project material is fine to commit here.",
+      "**Vendored upstream**: vendor/devourer is a pinned copy of github.com/OpenIPC/devourer (open source). It is read-mostly: edit only through the documented vendor-sync and patch workflow. The sibling checkouts under /home/snokvist/dev/devourer* are the user's own upstream working trees and are off limits for writes.",
+      "**Local Wi-Fi hardware under test (owned by the user, on the bench)**: two MediaTek MT7612U (0e8d:7612), one Realtek RTL8812AU (0bda:8812), plus the host's internal MT7922 (0e8d:0616) which carries the host's own connectivity and must NOT be claimed, unbound or retuned. Driving the USB adapters into monitor mode, detaching their kernel drivers (mt76x2u, rtw_8812au), resetting them over USB and transmitting bounded test frames on them is the routine, expected work of this project — not a destructive act.",
+      "**Radio safety boundary**: owned and authorized hardware only, bench RF work. Every TX path must be bounded (duration or packet count), cancellable, and capability-gated behind the normal/experimental/developer levels documented in CLAUDE.md. Do not build disruptive attack presets such as deauth floods, jammers-as-a-feature, or mass beacon spam.",
+      "**Routine editable content**: everything in this repo except vendor/ (sync-managed) and .git — source, build files, docs, tests, fixtures, capture stores, and the characterization evidence database under var/.",
+      "**Network posture**: outbound to Maven Central, services.gradle.org and github.com is expected for dependency and toolchain fetch. Test HTTP targets are LAN-only devices on 192.168.2.0/24 (FPV cameras and VTXs) — trusted local bench hardware, not production.",
+      "**Toolchains**: JDK and Gradle live under /home/snokvist/dev-tools (user-local, no system install needed). Installing build dependencies via apt is expected and pre-authorized.",
+      "**Secrets management**: none in this repo; there are no credentials to handle, and none should be added.",
+      "**Protected branches**: none configured. `main` is the working branch for this local-only repo and committing to it directly is fine here."
+    ]
+  }
+}

@@ -1,0 +1,19 @@
+# Build output
+build/
+.gradle/
+native/build/
+**/*.o
+**/*.so
+**/*.a
+
+# Runtime state: captures, evidence DB, scratchpads
+var/
+
+# Editor / OS
+.idea/
+*.swp
+.DS_Store
+
+# Local overrides
+.claude/settings.local.json
+local.properties
