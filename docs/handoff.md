@@ -120,7 +120,7 @@ adapter is brought up. Realtek has it from construction.
 ## Testing
 
 ```sh
-./gradlew test                                   # 147 Kotlin tests, no hardware
+./gradlew test                                   # 148 Kotlin tests, no hardware
 ctest --test-dir build/native-bridge             # 63 vendored selftests
 tools/smoke-test.py                              # needs adapters; never passes vacuously
 tools/stall-test.py                              # needs adapters; a sink that stops reading

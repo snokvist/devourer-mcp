@@ -28,9 +28,15 @@ Ambient traffic, 4 s per channel, measured on all three adapters:
 | MT7612U (bus5) | 6042 | 20 | 2778 |
 | MT7612U (bus2) | 7834 | 1 | 10239 |
 
-**Channel 6 is effectively empty here**, which makes it the right channel for
+**Channel 6 is the quietest here**, which makes it the right channel for
 injection measurements and a trap for anything that assumes silence means a
 broken receiver.
+
+It is not as empty as it was. Re-measured 2026-09-12, 5 s dwell per channel on
+an MT7612U: ch1 183 frames (36.8/s), **ch6 88 (17.8/s)**, ch11 190 (38.1/s) —
+mostly beacons. The "~1 frame per 4 s" figure above was true when it was taken
+and is not true now. Re-measure occupancy before drawing anything from it;
+that is what `q1-occupancy` does at the top of every run below.
 
 ## Carrier sense was hiding a 90% transmit loss
 
@@ -71,6 +77,65 @@ nothing gated it at all: `characterize_run` disabled carrier sense
 caller could set to decline. The retry is now opt-in by name and needs the
 level. The claim and the code agree as of the remediation pass.
 
+## Carrier-sense deferral does not track how busy the channel is
+
+The obvious explanation for the 90% transmit loss above is that the MAC is
+deferring to traffic. Three channels, two MT7612U witnesses hearing every
+burst simultaneously, 200 broadcast frames at 6M per point:
+
+| Channel | ambient | delivered | RX_PEER | MONITOR | burst took | vs 400 ms asked |
+|---|---|---|---|---|---|---|
+| ch1 | 36.8/s | **0.0%** | 0 | 0 | 398 ms | on time |
+| ch6 | 17.8/s | **3.0%** | 6 | 6 | 398 ms | on time |
+| ch11 | 38.1/s | **43.5%** | 87 | 90 | 11 342 ms | 28x over |
+| ch6, carrier sense OFF | 17.8/s | **89.0%** | 178 | 195 | 398 ms | on time |
+
+`tx_stats` reported `submitted=200, failed=0` on every one of those lines.
+
+Two things fall out. The busiest channel delivered best and the middle one
+delivered nothing, so the deferral does not order by decodable ambient traffic
+— which is expected if EDCCA is responding to *energy*, a quantity nothing
+here measures. And it fails in two distinct shapes: on ch1 and ch6 the
+transmit loop finished exactly on schedule with the frames consumed and not
+aired, while on ch11 the same loop blocked for eleven seconds and 43.5% got
+out. A stalled queue and a silent discard report identically to the host.
+
+It also moves. An identical sweep twelve minutes earlier gave ch1 0%, ch6 2.5%
+and **no measurement at all** for ch11 — the transmit call did not return
+inside its 12.1 s per-point deadline, and the run recorded that point as
+absent rather than as zero.
+
+Settling this needs a noise-floor reading (`RxSense` / NHM), which the bridge
+cannot currently take. Until then "the channel was busy" stays an inference.
+
+## The MT7612U's pacing floor is airtime plus ~112 us a frame
+
+Sixteen points, MT7612U to MT7612U on ch6 at MCS5/20, with an RTL8812AU as a
+third witness. Delivery was 99.5-100% at every point — the air was never the
+constraint. What changes with frame size is the shortest spacing the
+transmitter can actually hold:
+
+| Frame | shortest achieved spacing | max frames/s | payload rate |
+|---|---|---|---|
+| 64 B | <100 us (floor not found) | >10 000 | >5.1 Mbit/s |
+| 300 B | 160 us | 6 250 | 15.0 Mbit/s |
+| 800 B | 250 us | 4 000 | 25.6 Mbit/s |
+| 1500 B | 354 us | 2 825 | 33.9 Mbit/s |
+
+Those three measured floors are linear in frame size:
+**`per frame ~= 112 us + 0.159 us x bytes`**. The slope is 50.3 Mbit/s against
+MCS5/20's 52.0 — the size-dependent part is airtime, near enough exactly. The
+~112 us that is left is per-frame overhead: preamble, IFS, and getting the
+frame across USB.
+
+Asking for less does not fail loudly. At 1500 B and 100 us requested the burst
+simply takes 3.5x as long, and the cadence quietly becomes something else.
+
+**Do not use `tx_late_frames`.** Across two runs of the identical sweep the
+same point reported 166 late frames and then 5, while `tx_elapsed_ms` for that
+point was 398 ms both times. The late counter measures scheduler jitter around
+a burst that finished on schedule; elapsed time reproduced to within 0.2%.
+
 ## Backend differences confirmed by measurement
 
 | | RTL8812AU | MT7612U |
@@ -91,6 +156,16 @@ and is path C/D SNR only on an 8814AU. Those bytes are routinely non-zero, and
 the first summary reported them as "chainC SNR 19.6, chainD SNR 6.0" on a
 two-chain radio. Fixed by stamping the real `rx_chains` into every frame record
 and bounding every chain view by it.
+
+**A frame collector that could not be cancelled.** Joining a cancelled frame
+collector hung an experiment for ten minutes with the radio still claimed. A
+thread blocked in `SocketChannel.read` is not interruptible by coroutine
+cancellation, and `callbackFlow`'s `awaitClose` — the only place teardown can
+be registered — sat after a `while(true)` loop that never reached it. On a
+channel with no traffic the read never returns, so nothing was ever
+registered and nothing could stop it. The read loop is now a child coroutine,
+so the block reaches `awaitClose` immediately and cancellation closes the
+socket. Found by watching the dashboard, not by a test.
 
 **An MT7612U wedged by our own backpressure.** The frame writer copied the whole
 pending buffer while holding the mutex the RX callback needs, so a slow consumer

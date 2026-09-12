@@ -11,7 +11,7 @@ what a cold session reads to resume.
 
 ## Where this stands
 
-**All 25 items are done.** 147 Kotlin tests, 63 native selftests,
+**All 25 items are done.** 148 Kotlin tests, 63 native selftests,
 `scripts/check-docs.sh` green, and the four bridge fixes that could only be
 proven with a radio are now proven on all three adapters.
 
@@ -80,7 +80,9 @@ adapters on 2026-09-12; the scripts that did it are checked in and repeatable.
 
 ### Found while fixing these
 
-Three defects the new tests caught, none of which were in the reviews:
+Six defects found after the reviews, none of which were in them. The last
+three were found by *using* the instrument — two by the dashboard, one by
+asking it a question it had not been asked before:
 
 - **A collector could outlive its run.** `LinkProbe` cancelled its frame
   collectors without joining them, so the previous run's sink was still
@@ -93,6 +95,30 @@ Three defects the new tests caught, none of which were in the reviews:
 - **The dashboard showed a monitoring radio as idle.** The radio book was
   updated only on open and describe, so the three facts anyone looks for —
   monitoring, channel, carrier sense — were the three that were stale.
+- **A frame collector could not be cancelled at all**, which hung an
+  experiment for ten minutes with the radio still claimed. A thread blocked
+  in `SocketChannel.read` is not interruptible by coroutine cancellation, and
+  `callbackFlow`'s `awaitClose` sat after a `while(true)` loop that never
+  reached it — so on a quiet channel nothing was registered and nothing could
+  stop it. The read loop is a child coroutine now. This was a regression
+  introduced by the `cancelAndJoin` fix above, and the dashboard's experiment
+  panel is what showed it: a run sitting at 1/1 points, RUNNING, for ten
+  minutes.
+- **A tool error read as `{` in the activity feed.** Error bodies are
+  pretty-printed JSON, so their first line is a brace. The feed now pulls the
+  `error` field out. Until it did, a real failure — `monitor.start` refusing
+  because the session was already monitoring — was invisible while a script
+  swallowed it.
+- **An experiment failed because a capture had been left running** on one of
+  its witnesses. The bridge refuses `monitor.start` on a session already
+  monitoring; the probe only stopped monitors between points, not before the
+  first. A failure that depends on what happened before the run is the kind
+  that only appears when it matters.
+- **A timed-out point reported `delivery_ratio: 0.0`.** That reads as "heard
+  nothing" and would have put a measured-looking zero on a chart where there
+  was no measurement. `frames_received` and `delivery_ratio` are nullable
+  now, and serialization drops them — a point that was never measured carries
+  neither field. Found by charting a real sweep and looking at the result.
 
 ---
 

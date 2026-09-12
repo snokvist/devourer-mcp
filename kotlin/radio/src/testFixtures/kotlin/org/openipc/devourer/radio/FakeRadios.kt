@@ -224,6 +224,13 @@ public class FakeRadios(radios: List<OpenRadio> = emptyList()) : Radios {
     override suspend fun startMonitor(session: Int, channel: ChannelSpec): JsonObject {
         record("startMonitor", "$session,$channel")
         requireChannelSupported(radio(session), channel)
+        // The bridge refuses this rather than retuning, so the fake must too:
+        // an experiment that assumed it could just start monitoring passed
+        // here and failed on the bench whenever a capture had been left
+        // running on one of its witnesses.
+        if (counters(session).monitoring) {
+            throw IllegalStateException("monitor_failed: already monitoring")
+        }
         counters(session).monitoring = true
         // Starting a monitor tunes the radio, and the bridge reports the
         // channel back on the next describe. A fake that left it unset would
