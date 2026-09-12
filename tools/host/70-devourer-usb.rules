@@ -1,0 +1,44 @@
+# devourer-mcp: userspace (libusb) access to Wi-Fi adapters driven by Devourer.
+#
+# Devourer talks to these adapters over libusb and detaches the in-kernel
+# driver at open time; both need write access to the usbfs node. Without this
+# the whole stack only runs as root, which makes unattended operation and the
+# unprivileged Kotlin runtime impossible.
+#
+# TAG+="uaccess" hands the device to the user logged in at the seat, which is
+# the desktop-session equivalent of "the person at the keyboard owns it".
+# GROUP/MODE is the fallback for headless and ssh sessions.
+#
+# Install: sudo cp tools/host/70-devourer-usb.rules /etc/udev/rules.d/
+#          sudo udevadm control --reload-rules && sudo udevadm trigger
+#
+# This grants access ONLY to the USB Wi-Fi adapters Devourer supports. It does
+# not blacklist any kernel driver: the adapters keep working normally as
+# ordinary Wi-Fi interfaces until Devourer claims one.
+
+ACTION!="add|change", GOTO="devourer_end"
+SUBSYSTEM!="usb", GOTO="devourer_end"
+ENV{DEVTYPE}!="usb_device", GOTO="devourer_end"
+
+# --- Realtek (Jaguar1 / Jaguar2 / Jaguar3 / 8733B / Kestrel) ---------------
+ATTR{idVendor}=="0bda", ATTR{idProduct}=="8812", TAG+="uaccess", GROUP="plugdev", MODE="0660", ENV{DEVOURER_SUPPORTED}="1"
+ATTR{idVendor}=="0bda", ATTR{idProduct}=="881a", TAG+="uaccess", GROUP="plugdev", MODE="0660", ENV{DEVOURER_SUPPORTED}="1"
+ATTR{idVendor}=="0bda", ATTR{idProduct}=="881b", TAG+="uaccess", GROUP="plugdev", MODE="0660", ENV{DEVOURER_SUPPORTED}="1"
+ATTR{idVendor}=="0bda", ATTR{idProduct}=="881c", TAG+="uaccess", GROUP="plugdev", MODE="0660", ENV{DEVOURER_SUPPORTED}="1"
+ATTR{idVendor}=="0bda", ATTR{idProduct}=="8813", TAG+="uaccess", GROUP="plugdev", MODE="0660", ENV{DEVOURER_SUPPORTED}="1"
+ATTR{idVendor}=="0bda", ATTR{idProduct}=="b812", TAG+="uaccess", GROUP="plugdev", MODE="0660", ENV{DEVOURER_SUPPORTED}="1"
+ATTR{idVendor}=="0bda", ATTR{idProduct}=="c812", TAG+="uaccess", GROUP="plugdev", MODE="0660", ENV{DEVOURER_SUPPORTED}="1"
+ATTR{idVendor}=="0bda", ATTR{idProduct}=="c81c", TAG+="uaccess", GROUP="plugdev", MODE="0660", ENV{DEVOURER_SUPPORTED}="1"
+ATTR{idVendor}=="0bda", ATTR{idProduct}=="c82c", TAG+="uaccess", GROUP="plugdev", MODE="0660", ENV{DEVOURER_SUPPORTED}="1"
+ATTR{idVendor}=="0bda", ATTR{idProduct}=="c82e", TAG+="uaccess", GROUP="plugdev", MODE="0660", ENV{DEVOURER_SUPPORTED}="1"
+ATTR{idVendor}=="0bda", ATTR{idProduct}=="c852", TAG+="uaccess", GROUP="plugdev", MODE="0660", ENV{DEVOURER_SUPPORTED}="1"
+ATTR{idVendor}=="0bda", ATTR{idProduct}=="885c", TAG+="uaccess", GROUP="plugdev", MODE="0660", ENV{DEVOURER_SUPPORTED}="1"
+ATTR{idVendor}=="0bda", ATTR{idProduct}=="8731", TAG+="uaccess", GROUP="plugdev", MODE="0660", ENV{DEVOURER_SUPPORTED}="1"
+ATTR{idVendor}=="0bda", ATTR{idProduct}=="8733", TAG+="uaccess", GROUP="plugdev", MODE="0660", ENV{DEVOURER_SUPPORTED}="1"
+
+# --- MediaTek MT7612U ------------------------------------------------------
+ATTR{idVendor}=="0e8d", ATTR{idProduct}=="7612", TAG+="uaccess", GROUP="plugdev", MODE="0660", ENV{DEVOURER_SUPPORTED}="1"
+ATTR{idVendor}=="0e8d", ATTR{idProduct}=="7662", TAG+="uaccess", GROUP="plugdev", MODE="0660", ENV{DEVOURER_SUPPORTED}="1"
+ATTR{idVendor}=="0e8d", ATTR{idProduct}=="7650", TAG+="uaccess", GROUP="plugdev", MODE="0660", ENV{DEVOURER_SUPPORTED}="1"
+
+LABEL="devourer_end"
