@@ -99,11 +99,7 @@ public class Interpreter(
         }
         // Expressions may only read series that exist. A typo would otherwise
         // read as NaN forever and look like a dead sensor.
-        val known = (program.sources.map { it.id } +
-            program.sources.filterIsInstance<HttpPollSource>().flatMap { s ->
-                s.extract.keys.map { "${s.id}.$it" }
-            } +
-            program.computed.map { it.id }).toSet()
+        val known = program.seriesIds()
         program.computed.forEach { c ->
             val missing = Expr.references(c.expr) - known
             if (missing.isNotEmpty()) {
@@ -160,17 +156,23 @@ public class Interpreter(
             is CaptureMetricSource -> {
                 grant.require(Capability.CAPTURE_READ, "read captures")
                 grant.requireCapture(source.captureId)
-                host.captureMetric(
+                val v = host.captureMetric(
                     source.captureId, source.metric, source.windowMs,
-                    source.kind, source.transmitter,
-                )?.let { state.record(source.id, it) }
+                    source.frameKind, source.transmitter,
+                )
+                if (v == null) state.noteEmpty(source.id, "capture '${source.captureId}' " +
+                    "returned no value for metric '${source.metric}' over the last " +
+                    "${source.windowMs}ms")
+                else state.record(source.id, v)
             }
 
             is RadioMetricSource -> {
                 grant.require(Capability.RADIO_DESCRIBE, "read radio state")
                 grant.requireRadio(source.session)
-                host.radioMetric(source.session, source.metric)
-                    ?.let { state.record(source.id, it) }
+                val v = host.radioMetric(source.session, source.metric)
+                if (v == null) state.noteEmpty(source.id, "radio session ${source.session} " +
+                    "returned no value for metric '${source.metric}'")
+                else state.record(source.id, v)
             }
 
             is HttpPollSource -> {
@@ -255,6 +257,21 @@ public class RunState(private val maxSamples: Int = 10_000) {
     public fun record(id: String, value: Double) {
         series.computeIfAbsent(id) { Series(it, maxSamples) }.add(value)
     }
+
+    /**
+     * Records that a source produced nothing.
+     *
+     * Logged once per source rather than every sample: a metric that is empty
+     * at start-up is normal and becomes noise at two per second, but a source
+     * that is silently empty for a whole run is a bug the operator must see.
+     * Silence was in fact how a real one hid — a scratchpad reported no capture
+     * series at all and logged nothing to say why.
+     */
+    public fun noteEmpty(sourceId: String, why: String) {
+        if (emptyNoted.add(sourceId)) log("$sourceId produced no value: $why")
+    }
+
+    private val emptyNoted = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
     public fun log(message: String) {
         synchronized(logLock) {

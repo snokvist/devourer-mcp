@@ -24,7 +24,15 @@ internal class McpScratchpadHost(
         kind: String?,
         transmitter: String?,
     ): Double? {
-        val capture = captures.get(captureId) ?: return null
+        // "No such capture" and "this window was empty" are different faults
+        // with different fixes, and returning null for both makes a typo in a
+        // capture id look identical to a quiet channel. The first throws, so it
+        // surfaces in the run log with its cause.
+        val capture = captures.get(captureId)
+            ?: throw IllegalStateException(
+                "no capture '$captureId' is open (running: " +
+                    captures.all().joinToString(", ") { it.id }.ifEmpty { "none" } + ")",
+            )
         // A trailing window, not the whole run: "mean RSSI" over a 20-minute
         // capture stops responding to the air long before the run ends, and a
         // live view of a dead average is worse than no view.
@@ -35,7 +43,19 @@ internal class McpScratchpadHost(
             sinceHostNanos = since * 1_000_000L,
         )
         val s = capture.store.summarize(query)
-        if (s.frames == 0) return null
+        if (s.frames == 0) {
+            // Distinguish "nothing arrived recently" from "this capture has
+            // never seen anything": the second means the radio or channel is
+            // wrong, not the window, and it should not be reported as a quiet
+            // moment.
+            if (capture.store.size == 0) {
+                throw IllegalStateException(
+                    "capture '$captureId' has received no frames at all — check the radio " +
+                        "is monitoring and that the channel carries traffic",
+                )
+            }
+            return null
+        }
 
         return when (metric) {
             "frames" -> s.frames.toDouble()

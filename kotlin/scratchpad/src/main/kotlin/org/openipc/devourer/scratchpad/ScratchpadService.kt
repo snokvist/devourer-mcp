@@ -11,9 +11,6 @@ import kotlinx.coroutines.launch
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.modules.SerializersModule
-import kotlinx.serialization.modules.polymorphic
-import kotlinx.serialization.modules.subclass
 
 /**
  * Owns scratchpad runs: validation, grants, execution, the live view, and
@@ -32,20 +29,8 @@ public class ScratchpadService(
     /** 0 lets the OS pick a free loopback port per run. */
     private val uiPort: Int = 0,
 ) {
-    public val json: Json = Json {
-        prettyPrint = true
-        encodeDefaults = false
-        explicitNulls = false
-        ignoreUnknownKeys = true
-        classDiscriminator = "kind"
-        serializersModule = SerializersModule {
-            polymorphic(Source::class) {
-                subclass(CaptureMetricSource::class)
-                subclass(HttpPollSource::class)
-                subclass(RadioMetricSource::class)
-            }
-        }
-    }
+    /** The single scratchpad JSON configuration; see [ScratchpadJson]. */
+    public val json: Json get() = ScratchpadJson.format
 
     private val runs = ConcurrentHashMap<String, Run>()
     private val counter = AtomicInteger(0)

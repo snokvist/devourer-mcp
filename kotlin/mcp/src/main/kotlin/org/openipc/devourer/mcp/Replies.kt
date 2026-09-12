@@ -198,7 +198,8 @@ internal data class ScratchpadDoc(
                     kind = "capture.metric",
                     description = "a scalar from a live capture's trailing window",
                     fields = listOf(
-                        "id", "capture_id", "metric", "every_ms", "window_ms", "kind", "transmitter",
+                        "id", "capture_id", "metric", "every_ms", "window_ms",
+                        "frame_kind (optional 802.11 filter, e.g. data/qos-data)", "transmitter",
                     ),
                     values = org.openipc.devourer.scratchpad.CaptureMetricSource.METRICS,
                 ),

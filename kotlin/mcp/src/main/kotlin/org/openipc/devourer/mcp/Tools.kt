@@ -180,7 +180,7 @@ internal class Tools(
             val session = request.intOr("session", -1)
             captures.all().filter { it.session == session }.forEach { captures.stop(it.id) }
             radios.close(session)
-            text("""{"closed": $session}""")
+            text(reply("closed" to session))
         }
     }
 
@@ -247,10 +247,10 @@ internal class Tools(
         ) { request ->
             val id = request.stringOr("capture_id", "")
             if (request.boolOr("discard", false)) {
-                text("""{"capture_id": "$id", "stopped": true, "discarded": ${captures.discard(id)}}""")
+                text(reply("capture_id" to id, "stopped" to true, "discarded" to captures.discard(id)))
             } else {
                 val c = captures.stop(id)
-                    ?: return@addTool text("""{"error": "no capture $id"}""", isError = true)
+                    ?: return@addTool text(errorReply("no capture $id"), isError = true)
                 text(
                     """{"capture_id": "$id", "stopped": true, "frames_retained": ${c.store.size}}""",
                 )
@@ -365,7 +365,7 @@ internal class Tools(
             ),
         ) { request ->
             val capture = captures.get(request.stringOr("capture_id", ""))
-                ?: return@addTool text("""{"error": "no such capture"}""", isError = true)
+                ?: return@addTool text(errorReply("no such capture"), isError = true)
             val summary = capture.store.summarize(request.toQuery())
             text(
                 json.encodeToString(
@@ -400,7 +400,7 @@ internal class Tools(
             ),
         ) { request ->
             val capture = captures.get(request.stringOr("capture_id", ""))
-                ?: return@addTool text("""{"error": "no such capture"}""", isError = true)
+                ?: return@addTool text(errorReply("no such capture"), isError = true)
             val rows = capture.store
                 .query(request.toQuery(), limit = request.intOr("limit", 20))
                 .map { it.toRow() }
@@ -427,7 +427,7 @@ internal class Tools(
             ),
         ) { request ->
             val capture = captures.get(request.stringOr("capture_id", ""))
-                ?: return@addTool text("""{"error": "no such capture"}""", isError = true)
+                ?: return@addTool text(errorReply("no such capture"), isError = true)
             val index = request.longOr("index", -1)
             val stored = capture.store.frame(index)
                 ?: return@addTool text(
@@ -504,7 +504,7 @@ internal class Tools(
             ),
         ) { request ->
             val capture = captures.get(request.stringOr("capture_id", ""))
-                ?: return@addTool text("""{"error": "no such capture"}""", isError = true)
+                ?: return@addTool text(errorReply("no such capture"), isError = true)
             val frames = capture.store
                 .query(request.toQuery().copy(newestFirst = false), limit = request.intOr("limit", 100_000))
                 .map { it.record }
@@ -798,17 +798,14 @@ internal class Tools(
             ),
         ) { request ->
             val programJson = request.params.arguments?.get("program")
-                ?: return@addTool text("""{"error":"program is required"}""", isError = true)
+                ?: return@addTool text(errorReply("program is required"), isError = true)
             val program = try {
                 scratchpads.json.decodeFromJsonElement(ScratchpadProgram.serializer(), programJson)
             } catch (e: Exception) {
                 return@addTool text(
-                    json.encodeToString(
-                        JsonObject.serializer(),
-                        buildJsonObject {
-                            put("error", JsonPrimitive("could not parse the program: ${'$'}{e.message}"))
-                            put("hint", JsonPrimitive("call scratchpad_capabilities for the exact shape"))
-                        },
+                    errorReply(
+                        "could not parse the program: ${e.message}",
+                        "hint" to "call scratchpad_capabilities for the exact shape",
                     ),
                     isError = true,
                 )
@@ -830,7 +827,7 @@ internal class Tools(
             val handle = try {
                 scratchpads.start(program, grant, withUi = request.boolOr("ui", true))
             } catch (e: Exception) {
-                return@addTool text("""{"error":${'"'}${'$'}{e.message}${'"'}}""", isError = true)
+                return@addTool text(errorReply(e.message), isError = true)
             }
             text(
                 json.encodeToString(ScratchpadStarted.serializer(), ScratchpadStarted(handle, inspection)),
@@ -852,11 +849,11 @@ internal class Tools(
             ),
         ) { request ->
             val programJson = request.params.arguments?.get("program")
-                ?: return@addTool text("""{"error":"program is required"}""", isError = true)
+                ?: return@addTool text(errorReply("program is required"), isError = true)
             val program = try {
                 scratchpads.json.decodeFromJsonElement(ScratchpadProgram.serializer(), programJson)
             } catch (e: Exception) {
-                return@addTool text("""{"error":"could not parse: ${'$'}{e.message}"}""", isError = true)
+                return@addTool text(errorReply("could not parse the program: ${e.message}", "hint" to "call scratchpad_capabilities for the exact shape"), isError = true)
             }
             text(json.encodeToString(ScratchpadService.InspectionResult.serializer(), scratchpads.inspect(program)))
         }
@@ -879,7 +876,7 @@ internal class Tools(
         ) { request ->
             val id = request.stringOr("run_id", "")
             val run = scratchpads.get(id)
-                ?: return@addTool text("""{"error":"no run ${'$'}id"}""", isError = true)
+                ?: return@addTool text(errorReply("no run $id"), isError = true)
             val window = request.longOr("window_ms", 0).takeIf { it > 0 }
             text(
                 json.encodeToString(
@@ -910,7 +907,7 @@ internal class Tools(
             ),
         ) { request ->
             val id = request.stringOr("run_id", "")
-            text("""{"run_id":"${'$'}id","stopped":${'$'}{scratchpads.stop(id)}}""")
+            text(reply("run_id" to id, "stopped" to scratchpads.stop(id)))
         }
 
         server.addTool(
@@ -934,9 +931,9 @@ internal class Tools(
             val path = try {
                 scratchpads.promote(request.stringOr("run_id", ""), request.stringOr("save_as", "").ifBlank { null })
             } catch (e: Exception) {
-                return@addTool text("""{"error":"${'$'}{e.message}"}""", isError = true)
+                return@addTool text(errorReply(e.message), isError = true)
             }
-            text("""{"saved":"${'$'}path","note":"re-run it with scratchpad_run, granting capabilities again"}""")
+            text(reply("saved" to path.toString(), "note" to "re-run it with scratchpad_run; capabilities are granted again per run"))
         }
 
         server.addTool(
@@ -968,6 +965,35 @@ internal class Tools(
 
     private fun text(body: String, isError: Boolean = false) =
         CallToolResult(content = listOf(TextContent(body)), isError = isError.takeIf { it })
+
+    /**
+     * A JSON reply built through the serializer, never by string concatenation.
+     *
+     * Exception messages routinely contain quotes, braces and newlines — a
+     * refused HTTP host quotes the host, a parse failure quotes the offending
+     * token — and splicing one into a hand-written JSON literal produces output
+     * the caller cannot parse, at exactly the moment it most needs to read the
+     * error.
+     */
+    private fun reply(vararg fields: Pair<String, Any?>): String =
+        json.encodeToString(
+            JsonObject.serializer(),
+            buildJsonObject {
+                fields.forEach { (k, v) ->
+                    when (v) {
+                        null -> {}
+                        is Boolean -> put(k, JsonPrimitive(v))
+                        is Int -> put(k, JsonPrimitive(v))
+                        is Long -> put(k, JsonPrimitive(v))
+                        is Double -> put(k, JsonPrimitive(v))
+                        else -> put(k, JsonPrimitive(v.toString()))
+                    }
+                }
+            },
+        )
+
+    private fun errorReply(message: String?, vararg extra: Pair<String, Any?>): String =
+        reply("error" to (message ?: "unknown error"), *extra)
 
     private fun schema(type: String, description: String): JsonObject = buildJsonObject {
         put("type", JsonPrimitive(type))

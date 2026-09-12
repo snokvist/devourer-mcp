@@ -46,17 +46,39 @@ public data class ScratchpadProgram(
         }
         if (sources.isEmpty()) problems += "a program with no sources would measure nothing"
 
-        val ids = mutableSetOf<String>()
+        val declared = mutableSetOf<String>()
         (sources.map { it.id } + computed.map { it.id }).forEach {
-            if (!ids.add(it)) problems += "duplicate series id '$it'"
+            if (!declared.add(it)) problems += "duplicate series id '$it'"
         }
         sources.forEach { problems += it.validate() }
         computed.forEach { c ->
             if (c.expr.isBlank()) problems += "computed '${c.id}' has no expression"
         }
-        ui?.let { problems += it.validate(ids) }
+        ui?.let { problems += it.validate(seriesIds()) }
         if (durationMs !in 100..3_600_000) problems += "duration_ms must be 100..3600000"
         return problems
+    }
+
+    /**
+     * Every series name this program will produce.
+     *
+     * Not simply the source ids: an [HttpPollSource] named `cam` yields
+     * `cam.latency_ms`, `cam.status` and one series per extracted field. This is
+     * the single definition of that expansion — it was briefly computed
+     * separately in the validator and the interpreter, and the two drifted, so a
+     * widget charting `cam.latency_ms` was rejected as referencing an unknown
+     * series while the interpreter was happily producing it.
+     */
+    public fun seriesIds(): Set<String> = buildSet {
+        sources.forEach { source ->
+            add(source.id)
+            if (source is HttpPollSource) {
+                add("${source.id}.latency_ms")
+                add("${source.id}.status")
+                source.extract.keys.forEach { add("${source.id}.$it") }
+            }
+        }
+        computed.forEach { add(it.id) }
     }
 
     /** Capabilities this program's steps actually need, derived from its content. */
@@ -101,8 +123,17 @@ public data class CaptureMetricSource(
     val metric: String,
     @SerialName("every_ms") override val everyMs: Long = 500,
     @SerialName("window_ms") val windowMs: Long = 2_000,
-    /** Optional frame-kind filter, e.g. "data/qos-data". */
-    val kind: String? = null,
+    /**
+     * Optional 802.11 frame-kind filter, e.g. "data/qos-data".
+     *
+     * Named `frame_kind` and not `kind` because `kind` is the polymorphic
+     * discriminator for [Source] itself. When both were called `kind`,
+     * deserializing `{"kind":"capture.metric", ...}` assigned the discriminator
+     * value into this field, every frame was then filtered against a frame kind
+     * named "capture.metric", and the series came back permanently empty with
+     * nothing to indicate why.
+     */
+    @SerialName("frame_kind") val frameKind: String? = null,
     /** Optional transmitter MAC filter. */
     val transmitter: String? = null,
 ) : Source {
