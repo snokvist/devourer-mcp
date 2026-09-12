@@ -144,6 +144,39 @@ point as absent rather than as zero. The 10-second ch11 burst is the
 reproducible part: three runs, all ~10 s for a burst asked to take 400 ms, and
 it is the channel that delivers.
 
+### Transmit, not receive — the roles swapped
+
+The cleanest arm of the whole investigation, and the one that removes every
+remaining doubt about which end is at fault. Each channel is run twice, minutes
+apart at most: once with the Realtek transmitting, once with an MT7612U
+transmitting, and the same three adapters filling the other roles.
+
+| Channel | Transmitter | Delivered | witness A | witness B | Burst took |
+|---|---|---|---|---|---|
+| ch1 | RTL8812AU | **0.0%** | 0 | 0 | 398 ms |
+| ch1 | MT7612U | **96.0%** | 192 | 192 | 398 ms |
+| ch6 | RTL8812AU | **0.0%** | 0 | 0 | 398 ms |
+| ch6 | MT7612U | **100.0%** | 200 | 200 | 406 ms |
+| ch11 | RTL8812AU | **0.0%** | 0 | 0 | 11 227 ms |
+| ch11 | MT7612U | **97.5%** | 195 | 198 | 398 ms |
+
+In the MT7612U rounds the **Realtek is witness B**, and it received 192, 200
+and 198 of 200 — 98.3% across the three channels it had just failed to
+transmit on. Together with the pacing sweep, where the same adapter took in
+3194 of 3200 frames as a third witness (99.8%), that is a receiver in good
+health.
+
+So on each channel, at the same minute: the air carries a burst (the MT7612U
+gets 96-100% through it), the witnesses hear it, and the Realtek hears it.
+Only the Realtek's own transmission is missing. **The fault is transmit-side
+and it is this adapter's**, and disabling its carrier sense recovers it to
+89-90.5%.
+
+Worth keeping in mind when reading the gain result above: EDCCA is a RECEIVE
+measurement made inside the TRANSMITTER, which is what makes "the gain is at
+its floor" a statement about the transmitting radio's own listening circuit
+rather than about any receiver in the experiment.
+
 **And the two failure shapes are real.** On ch1 and ch6 the transmit loop
 finishes exactly on schedule with the frames consumed and not aired; on ch11
 the same loop blocks for ten seconds and 43-45% get out. A stalled queue and a
