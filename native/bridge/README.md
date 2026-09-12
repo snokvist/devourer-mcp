@@ -51,7 +51,10 @@ header.
 | `radio.channel` | retunes; brings up if needed |
 | `monitor.start` | `channel`, `width_mhz`, optional `offset`, `band` |
 | `monitor.stop` / `monitor.stats` | |
-| `tx.send` | `frame_hex` or `frame_b64`, bounded `count` ≤ 100000 |
+| `tx.send` | structured `mode` + `body_hex`, or raw `frame_hex`/`frame_b64`; bounded `count` ≤ 100000 and a 30 s wall-clock budget |
+| `radio.rx_paths` | live per-chain activity estimate; reports `supported:false` where a backend has not ported it |
+| `radio.tx_stats` | devourer's driver-side `TxStats` — submitted vs failed, i.e. host-side only |
+| `radio.cca` | MAC carrier-sense gate. Antisocial when disabled; the Kotlin layer requires `SafetyLevel.EXPERIMENTAL` |
 | `sessions` / `shutdown` | |
 
 ## Two things that are correctness, not style

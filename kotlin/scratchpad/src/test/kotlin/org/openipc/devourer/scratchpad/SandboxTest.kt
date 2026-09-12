@@ -25,12 +25,34 @@ class SandboxTest {
         )
 
     @Test
-    fun `a capability not declared is refused`() {
+    fun `a capability not in the grant is refused`() {
         val g = grant(Capability.CAPTURE_READ)
         val e = assertFailsWith<CapabilityDeniedException> {
-            g.require(Capability.RADIO_TX, "transmit")
+            g.require(Capability.HTTP_GET, "make HTTP requests")
         }
-        assertTrue(e.message!!.contains("radio.tx"))
+        assertTrue(e.message!!.contains("http.get"))
+    }
+
+    @Test
+    fun `every advertised capability has an implementing step`() {
+        // RADIO_TX, RADIO_MONITOR and STORAGE were advertised to the model for
+        // months with nothing behind them: programs declaring them passed
+        // validation and then silently did nothing, and a reviewer reading
+        // `privileged: ["radio.tx"]` was scrutinising a gate that could not
+        // gate. The catalogue must only contain what a step implements.
+        val implemented = setOf(
+            Capability.CAPTURE_READ,   // CaptureMetricSource
+            Capability.RADIO_DESCRIBE, // RadioMetricSource
+            Capability.HTTP_GET,       // HttpPollSource
+            Capability.TIMER,          // every source is timer-driven
+            Capability.METRICS,        // Computed
+            Capability.UI,             // UiServer
+        )
+        assertEquals(
+            implemented,
+            Capability.entries.toSet(),
+            "a capability with no step must be removed until its step exists",
+        )
     }
 
     @Test

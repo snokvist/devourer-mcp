@@ -17,7 +17,7 @@ LLM ──MCP(stdio)──▶ Kotlin runtime ──UDS──▶ devourer-bridge 
 ```
 
 23 MCP tools across DISCOVER / OBSERVE / INSPECT / TRANSMIT / EXPERIMENT /
-CHARACTERIZE / BUILD TOOL. 53 offline tests plus 63 vendored Devourer selftests,
+CHARACTERIZE / BUILD TOOL. 82 offline tests plus 63 vendored Devourer selftests,
 none of which need hardware. A hardware smoke test that refuses to pass
 vacuously.
 
@@ -49,7 +49,7 @@ Full evidence, including the findings below, is in
 
 ## The big one: `IRadio` coverage
 
-**The bridge calls 9 of `IRadio`'s 52 virtual methods.** That single number is
+**The bridge calls 11 of `IRadio`'s 52 virtual methods.** That single number is
 the most useful measure of what is left, and it is why this does not yet replace
 Devourer's own `rxdemo`/`txdemo` as research instruments (those expose ~60 and
 ~85 environment knobs respectively).
@@ -125,9 +125,20 @@ and would be the better fix.
 - **Scratchpad primitives.** `tx`, `tcp/udp` and `storage` are declared in
   `Capability` but have no source or step implementing them. Declared and
   unimplemented is a worse state than absent; either build them or drop them.
-- **Android.** The architecture holds — same protocol, different launcher — but
-  nothing has been attempted. Inherit `minSdk 28` / NDK r26+ from Devourer's own
-  Android harness. No JDK constraint comes from Devourer; JDK 21 is our choice.
+- **Android.** The architecture does NOT currently hold, contrary to an earlier
+  claim here. Six concrete blockers: `UnixDomainSocketAddress` — the entire
+  Kotlin↔native transport — is Android **API 34**, not 28;
+  `com.sun.net.httpserver` (the scratchpad UI) does not exist on Android;
+  `/tmp` and `XDG_RUNTIME_DIR` are assumed for the socket and the USB lock;
+  device enumeration reads `/sys/bus/usb/devices` and `/proc/<pid>/comm`, which
+  an unrooted app cannot; the bridge is launched by a bash script using
+  `setsid` and a PID file, and there is no `ProcessBuilder` anywhere in Kotlin;
+  and `native/CMakeLists.txt` has no Android toolchain support. Vendored
+  Devourer *does* carry an Android `UsbDeviceConnection` fd-import path
+  (issue #330) that our bridge ignores by calling `libusb_open()` directly.
+  Abstracting the transport behind an interface with a loopback-TCP
+  implementation would remove both the API-34 and the `sun_path`-length
+  problems cheaply.
 - **`radio_list` before open.** Realtek 11ac parts report `probe_required` and
   cannot be identified without opening them. Correct and honest, but a caller
   wanting an inventory must open every candidate.

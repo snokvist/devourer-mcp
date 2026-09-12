@@ -53,23 +53,61 @@ public class CaptureStore(
 
     public fun snapshot(): List<StoredFrame> = synchronized(lock) { ring.toList() }
 
-    /** One frame by its stable index, or null once it has been evicted. */
+    /**
+     * One frame by its stable index, or null once it has been evicted.
+     *
+     * Index arithmetic, not a scan. Indices are assigned monotonically and the
+     * ring preserves order, so the offset is exact — the previous linear
+     * `firstOrNull` walked up to 200 000 entries *while holding the lock the
+     * ingest thread needs*, which stalled RX for the length of the scan.
+     */
     public fun frame(index: Long): StoredFrame? = synchronized(lock) {
-        ring.firstOrNull { it.index == index }
+        val first = ring.firstOrNull() ?: return null
+        val offset = index - first.index
+        if (offset < 0 || offset >= ring.size) null else ring[offset.toInt()]
+    }
+
+    /**
+     * The frames inside a trailing time window, copied under the lock.
+     *
+     * Binary search rather than a full copy-then-filter. `hostNanos` is
+     * monotonic across the ring (the bridge stamps it on one thread in
+     * arrival order), so the window start can be found in log n and only the
+     * window is copied. The previous `snapshot().filter{}` copied the entire
+     * ring twice before narrowing — on every sample of every scratchpad
+     * source, twice a second.
+     */
+    private fun windowSnapshot(sinceHostNanos: Long?): List<StoredFrame> = synchronized(lock) {
+        if (sinceHostNanos == null) return ring.toList()
+        var lo = 0
+        var hi = ring.size
+        while (lo < hi) {
+            val mid = (lo + hi) ushr 1
+            if (ring[mid].record.hostNanos < sinceHostNanos) lo = mid + 1 else hi = mid
+        }
+        if (lo >= ring.size) emptyList() else ring.subList(lo, ring.size).toList()
     }
 
     public fun query(q: FrameQuery, limit: Int = 100): List<StoredFrame> {
-        val all = snapshot()
-        val matched = all.asSequence().filter { q.matches(it) }
+        val window = windowSnapshot(q.sinceHostNanos)
         return if (q.newestFirst) {
-            matched.toList().takeLast(limit).asReversed()
+            // Walk backwards and stop at `limit` rather than materialising every
+            // match and discarding all but the tail.
+            val out = ArrayList<StoredFrame>(minOf(limit, window.size))
+            for (i in window.indices.reversed()) {
+                val f = window[i]
+                if (!q.matches(f)) continue
+                out += f
+                if (out.size >= limit) break
+            }
+            out
         } else {
-            matched.take(limit).toList()
+            window.asSequence().filter { q.matches(it) }.take(limit).toList()
         }
     }
 
     public fun summarize(q: FrameQuery = FrameQuery()): CaptureSummary =
-        summarizeFrames(snapshot().filter { q.matches(it) })
+        summarizeFrames(windowSnapshot(q.sinceHostNanos).filter { q.matches(it) })
 
     public fun summarizeAll(): CaptureSummary = summarizeFrames(snapshot())
 
@@ -115,13 +153,14 @@ public class CaptureStore(
             // often non-zero (see FrameRecord.rxChains).
             r.rssiByChain.forEachIndexed { c, v -> if (v != 0) rssiPerChain[c].add(v) }
             r.snrByChain.forEachIndexed { c, v -> if (v != 0) snrPerChain[c].add(v) }
-            val fc = r.frameControl
+            val fc = f.frameControl
             if (fc != null) {
                 byKind[fc.name] = (byKind[fc.name] ?: 0) + 1
                 if (fc.retry) retries++
-                val addr = FrameAddresses.parse(r.payload, fc)
-                addr.transmitter?.let { transmitters[it] = (transmitters[it] ?: 0) + 1 }
-                addr.bssid?.let { bssids[it] = (bssids[it] ?: 0) + 1 }
+                // Parsed once at ingest, not once per summary call.
+                val addr = f.addresses
+                addr?.transmitter?.let { transmitters[it] = (transmitters[it] ?: 0) + 1 }
+                addr?.bssid?.let { bssids[it] = (bssids[it] ?: 0) + 1 }
             }
         }
 
@@ -158,7 +197,22 @@ public class CaptureStore(
         }
 }
 
-public data class StoredFrame(val index: Long, val record: FrameRecord)
+/**
+ * A frame in the store, with its decode done once.
+ *
+ * [frameControl] and [addresses] are computed on the ingest thread at `add()`
+ * and cached. They were previously re-derived on every query and every summary
+ * — for every frame in the ring, several times a second — which made the
+ * analysis path cost scale with ring size rather than with result size.
+ */
+public class StoredFrame(
+    public val index: Long,
+    public val record: FrameRecord,
+) {
+    public val frameControl: FrameControl? = record.frameControl
+    public val addresses: FrameAddresses? =
+        frameControl?.let { FrameAddresses.parse(record.payload, it) }
+}
 
 /**
  * Per-chain receive balance, derived from the frames themselves.
@@ -306,7 +360,7 @@ public data class FrameQuery(
         aggregated?.let { if (r.aggregated != it) return false }
         minRssi?.let { if ((r.rssiByChain.maxOrNull() ?: 0) < it) return false }
 
-        val fc = r.frameControl
+        val fc = f.frameControl
         if (type != null || kind != null || retry != null ||
             transmitter != null || bssid != null
         ) {
@@ -315,7 +369,7 @@ public data class FrameQuery(
             kind?.let { if (!fc.name.equals(it, ignoreCase = true)) return false }
             retry?.let { if (fc.retry != it) return false }
             if (transmitter != null || bssid != null) {
-                val a = FrameAddresses.parse(r.payload, fc)
+                val a = f.addresses ?: return false
                 transmitter?.let { if (!it.equals(a.transmitter, ignoreCase = true)) return false }
                 bssid?.let { if (!it.equals(a.bssid, ignoreCase = true)) return false }
             }

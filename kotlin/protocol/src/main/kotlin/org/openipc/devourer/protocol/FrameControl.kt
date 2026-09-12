@@ -94,24 +94,42 @@ public data class FrameAddresses(
     val bssid: String?,
 ) {
     public companion object {
+        private val HEX = "0123456789abcdef".toCharArray()
+
+        /**
+         * Subtypes that carry no addr2. Hoisted out of [parse] — it used to
+         * allocate this set per control frame.
+         */
+        private val NO_TRANSMITTER = setOf(12, 13) // cts, ack
+
         public fun parse(payload: ByteArray, fc: FrameControl): FrameAddresses {
-            fun mac(at: Int): String? =
-                if (payload.size >= at + 6) {
-                    buildString {
-                        for (i in 0 until 6) {
-                            if (i > 0) append(':')
-                            append("%02x".format(payload[at + i].toInt() and 0xff))
-                        }
-                    }
-                } else {
-                    null
+            fun mac(at: Int): String? {
+                if (payload.size < at + 6) return null
+                /*
+                 * A nibble table, not String.format.
+                 *
+                 * `"%02x".format(b)` builds a java.util.Formatter per call —
+                 * 24 of them per frame across four addresses. Summarising a
+                 * full 200k-frame ring therefore allocated ~4.8M Formatters,
+                 * and a scratchpad samples that twice a second. This writes
+                 * into one 17-char array instead.
+                 */
+                val out = CharArray(17)
+                var o = 0
+                for (i in 0 until 6) {
+                    if (i > 0) out[o++] = ':'
+                    val v = payload[at + i].toInt() and 0xff
+                    out[o++] = HEX[v ushr 4]
+                    out[o++] = HEX[v and 0x0f]
                 }
+                return String(out)
+            }
 
             val a1 = mac(4)
             // A control frame's layout is subtype-specific: CTS and ACK stop
             // after addr1. Reading addr2 there would return FCS bytes as a MAC.
             if (fc.type == FrameType.CONTROL) {
-                val hasA2 = fc.subtype !in setOf(12, 13) // cts, ack
+                val hasA2 = fc.subtype !in NO_TRANSMITTER
                 return FrameAddresses(
                     receiver = a1,
                     transmitter = if (hasA2) mac(10) else null,

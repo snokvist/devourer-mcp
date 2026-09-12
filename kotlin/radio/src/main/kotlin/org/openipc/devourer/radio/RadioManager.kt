@@ -206,14 +206,26 @@ public class RadioManager(private val bridge: BridgeClient) {
      * measured either way is a different quantity, which is why every result
      * records which.
      */
-    public suspend fun setCarrierSense(session: Int, enabled: Boolean): JsonObject =
-        bridge.call(
+    public suspend fun setCarrierSense(
+        session: Int,
+        enabled: Boolean,
+        safety: SafetyLevel = SafetyLevel.NORMAL,
+    ): JsonObject {
+        // Turning it back ON is always allowed: restoring good behaviour must
+        // never be blocked by a missing argument, including on a failure path.
+        if (!enabled) {
+            SafetyLevelException.require(
+                "disabling carrier sense", SafetyLevel.EXPERIMENTAL, safety,
+            )
+        }
+        return bridge.call(
             "radio.cca",
             buildJsonObject {
                 put("session", JsonPrimitive(session))
                 put("disabled", JsonPrimitive(!enabled))
             },
         )
+    }
 
     public suspend fun txStats(session: Int): JsonObject =
         bridge.call("radio.tx_stats", buildJsonObject { put("session", JsonPrimitive(session)) })
@@ -233,7 +245,18 @@ public class RadioManager(private val bridge: BridgeClient) {
      * anything reached the air — only an independent receiver can establish
      * that, which is why [VerificationState.TX_VERIFIED] requires one.
      */
-    public suspend fun sendFrame(session: Int, frameHex: String, count: Int = 1): JsonObject {
+    public suspend fun sendFrame(
+        session: Int,
+        frameHex: String,
+        count: Int = 1,
+        safety: SafetyLevel = SafetyLevel.NORMAL,
+    ): JsonObject {
+        // frameHex is a caller-assembled radiotap header plus MPDU. Nothing
+        // validates it against the adapter's capability report, which is the
+        // whole point of the path and exactly why it is not the normal one.
+        SafetyLevelException.require(
+            "transmitting a raw pre-assembled frame", SafetyLevel.DEVELOPER, safety,
+        )
         require(count in 1..MAX_TX_COUNT) {
             "count must be 1..$MAX_TX_COUNT; sustained transmission belongs in a bounded experiment"
         }

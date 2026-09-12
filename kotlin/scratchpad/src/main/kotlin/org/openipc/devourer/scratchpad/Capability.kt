@@ -29,20 +29,22 @@ public enum class Capability(
     public val description: String,
     public val privileged: Boolean = false,
 ) {
+    /*
+     * ONLY capabilities with an implementing step belong here.
+     *
+     * RADIO_TX, RADIO_MONITOR and STORAGE were declared for months with no
+     * source or step behind them. That is worse than omitting them: the
+     * catalogue handed to the model advertised file I/O and transmission that
+     * silently did nothing, and a human reviewing `privileged: ["radio.tx"]`
+     * was scrutinising a gate structurally incapable of gating. Re-add each
+     * one in the same change that implements its step.
+     */
+
     /** Read live per-frame metrics from a running capture. */
     CAPTURE_READ("capture.read", "read summaries and frames from a capture this program was given"),
 
-    /** Start and stop monitoring on a radio the caller already opened. */
-    RADIO_MONITOR("radio.monitor", "start and stop monitor capture on a granted radio"),
-
     /** Read a radio's identity, capabilities and state. */
     RADIO_DESCRIBE("radio.describe", "read a granted radio's capability and state report"),
-
-    /**
-     * Transmit. Privileged: a program that can transmit can interfere with a
-     * shared medium, so a grant is per-run and the bounds travel with it.
-     */
-    RADIO_TX("radio.tx", "transmit bounded frame bursts on a granted radio", privileged = true),
 
     /**
      * HTTP GET against an explicitly listed host allowlist.
@@ -59,9 +61,6 @@ public enum class Capability(
     /** Accumulate series and compute statistics over them. */
     METRICS("metrics", "accumulate time series and compute statistics"),
 
-    /** Keep results in the program's own run directory. Nowhere else. */
-    STORAGE("storage", "read and write files inside this run's own directory only"),
-
     /** Render a live view. */
     UI("ui", "present charts, gauges, tables and logs in a generated page"),
     ;
@@ -74,10 +73,14 @@ public enum class Capability(
 /**
  * The capabilities actually granted to one run, with their limits.
  *
- * A grant is not just a set of names. `radio.tx` without a frame budget is an
- * unbounded transmitter, and `http.get` without an allowlist is an open proxy —
- * so the limits live in the grant rather than being checked somewhere else and
- * hoped for.
+ * A grant is not just a set of names: `http.get` without an allowlist is an open
+ * proxy, so the resource lists live in the grant rather than being checked
+ * somewhere else and hoped for.
+ *
+ * Critically, a grant is built by the CALLER, never from the program's own
+ * `capabilities` list. It was briefly built from the program, which made every
+ * downstream check a tautology — a program could grant itself anything by
+ * naming it. See `Tools.kt`'s scratchpad_run.
  */
 @Serializable
 public data class CapabilityGrant(
@@ -88,8 +91,6 @@ public data class CapabilityGrant(
     @SerialName("capture_ids") val captureIds: Set<String> = emptySet(),
     /** Hosts (or host:port) this program may GET. Exact match, no wildcards. */
     @SerialName("http_hosts") val httpHosts: Set<String> = emptySet(),
-    /** Hard ceiling on frames this run may transmit, across all steps. */
-    @SerialName("tx_frame_budget") val txFrameBudget: Int = 0,
     /** Wall-clock ceiling on the whole run. */
     @SerialName("max_runtime_ms") val maxRuntimeMs: Long = 120_000,
     /** Ceiling on samples retained per series, so a long run cannot exhaust memory. */

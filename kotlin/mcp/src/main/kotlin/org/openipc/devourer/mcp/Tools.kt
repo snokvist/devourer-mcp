@@ -21,6 +21,7 @@ import org.openipc.devourer.characterize.Characterization
 import org.openipc.devourer.characterize.Characterizer
 import org.openipc.devourer.characterize.EvidenceStore
 import org.openipc.devourer.experiment.LinkProbe
+import org.openipc.devourer.scratchpad.Capability
 import org.openipc.devourer.scratchpad.CapabilityGrant
 import org.openipc.devourer.scratchpad.ScratchpadProgram
 import org.openipc.devourer.scratchpad.ScratchpadService
@@ -31,6 +32,7 @@ import org.openipc.devourer.protocol.ChannelWidth
 import org.openipc.devourer.protocol.FrameAddresses
 import org.openipc.devourer.radio.CapabilityException
 import org.openipc.devourer.radio.RadioManager
+import org.openipc.devourer.radio.SafetyLevel
 import org.openipc.devourer.radio.VerificationState
 
 /**
@@ -60,6 +62,14 @@ internal class Tools(
      * opposite case: a null field is one this chip genuinely does not report,
      * and emitting it as 0 would invent a measurement.
      */
+    private companion object {
+        /** Ceiling on rows a single capture_query may return. */
+        const val MAX_QUERY_ROWS = 500
+
+        /** Ceiling on raw hex from frame_inspect. */
+        const val MAX_HEX_BYTES = 4096
+    }
+
     private val json = Json {
         prettyPrint = true
         encodeDefaults = true
@@ -218,7 +228,9 @@ internal class Tools(
                     width = ChannelWidth.ofMhz(request.intOr("width_mhz", 20)),
                     band = request.intOr("band", 0),
                 ),
-                capacity = request.intOr("capacity", 200_000),
+                // An unclamped capacity means the ring never evicts and grows
+                // until the JVM dies.
+                capacity = request.intOr("capacity", 200_000).coerceIn(1_000, 2_000_000),
             )
             text(
                 json.encodeToString(
@@ -402,7 +414,12 @@ internal class Tools(
             val capture = captures.get(request.stringOr("capture_id", ""))
                 ?: return@addTool text(errorReply("no such capture"), isError = true)
             val rows = capture.store
-                .query(request.toQuery(), limit = request.intOr("limit", 20))
+                // Clamped, not merely defaulted. "MCP is the control plane, not
+                // the packet data plane" is a rule of the architecture, and a
+                // default a caller can override is not a rule. At ~300 bytes a
+                // row, an unclamped limit pulled the whole 200k ring — ~60 MB —
+                // through a single tool result. Bulk goes via capture_export_pcap.
+                .query(request.toQuery(), limit = request.intOr("limit", 20).coerceIn(1, MAX_QUERY_ROWS))
                 .map { it.toRow() }
             text(json.encodeToString(kotlinx.serialization.builtins.ListSerializer(FrameRow.serializer()), rows))
         }
@@ -437,7 +454,7 @@ internal class Tools(
             val r = stored.record
             val fc = r.frameControl
             val addr = fc?.let { FrameAddresses.parse(r.payload, it) }
-            val cap = request.intOr("max_hex_bytes", 256)
+            val cap = request.intOr("max_hex_bytes", 256).coerceIn(16, MAX_HEX_BYTES)
             text(
                 json.encodeToString(
                     FrameDetail.serializer(),
@@ -506,7 +523,10 @@ internal class Tools(
             val capture = captures.get(request.stringOr("capture_id", ""))
                 ?: return@addTool text(errorReply("no such capture"), isError = true)
             val frames = capture.store
-                .query(request.toQuery().copy(newestFirst = false), limit = request.intOr("limit", 100_000))
+                .query(
+                    request.toQuery().copy(newestFirst = false),
+                    limit = request.intOr("limit", 100_000).coerceIn(1, 1_000_000),
+                )
                 .map { it.record }
             val name = request.stringOr("filename", "").ifBlank { "${capture.id}.pcap" }
             val path = exportDir.resolve(name.substringAfterLast('/'))
@@ -516,7 +536,12 @@ internal class Tools(
                 centerFrequencyMhz = RadioManager.centerFrequencyMhz(capture.channel),
             )
             text(
-                """{"path": "$path", "frames": $written, "radio": "${capture.radioLabel}", "channel": "${capture.channel}"}""",
+                reply(
+                    "path" to path.toString(),
+                    "frames" to written,
+                    "radio" to capture.radioLabel,
+                    "channel" to capture.channel.toString(),
+                ),
             )
         }
     }
@@ -536,20 +561,27 @@ internal class Tools(
                 SUCCESS HERE IS NOT PROOF OF TRANSMISSION. A clean submission into the TX path says
                 the driver accepted the frame, not that anything reached the air. Only an independent
                 receiver — a second adapter monitoring the same channel — can establish that.
+
+                This is the RAW path: you assemble the radiotap header yourself and nothing checks it
+                against the adapter's capability report. It therefore requires
+                safety_level="developer". For ordinary transmission use experiment_link_probe, which
+                builds the header from a structured TX mode and measures the result.
             """.trimIndent(),
             inputSchema = ToolSchema(
                 properties = buildJsonObject {
                     put("session", schema("integer", "Session id of a radio that has been brought up."))
                     put("frame_hex", schema("string", "Radiotap header + 802.11 MPDU, hex encoded."))
                     put("count", schema("integer", "Repetitions, 1..100000. Default 1."))
+                    put("safety_level", schema("string", "Must be \"developer\" for this raw path. Omitted means \"normal\", which is refused."))
                 },
-                required = listOf("session", "frame_hex"),
+                required = listOf("session", "frame_hex", "safety_level"),
             ),
         ) { request ->
             val result = radios.sendFrame(
                 session = request.intOr("session", -1),
                 frameHex = request.stringOr("frame_hex", ""),
                 count = request.intOr("count", 1),
+                safety = SafetyLevel.parse(request.stringOr("safety_level", "")),
             )
             text(
                 json.encodeToString(JsonObject.serializer(), result) +
@@ -592,11 +624,12 @@ internal class Tools(
                     put("interval_us", schema("integer", "Spacing between frames. Default 1000."))
                     put("frame_bytes", schema("integer", "Probe MPDU size. Default 200."))
                     put("max_duration_ms", schema("integer", "Hard ceiling on the run. Default 60000."))
+                    put("safety_level", schema("string", "\"normal\" (default) or \"experimental\". Required to be \"experimental\" if carrier_sense is false."))
                     put(
                         "carrier_sense",
                         schema(
                             "boolean",
-                            "Default true. EXPERIMENTAL when false: the transmitter stops " +
+                            "Default true. Requires safety_level=\"experimental\" when false: the transmitter stops " +
                                 "listening before it transmits, so it will talk over anyone " +
                                 "sharing the channel. Use only on a channel you control. It is " +
                                 "restored automatically when the run ends. Set it false when " +
@@ -627,6 +660,7 @@ internal class Tools(
                 bounds = bounds,
                 frameBytes = request.intOr("frame_bytes", 200),
                 carrierSense = request.boolOr("carrier_sense", true),
+                safety = SafetyLevel.parse(request.stringOr("safety_level", "")),
             )
             text(
                 json.encodeToString(ExperimentResult.serializer(), result),
@@ -654,9 +688,13 @@ internal class Tools(
                 RX is attempted across several channels because an empty channel is
                 indistinguishable from a deaf receiver. TX needs peer_session: a transmitter
                 cannot witness itself, so without a second adapter TX is recorded as
-                unverifiable-here rather than failed. If TX delivers almost nothing it retries
-                once with carrier sense off, which separates a MAC that is declining to
-                transmit from a link that cannot carry.
+                unverifiable-here rather than failed.
+
+                If TX delivers almost nothing, the run says so and tells you the likely cause —
+                a MAC deferring rather than a link failing — but it will NOT retry with carrier
+                sense off on its own. That transmits without listening and talks over anyone
+                sharing the channel, so ask for it: retry_without_carrier_sense=true plus
+                safety_level="experimental".
 
                 Results accumulate per adapter. Nothing is overwritten.
             """.trimIndent(),
@@ -671,6 +709,8 @@ internal class Tools(
                     put("rx_dwell_ms", schema("integer", "Listen time per channel. Default 4000."))
                     put("tx_channel", schema("integer", "Channel for the TX test. Default 6."))
                     put("tx_modes", schema("array", "TX modes to try. Default [\"6M\",\"MCS0/20\"]."))
+                    put("retry_without_carrier_sense", schema("boolean", "Default false. Retry a failing TX test with carrier sense DISABLED to tell MAC deferral from a bad link. Needs safety_level=\"experimental\"."))
+                    put("safety_level", schema("string", "\"normal\" (default) or \"experimental\"."))
                 },
                 required = listOf("session"),
             ),
@@ -686,6 +726,8 @@ internal class Tools(
                     txPeerSession = peer,
                     txChannel = request.intOr("tx_channel", 6),
                     txModes = modes,
+                    retryWithoutCarrierSense = request.boolOr("retry_without_carrier_sense", false),
+                    safety = SafetyLevel.parse(request.stringOr("safety_level", "")),
                 ),
             )
             text(json.encodeToString(Characterization.serializer(), result))
@@ -715,7 +757,7 @@ internal class Tools(
                 key.isNotBlank() -> {
                     val rec = evidence.load(key)
                         ?: return@addTool text(
-                            """{"error": "no record with key $key"}""", isError = true,
+                            errorReply("no record with key $key"), isError = true,
                         )
                     text(json.encodeToString(Characterization.serializer(), rec))
                 }
@@ -723,8 +765,12 @@ internal class Tools(
                     val identity = AdapterIdentity.of(radios.describe(session))
                     val rec = evidence.load(identity)
                         ?: return@addTool text(
-                            """{"error": "no stored characterization for ${'$'}{identity.describe()}; run characterize_run first", "identity_key": "${'$'}{identity.key}"}""",
-                            isError = true,
+                            errorReply(
+                            "no stored characterization for ${identity.describe()}; " +
+                                "run characterize_run first",
+                            "identity_key" to identity.key,
+                        ),
+                        isError = true,
                         )
                     text(json.encodeToString(Characterization.serializer(), rec))
                 }
@@ -791,6 +837,7 @@ internal class Tools(
                     put("radio_sessions", schema("array", "Radio session ids this program may read."))
                     put("capture_ids", schema("array", "Capture ids this program may read."))
                     put("http_hosts", schema("array", "Hosts or host:port this program may GET. Exact match."))
+                    put("grant_capabilities", schema("array", "Capabilities the CALLER allows. Defaults to all non-privileged ones. A program declaring anything outside this set is refused — a program cannot grant itself."))
                     put("max_runtime_ms", schema("integer", "Ceiling on the run. Default 120000."))
                     put("ui", schema("boolean", "Serve the live view. Default true."))
                 },
@@ -810,13 +857,34 @@ internal class Tools(
                     isError = true,
                 )
             }
+            // The grant is what the CALLER allows, intersected with what the
+            // program asked for — never the program's own list. Building it from
+            // `program.capabilities` made every downstream check compare the
+            // program against itself, so a program granted itself anything it
+            // named. `grant_capabilities` defaults to the non-privileged set so
+            // ordinary use needs no extra argument, while anything privileged
+            // has to be named by the caller.
+            val requested = program.capabilities.toSet()
+            val allowed = request.stringList("grant_capabilities").toSet()
+                .ifEmpty { Capability.entries.filterNot { it.privileged }.map { it.id }.toSet() }
             val grant = CapabilityGrant(
-                capabilities = program.capabilities.toSet(),
+                capabilities = requested intersect allowed,
                 radioSessions = request.intList("radio_sessions").toSet(),
                 captureIds = request.stringList("capture_ids").toSet(),
                 httpHosts = request.stringList("http_hosts").toSet(),
-                maxRuntimeMs = request.longOr("max_runtime_ms", 120_000),
+                maxRuntimeMs = request.longOr("max_runtime_ms", 120_000).coerceIn(100, 3_600_000),
             )
+            val refused = requested - allowed
+            if (refused.isNotEmpty()) {
+                return@addTool text(
+                    errorReply(
+                        "the program declares capabilities the caller did not grant: " +
+                            refused.sorted().joinToString(", "),
+                        "hint" to "pass grant_capabilities to allow them explicitly",
+                    ),
+                    isError = true,
+                )
+            }
             val inspection = scratchpads.inspect(program)
             if (!inspection.valid) {
                 return@addTool text(

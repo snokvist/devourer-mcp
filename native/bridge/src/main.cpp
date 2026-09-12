@@ -16,6 +16,7 @@
  * The bridge's job is to be a faithful, crash-isolated pair of hands. */
 
 #include <arpa/inet.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
@@ -64,6 +65,15 @@ std::atomic<uint64_t> g_next_conn{1};
 thread_local uint64_t t_conn_id = 0;
 
 std::string g_devourer_commit = "unknown";
+
+/* Bounded so a local client cannot exhaust threads or fds by looping connect().
+ * Each connection costs a thread (8 MiB of stack VA) and up to a 1 MiB line
+ * buffer; at the thread limit the std::thread constructor throws. */
+std::atomic<int> g_connections{0};
+constexpr int kMaxConnections = 32;
+
+void serve_connection_inner(int fd);
+void wake_accept_loop();
 
 /* --- small helpers ------------------------------------------------------- */
 
@@ -165,6 +175,9 @@ std::shared_ptr<Session> find_session(const Json &req, std::string &err) {
   return it->second;
 }
 
+/* Hard wall-clock ceiling on one tx.send, enforced inside the loop. */
+constexpr uint64_t kTxBudgetNs = 30ull * 1000000000ull;
+
 uint64_t now_monotonic_ns() {
   timespec ts{};
   clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -256,18 +269,47 @@ Json op_radio_list(const Json &req) {
   return r;
 }
 
+/* Range-check BEFORE narrowing. `bus: 257` silently became bus 1, so the bridge
+ * opened, reset and claimed a different physical adapter than the caller named
+ * — and reported success. On a bench with a ground station on the other radio
+ * that is a live link torn down by a typo, with a self-consistent evidence
+ * trail. Same for channel: 1036 became channel 12. */
+bool ranged(const Json &req, const char *key, int64_t lo, int64_t hi,
+            int64_t &out, std::string &err) {
+  const int64_t v = req.at(key).integer(lo - 1);
+  if (v < lo || v > hi) {
+    err = std::string(key) + " must be " + std::to_string(lo) + ".." +
+          std::to_string(hi);
+    return false;
+  }
+  out = v;
+  return true;
+}
+
 Json op_radio_open(const Json &req) {
   OpenOptions o;
   if (!req.at("bus").is_number() || !req.at("address").is_number())
     return fail("bad_request", "bus and address are required");
-  o.bus = static_cast<uint8_t>(req.at("bus").integer());
-  o.address = static_cast<uint8_t>(req.at("address").integer());
+  std::string err;
+  int64_t bus = 0, addr = 0;
+  if (!ranged(req, "bus", 0, 255, bus, err) ||
+      !ranged(req, "address", 0, 255, addr, err))
+    return fail("bad_request", err);
+  o.bus = static_cast<uint8_t>(bus);
+  o.address = static_cast<uint8_t>(addr);
   o.reset = req.at("reset").boolean(true);
-  if (req.at("buffer_bytes").is_number())
-    o.buffer_bytes = static_cast<size_t>(req.at("buffer_bytes").integer());
-  if (req.at("max_frame_bytes").is_number())
-    o.max_frame_bytes =
-        static_cast<uint32_t>(req.at("max_frame_bytes").integer());
+  if (req.at("buffer_bytes").is_number()) {
+    int64_t v = 0;
+    if (!ranged(req, "buffer_bytes", 1 << 20, 256LL << 20, v, err))
+      return fail("bad_request", err);
+    o.buffer_bytes = static_cast<size_t>(v);
+  }
+  if (req.at("max_frame_bytes").is_number()) {
+    int64_t v = 0;
+    if (!ranged(req, "max_frame_bytes", 64, 65535, v, err))
+      return fail("bad_request", err);
+    o.max_frame_bytes = static_cast<uint32_t>(v);
+  }
 
   uint32_t id;
   {
@@ -333,10 +375,21 @@ bool channel_from(const Json &req, SelectedChannel &ch, std::string &err) {
           " (use 5, 10, 20, 40, 80 or 160)";
     return false;
   }
-  ch.Channel = static_cast<uint8_t>(req.at("channel").integer());
+  const int64_t chan = req.at("channel").integer(-1);
+  const int64_t off = req.at("offset").integer(0);
+  const int64_t band = req.at("band").integer(0);
+  if (chan < 0 || chan > 255) {
+    err = "channel must be 0..255";
+    return false;
+  }
+  if (off < 0 || off > 255 || band < 0 || band > 255) {
+    err = "offset and band must be 0..255";
+    return false;
+  }
+  ch.Channel = static_cast<uint8_t>(chan);
   ch.ChannelWidth = w;
-  ch.ChannelOffset = static_cast<uint8_t>(req.at("offset").integer(0));
-  ch.Band = static_cast<uint8_t>(req.at("band").integer(0));
+  ch.ChannelOffset = static_cast<uint8_t>(off);
+  ch.Band = static_cast<uint8_t>(band);
   return true;
 }
 
@@ -512,8 +565,11 @@ Json op_tx_send(const Json &req) {
   /* Bounded by construction: the bridge will not sit in an unbounded send loop.
    * count*interval is capped so a paced burst cannot silently become a
    * multi-minute transmission from a single request. */
+  /* The budget is wall clock, not count x interval. The product is ZERO when
+   * interval_us is 0, so `count: 100000, interval_us: 0` used to sail past this
+   * guard and emit an unbounded burst that nothing could interrupt. */
   const int64_t budget_us = count * interval_us;
-  if (budget_us > 30 * 1000000LL)
+  if (budget_us > kTxBudgetNs / 1000)
     return fail("bad_request",
                 "count x interval_us exceeds the 30 s per-request transmit "
                 "budget; split it or run it as an experiment");
@@ -555,6 +611,14 @@ Json op_tx_send(const Json &req) {
     if (stamp) {
       const uint32_t v = static_cast<uint32_t>(i);
       std::memcpy(frame.data() + stamp_at, &v, 4);
+    }
+    if (g_stop) {
+      err = "bridge is shutting down";
+      break;
+    }
+    if (now_monotonic_ns() - t0 > kTxBudgetNs) {
+      err = "30 s transmit budget reached";
+      break;
     }
     const uint64_t s0 = now_monotonic_ns();
     const bool sent_ok = s->send_frame(frame.data(), frame.size(), err);
@@ -629,6 +693,7 @@ Json dispatch(const Json &req) {
     return op_tx_send(req);
   if (op == "shutdown") {
     g_stop = true;
+    wake_accept_loop();
     return ok(Json().set("stopping", true));
   }
   return fail("unknown_op", "no such op: " + op);
@@ -707,7 +772,17 @@ void serve_control(int fd, std::string first_line) {
     if (!Json::parse(line, req, perr)) {
       resp = fail("bad_json", perr);
     } else {
-      resp = dispatch(req);
+      /* An op that throws must become an error reply, not a dead process. The
+       * vendor HAL throws from several reachable paths (StartRxLoop, chip
+       * bring-up), and an exception out of a detached thread is terminate —
+       * which kills every OTHER open adapter mid-transfer. */
+      try {
+        resp = dispatch(req);
+      } catch (const std::exception &e) {
+        resp = fail("internal_error", e.what());
+      } catch (...) {
+        resp = fail("internal_error", "unknown exception");
+      }
       if (req.at("id").is_number())
         resp.set("id", req.at("id").integer());
     }
@@ -723,6 +798,19 @@ void serve_control(int fd, std::string first_line) {
 }
 
 void serve_connection(int fd) {
+  struct ConnGuard {
+    ~ConnGuard() { g_connections.fetch_sub(1); }
+  } guard;
+  try {
+    serve_connection_inner(fd);
+  } catch (const std::exception &e) {
+    std::fprintf(stderr, "connection thread died: %s\n", e.what());
+  } catch (...) {
+    std::fprintf(stderr, "connection thread died: unknown exception\n");
+  }
+}
+
+void serve_connection_inner(int fd) {
   std::string line;
   if (!read_line(fd, line)) {
     ::close(fd);
@@ -755,7 +843,23 @@ void serve_connection(int fd) {
   serve_control(fd, std::move(line));
 }
 
-void on_signal(int) { g_stop = true; }
+/* Written by the signal handler and by the `shutdown` op, read by the accept
+ * loop's poll(). A self-pipe rather than relying on EINTR alone: it closes the
+ * race where the signal lands between the g_stop check and poll(). */
+int g_wake_fds[2] = {-1, -1};
+
+void wake_accept_loop() {
+  if (g_wake_fds[1] >= 0) {
+    const char b = 1;
+    ssize_t w = ::write(g_wake_fds[1], &b, 1); /* async-signal-safe */
+    (void)w;
+  }
+}
+
+void on_signal(int) {
+  g_stop = true;
+  wake_accept_loop();
+}
 
 } // namespace
 } // namespace bridge
@@ -816,8 +920,25 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  std::signal(SIGINT, on_signal);
-  std::signal(SIGTERM, on_signal);
+  /* sigaction with SA_RESTART CLEARED, plus the self-pipe above.
+   *
+   * std::signal on glibc installs BSD semantics, i.e. SA_RESTART, so a blocked
+   * accept() is auto-restarted and never returns EINTR — the EINTR branch below
+   * was dead code and SIGTERM could not stop an idle bridge. systemd then
+   * SIGKILLed it, so the cleanup that calls IRadio::Stop() and releases the USB
+   * claim never ran, leaving adapters exactly in the wedge state. */
+  if (::pipe(g_wake_fds) != 0) {
+    std::perror("pipe");
+    return 1;
+  }
+  {
+    struct sigaction sa {};
+    sa.sa_handler = on_signal;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0; /* deliberately NOT SA_RESTART */
+    sigaction(SIGINT, &sa, nullptr);
+    sigaction(SIGTERM, &sa, nullptr);
+  }
   /* A frame-sink client that disappears mid-write must surface as EPIPE on the
    * write, not as a process-killing signal. */
   std::signal(SIGPIPE, SIG_IGN);
@@ -826,13 +947,43 @@ int main(int argc, char **argv) {
                sock_path.c_str(), kProtocolVersionMajor, kProtocolVersionMinor);
 
   while (!g_stop) {
-    const int fd = ::accept(listener, nullptr, nullptr);
-    if (fd < 0) {
+    pollfd fds[2] = {{listener, POLLIN, 0}, {g_wake_fds[0], POLLIN, 0}};
+    const int pr = ::poll(fds, 2, -1);
+    if (pr < 0) {
       if (errno == EINTR)
         continue;
       break;
     }
-    std::thread(serve_connection, fd).detach();
+    if (fds[1].revents & POLLIN)
+      break; /* shutdown op or a signal */
+    if (!(fds[0].revents & POLLIN))
+      continue;
+
+    const int fd = ::accept(listener, nullptr, nullptr);
+    if (fd < 0) {
+      if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)
+        continue;
+      break;
+    }
+    if (g_connections.load() >= kMaxConnections) {
+      write_all(fd, fail("too_many_connections",
+                         "the bridge is already serving " +
+                             std::to_string(kMaxConnections) + " connections")
+                        .dump() +
+                    "\n");
+      ::close(fd);
+      continue;
+    }
+    /* A std::thread constructor throw out of this loop would be an uncaught
+     * exception in main, i.e. terminate with every adapter still claimed. */
+    try {
+      g_connections.fetch_add(1);
+      std::thread(serve_connection, fd).detach();
+    } catch (const std::exception &e) {
+      g_connections.fetch_sub(1);
+      std::fprintf(stderr, "cannot spawn connection thread: %s\n", e.what());
+      ::close(fd);
+    }
   }
 
   {

@@ -12,6 +12,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import org.openipc.devourer.protocol.ChannelSpec
 import org.openipc.devourer.protocol.FrameRecord
 import org.openipc.devourer.radio.RadioManager
+import org.openipc.devourer.radio.SafetyLevel
 import org.openipc.devourer.radio.VerificationState
 
 /**
@@ -46,6 +47,7 @@ public class LinkProbe(
         bounds: ExperimentBounds = ExperimentBounds(),
         frameBytes: Int = 200,
         carrierSense: Boolean = true,
+        safety: SafetyLevel = SafetyLevel.NORMAL,
     ): ExperimentResult {
         if (txSession == rxSession) {
             throw ExperimentException(
@@ -75,7 +77,7 @@ public class LinkProbe(
         radios.startMonitor(rxSession, channel)
 
         if (!carrierSense) {
-            radios.setCarrierSense(txSession, enabled = false)
+            radios.setCarrierSense(txSession, enabled = false, safety = safety)
             caveats += "Carrier sense was DISABLED on the transmitter for this run. The " +
                 "delivery ratio therefore measures the radio link alone, with the MAC's " +
                 "own decision to defer removed. It is not comparable to a run with " +

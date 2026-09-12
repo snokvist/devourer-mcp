@@ -61,9 +61,15 @@ grant TX_VERIFIED on its own.
 The MT7612U does not show this: it delivered 99–100% with carrier sense on, at
 every interval from 500 µs to 20 ms.
 
-Carrier-sense control is gated as experimental, is recorded in every experiment
-result (`carrier_sense_enabled`), and is restored automatically when a run ends
-— including when it throws.
+Carrier-sense control now requires `safety_level="experimental"` at the call
+site, is recorded in every experiment result (`carrier_sense_enabled`), and is
+restored automatically when a run ends — including when it throws.
+
+An earlier version of this page claimed it was "gated as experimental" when
+nothing gated it at all: `characterize_run` disabled carrier sense
+*automatically* whenever first-pass delivery fell below 50%, with no argument a
+caller could set to decline. The retry is now opt-in by name and needs the
+level. The claim and the code agree as of the remediation pass.
 
 ## Backend differences confirmed by measurement
 

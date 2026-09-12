@@ -115,7 +115,7 @@ adapter is brought up. Realtek has it from construction.
 ## Testing
 
 ```sh
-./gradlew test                                   # 53 Kotlin tests, no hardware
+./gradlew test                                   # 82 Kotlin tests, no hardware
 ctest --test-dir build/native-bridge             # 63 vendored selftests
 tools/smoke-test.py                              # needs adapters; never passes vacuously
 ```
@@ -144,7 +144,7 @@ testing is currently the Python smoke test.
 
 ## Picking up
 
-The highest-value next step is closing `IRadio` coverage — the bridge calls 9 of
+The highest-value next step is closing `IRadio` coverage — the bridge calls 11 of
 52 methods, and that single number explains most of what this cannot yet do.
 `radio.tx_stats` and `radio.cca` are the pattern to copy: a bridge op, a
 `RadioManager` method, an MCP tool with a description that says what the result

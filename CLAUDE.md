@@ -40,8 +40,7 @@ Three rules that shape everything:
 | `kotlin/capture/` | Frame store, query engine, summaries, PCAP/PCAPNG export. |
 | `kotlin/experiment/` | Experiment engine: deterministic local execution of AI-defined experiments. |
 | `kotlin/characterize/` | Adapter characterization + the evidence database. |
-| `kotlin/scratchpad/` | Sandboxed micro-app runtime (capability-gated). |
-| `kotlin/ui/` | Dynamic UI service for on-demand instruments. |
+| `kotlin/scratchpad/` | Sandboxed micro-app runtime (capability-gated) + the on-demand UI server. |
 | `kotlin/mcp/` | MCP server; composes the above. The only process the LLM talks to. |
 | `tools/host/` | Host setup: udev rules, helper scripts. |
 | `var/` | Runtime state: captures, evidence DB, scratchpads. Not source. |
@@ -146,17 +145,31 @@ verified behaviour.
 For owned and authorized hardware: development, diagnostics, FPV, embedded
 networking, radio experimentation.
 
-Three levels, always explicit:
+Three levels, always explicit — `SafetyLevel` in `kotlin/radio/`, passed as a
+tool argument, never a default or a config value:
 
-- **`normal`** — structured, typed frame and PHY descriptions. The default.
-- **`experimental`** — unverified or partially characterized paths. Loud.
-- **`developer`** — the privileged low-level escape hatch for genuine
-  development work. Never the normal interface, and never reachable by
-  accident.
+- **`normal`** — structured, typed frame and PHY descriptions. The default, and
+  what an absent or unparseable argument falls back to.
+- **`experimental`** — unverified paths, and anything deliberately antisocial on
+  a shared medium. Disabling carrier sense lives here.
+- **`developer`** — the raw escape hatch: caller-assembled radiotap frames that
+  nothing validates against the capability report.
 
-Arbitrary register access is not a normal interface. Enforce hardware limits
-and regulatory configuration, bound every experiment, honour timeouts, cancel
-cleanly, and always leave USB/radio state recoverable. **Do not build
+An operation that can affect anyone else's air names its level at the call
+site. This was prose for a while, and in that state carrier-sense disable was
+reachable *by accident* as an automatic retry inside `characterize_run` with no
+way to decline — see `docs/review-remediation.md`.
+
+Arbitrary register access is not a normal interface. Bound every experiment,
+honour timeouts, cancel cleanly, and always leave USB/radio state recoverable.
+
+**Regulatory configuration is deliberately NOT enforced, and that is a choice
+to be aware of.** `RadioManager.centerFrequencyMhz` applies the vendor's
+`freq = 5000 + 5*chan` relation over channels 16..253 because the point of this
+instrument is to reach where the hardware reaches. There is no country code, no
+regdomain and no DFS concept anywhere in the tree; `requireChannelSupported`
+checks only what the synthesizer can tune and what the TX-power tables
+characterize — both hardware facts. Compliance is the operator's. **Do not build
 disruptive attack presets** — no deauth floods, no jammer features, no mass
 beacon spam.
 
