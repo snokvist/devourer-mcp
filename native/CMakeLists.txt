@@ -1,6 +1,12 @@
 cmake_minimum_required(VERSION 3.15)
 project(devourer_mcp_native CXX C)
 
+# Needed at THIS level, not just inside vendor/devourer: CTest only discovers
+# tests registered in directories under the project where enable_testing() was
+# called. Without it `ctest --test-dir build/native-bridge` reports "No tests
+# were found", which reads exactly like a passing run with nothing to do.
+enable_testing()
+
 # The vendored devourer is added as a subdirectory rather than built separately:
 # its CMakeLists already resolves libusb, generates the PHY tables and defines
 # the DEVOURER_HAVE_* macros the bridge compiles against. Reimplementing any of

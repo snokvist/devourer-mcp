@@ -376,6 +376,34 @@ Json op_radio_rx_paths(const Json &req) {
   return ok(s->rx_paths_json());
 }
 
+Json op_radio_tx_stats(const Json &req) {
+  std::string err;
+  auto s = find_session(req, err);
+  if (!s)
+    return fail("no_session", err);
+  return ok(s->tx_stats_json());
+}
+
+Json op_radio_cca(const Json &req) {
+  std::string err;
+  auto s = find_session(req, err);
+  if (!s)
+    return fail("no_session", err);
+  if (!req.at("disabled").is_null() && req.at("disabled").type() != Json::Type::Bool)
+    return fail("bad_request", "'disabled' must be a boolean");
+  const bool disabled = req.at("disabled").boolean(false);
+  if (!s->set_cca(disabled, err))
+    return fail("cca_failed", err);
+  Json r;
+  r.set("session", s->id()).set("cca_disabled", disabled);
+  if (disabled)
+    r.set("warning",
+          "Carrier sense is OFF: this radio will now transmit without listening "
+          "first. Antisocial on any shared channel — re-enable it as soon as "
+          "the measurement that needed it is done.");
+  return ok(r);
+}
+
 Json op_monitor_stats(const Json &req) {
   std::string err;
   auto s = find_session(req, err);
@@ -593,6 +621,10 @@ Json dispatch(const Json &req) {
     return op_monitor_stats(req);
   if (op == "radio.rx_paths")
     return op_radio_rx_paths(req);
+  if (op == "radio.tx_stats")
+    return op_radio_tx_stats(req);
+  if (op == "radio.cca")
+    return op_radio_cca(req);
   if (op == "tx.send")
     return op_tx_send(req);
   if (op == "shutdown") {

@@ -45,6 +45,7 @@ public class LinkProbe(
         modes: List<String> = listOf("6M"),
         bounds: ExperimentBounds = ExperimentBounds(),
         frameBytes: Int = 200,
+        carrierSense: Boolean = true,
     ): ExperimentResult {
         if (txSession == rxSession) {
             throw ExperimentException(
@@ -73,6 +74,15 @@ public class LinkProbe(
         radios.retune(txSession, channel)
         radios.startMonitor(rxSession, channel)
 
+        if (!carrierSense) {
+            radios.setCarrierSense(txSession, enabled = false)
+            caveats += "Carrier sense was DISABLED on the transmitter for this run. The " +
+                "delivery ratio therefore measures the radio link alone, with the MAC's " +
+                "own decision to defer removed. It is not comparable to a run with " +
+                "carrier sense on, and it is not what this adapter would achieve on a " +
+                "shared channel."
+        }
+
         val frame = ProbeFrame.build(runId, frameBytes)
         val frameHex = ProbeFrame.toHex(frame)
         val points = mutableListOf<PointResult>()
@@ -97,6 +107,9 @@ public class LinkProbe(
         } finally {
             job.cancel()
             runCatching { radios.stopMonitor(rxSession) }
+            // Restore carrier sense even if the run threw. Leaving a radio
+            // transmitting without listening is not a state to walk away from.
+            if (!carrierSense) runCatching { radios.setCarrierSense(txSession, enabled = true) }
         }
 
         return conclude(
@@ -109,6 +122,7 @@ public class LinkProbe(
             points = points,
             caveats = caveats,
             truncated = truncated,
+            carrierSense = carrierSense,
         )
     }
 
@@ -178,6 +192,7 @@ public class LinkProbe(
         points: List<PointResult>,
         caveats: MutableList<String>,
         truncated: Boolean,
+        carrierSense: Boolean,
     ): ExperimentResult {
         val best = points.maxByOrNull { it.deliveryRatio }
         val anyHeard = points.any { it.framesReceived > 0 }
@@ -205,6 +220,16 @@ public class LinkProbe(
             else -> "no measurement points ran"
         }
 
+        val poor = points.isNotEmpty() &&
+            points.count { it.deliveryRatio < 0.5 } * 2 > points.size
+        if (carrierSense && (poor || !anyHeard)) {
+            caveats += "Delivery was poor with carrier sense ON. Before blaming the link, " +
+                "re-run with carrier_sense=false: a MAC whose EDCCA threshold is too " +
+                "sensitive defers nearly every transmission while still reporting every " +
+                "frame as submitted and none as failed. Measured on this bench, an " +
+                "RTL8812AU went from 4-13% to 88-100% delivery on an otherwise quiet " +
+                "channel with carrier sense off."
+        }
         if (anyHeard) {
             caveats += "Delivery ratio here is one-way and broadcast: frames are never " +
                 "ACKed, so nothing was retried. It is not a throughput figure and not " +
@@ -240,6 +265,7 @@ public class LinkProbe(
             conclusion = conclusion,
             caveats = caveats,
             truncated = truncated,
+            carrierSenseEnabled = carrierSense,
         )
     }
 

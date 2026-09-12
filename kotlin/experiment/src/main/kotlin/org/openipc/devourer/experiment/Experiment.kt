@@ -114,6 +114,15 @@ public data class ExperimentResult(
     @SerialName("duration_ms") val durationMs: Long,
     val roles: Map<String, String>,
     val channel: String,
+    /**
+     * Whether the transmitter's MAC carrier sense was on.
+     *
+     * Load-bearing for interpretation, not a footnote: with it on, the delivery
+     * ratio includes the MAC's own decision not to transmit; with it off, the
+     * measurement is of the radio link alone. The two are not comparable, and a
+     * result that did not say which would be unusable later.
+     */
+    @SerialName("carrier_sense_enabled") val carrierSenseEnabled: Boolean = true,
     val bounds: ExperimentBounds,
     val points: List<PointResult>,
     val verification: VerificationState,

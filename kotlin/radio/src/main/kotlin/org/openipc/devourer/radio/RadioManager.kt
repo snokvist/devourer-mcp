@@ -14,6 +14,16 @@ import org.openipc.devourer.protocol.MonitorStats
 import org.openipc.devourer.protocol.RadioListResult
 import org.openipc.devourer.protocol.UsbDevice
 
+/** The channel a radio is currently tuned to, as the bridge reports it. */
+@Serializable
+public data class ChannelInfo(
+    val channel: Int = 0,
+    /** Bandwidth in MHz, matching what the tools accept. */
+    val width: Int = 0,
+    val offset: Int = 0,
+    val band: Int = 0,
+)
+
 /**
  * Radios as concepts, not as bridge ops.
  *
@@ -24,11 +34,27 @@ import org.openipc.devourer.protocol.UsbDevice
 public class RadioManager(private val bridge: BridgeClient) {
 
     @Serializable
+    public data class RadioState(
+        @SerialName("brought_up") val broughtUp: Boolean = false,
+        val monitoring: Boolean = false,
+        /**
+         * Carrier sense is currently OFF on this radio.
+         *
+         * Surfaced because it is a state someone can walk away from: a radio
+         * left transmitting without listening keeps doing so until the session
+         * closes. It also changes how any measurement taken now must be read.
+         */
+        @SerialName("cca_disabled") val carrierSenseDisabled: Boolean = false,
+    )
+
+    @Serializable
     public data class OpenRadio(
         val session: Int,
         val device: UsbDevice,
         val capabilities: RadioCapabilities,
         @SerialName("permanent_mac") val permanentMac: String? = null,
+        val state: RadioState = RadioState(),
+        val channel: ChannelInfo? = null,
     ) {
         /** A short, stable name for logs and MCP replies. */
         public val label: String
@@ -164,6 +190,33 @@ public class RadioManager(private val bridge: BridgeClient) {
             },
         )
     }
+
+    /**
+     * Turn the MAC's carrier-sense gate off or on.
+     *
+     * EXPERIMENTAL, and antisocial with it: a radio with carrier sense off
+     * transmits without listening, so it will talk over anyone sharing the
+     * channel. Always restore it.
+     *
+     * It exists because it is sometimes the only way to measure anything. On
+     * this bench an RTL8812AU aired 4-13% of the frames it accepted on a
+     * channel carrying almost no traffic — its EDCCA threshold deferred nearly
+     * every transmission, while reporting 100 submitted and 0 failed. With
+     * carrier sense off the same burst delivered 88-100%. A delivery ratio
+     * measured either way is a different quantity, which is why every result
+     * records which.
+     */
+    public suspend fun setCarrierSense(session: Int, enabled: Boolean): JsonObject =
+        bridge.call(
+            "radio.cca",
+            buildJsonObject {
+                put("session", JsonPrimitive(session))
+                put("disabled", JsonPrimitive(!enabled))
+            },
+        )
+
+    public suspend fun txStats(session: Int): JsonObject =
+        bridge.call("radio.tx_stats", buildJsonObject { put("session", JsonPrimitive(session)) })
 
     public suspend fun activeRxPaths(session: Int): JsonObject =
         bridge.call("radio.rx_paths", buildJsonObject { put("session", JsonPrimitive(session)) })

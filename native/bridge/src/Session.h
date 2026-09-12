@@ -100,6 +100,22 @@ public:
    * coupling. */
   Json rx_paths_json();
 
+  /* Driver-side TX submission health (devourer's TxStats): frames handed to the
+   * USB stack and how many the stack refused. The missing half of "did it
+   * transmit" — send_packet returning true means queued, and this is where a
+   * frame that never left the host shows up. */
+  Json tx_stats_json();
+
+  /* The MAC carrier-sense gate that defers TX while the channel looks busy.
+   *
+   * EXPERIMENTAL by nature: disabling it makes the radio transmit without
+   * listening first, which is deliberately antisocial on a shared channel. It
+   * exists because injection on a quiet bench channel can otherwise be starved
+   * by an over-sensitive EDCCA threshold — frames are accepted, reported
+   * submitted, and never aired. Bounded use on owned hardware only. */
+  bool set_cca(bool disabled, std::string &err);
+  bool cca_disabled() const { return _cca_disabled; }
+
   SessionStats stats() const;
   Json stats_json() const;
   SelectedChannel channel() const { return _channel; }
@@ -139,6 +155,7 @@ private:
   uint32_t _max_frame_bytes = 4096;
   /* From AdapterCaps at open; stamped into every frame record. */
   uint8_t _rx_chains = 0;
+  bool _cca_disabled = false;
 };
 
 } // namespace bridge

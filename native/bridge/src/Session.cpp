@@ -9,6 +9,7 @@
 #include <unistd.h>
 
 #include "AdapterCaps.h"
+#include "TxStats.h"
 #include "DeviceConfig.h"
 #include "IRadio.h"
 #include "Protocol.h"
@@ -90,6 +91,28 @@ Json band_range(const devourer::BandRange &r) {
     j.set("max_mhz", r.max_mhz);
   }
   return j;
+}
+
+/* ChannelWidth_t -> MHz. The protocol takes MHz on the way in, so reporting the
+ * raw enum on the way out is an asymmetry that reads as a bug: width 0 means
+ * 20 MHz, and looks like "unknown". */
+int width_mhz_of(ChannelWidth_t w) {
+  switch (w) {
+  case CHANNEL_WIDTH_20:
+    return 20;
+  case CHANNEL_WIDTH_40:
+    return 40;
+  case CHANNEL_WIDTH_80:
+    return 80;
+  case CHANNEL_WIDTH_160:
+    return 160;
+  case CHANNEL_WIDTH_5:
+    return 5;
+  case CHANNEL_WIDTH_10:
+    return 10;
+  default:
+    return 0;
+  }
 }
 
 Json bw_list(uint8_t mask) {
@@ -349,11 +372,12 @@ Json Session::describe() {
 
   j.set("state", Json()
                      .set("brought_up", _up.load())
-                     .set("monitoring", _rx_running.load()));
+                     .set("monitoring", _rx_running.load())
+                     .set("cca_disabled", _cca_disabled));
   if (_up) {
     j.set("channel", Json()
                          .set("channel", _channel.Channel)
-                         .set("width", static_cast<int>(_channel.ChannelWidth))
+                         .set("width", width_mhz_of(_channel.ChannelWidth))
                          .set("offset", _channel.ChannelOffset)
                          .set("band", _channel.Band));
   }
@@ -657,6 +681,52 @@ Json Session::rx_paths_json() {
         "as a hint; repeat across channels and signal levels for a verdict. "
         "This reports CHAINS, not antenna connectors — a 2-chain part behind 4 "
         "antennas with diversity switching still reports 2.");
+  return j;
+}
+
+bool Session::set_cca(bool disabled, std::string &err) {
+  if (_radio == nullptr) {
+    err = "session has no radio";
+    return false;
+  }
+  if (!_up) {
+    err = "radio is not brought up — set a channel first";
+    return false;
+  }
+  try {
+    /* Pure virtual on IRadio: every generation either implements it or refuses
+     * loudly. A silent no-op here would be the worst outcome — the caller would
+     * believe carrier sense was off and misread every result that followed. */
+    _radio->SetCcaMode(disabled);
+  } catch (const std::exception &e) {
+    err = std::string("SetCcaMode threw: ") + e.what();
+    return false;
+  }
+  _cca_disabled = disabled;
+  return true;
+}
+
+Json Session::tx_stats_json() {
+  Json j;
+  j.set("session", _id);
+  if (_radio == nullptr) {
+    j.set("supported", false).set("why", "session has no radio");
+    return j;
+  }
+  const auto t = _radio->GetTxStats();
+  j.set("supported", true)
+      .set("submitted", t.submitted)
+      .set("failed", t.failed)
+      .set("last_error_rc", t.last_error_rc)
+      .set("last_was_timeout", t.last_was_timeout);
+  {
+    std::lock_guard<std::mutex> sl(_stats_mu);
+    j.set("bridge_tx_sent", _stats.tx_sent).set("bridge_tx_failed", _stats.tx_failed);
+  }
+  j.set("note",
+        "`submitted` is frames handed to the USB stack, not frames aired. A "
+        "large submitted with zero failed and nothing heard by an independent "
+        "receiver means the host did its part and the radio did not.");
   return j;
 }
 

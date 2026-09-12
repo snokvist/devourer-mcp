@@ -581,6 +581,19 @@ internal class Tools(
                     put("interval_us", schema("integer", "Spacing between frames. Default 1000."))
                     put("frame_bytes", schema("integer", "Probe MPDU size. Default 200."))
                     put("max_duration_ms", schema("integer", "Hard ceiling on the run. Default 60000."))
+                    put(
+                        "carrier_sense",
+                        schema(
+                            "boolean",
+                            "Default true. EXPERIMENTAL when false: the transmitter stops " +
+                                "listening before it transmits, so it will talk over anyone " +
+                                "sharing the channel. Use only on a channel you control. It is " +
+                                "restored automatically when the run ends. Set it false when " +
+                                "delivery is poor but tx_stats shows every frame submitted and " +
+                                "none failed — that pattern means the MAC is deferring, not that " +
+                                "the link is bad.",
+                        ),
+                    )
                 },
                 required = listOf("tx_session", "rx_session", "channel"),
             ),
@@ -602,6 +615,7 @@ internal class Tools(
                 modes = modes,
                 bounds = bounds,
                 frameBytes = request.intOr("frame_bytes", 200),
+                carrierSense = request.boolOr("carrier_sense", true),
             )
             text(
                 json.encodeToString(ExperimentResult.serializer(), result),
