@@ -128,8 +128,8 @@ from a PR description.
 | Item | Where it stands |
 |---|---|
 | 1. `SetCcaGates` / `GetCcaGates` | Upstream as [OpenIPC/devourer#427](https://github.com/OpenIPC/devourer/pull/427); extended to jaguar3 and through a maintainer review round. Verified on RTL8812AU, RTL8822C, and RTL8733BU as an unported backend. |
-| 2. Do not enable EDCCA on Jaguar1 by default | **Not proposed.** A default change has a blast radius one bench cannot measure, and 5 GHz regulatory adaptivity is a real reason a project might want it. To be raised as an upstream *issue* with the measurements, not a PR. Draft text is ready; see below. |
-| 3. Thresholds as config rather than constants | Folded into the same issue as the smallest of the three options. |
+| 2. Do not enable EDCCA on Jaguar1 by default | Raised as [OpenIPC/devourer#428](https://github.com/OpenIPC/devourer/issues/428), deliberately as an issue rather than a PR: a default change has a blast radius one bench cannot measure, and 5 GHz regulatory adaptivity is a real reason a project might want it on. |
+| 3. Thresholds as config rather than constants | In the same issue, as the smallest of the three options it offers. |
 | 4. Correct the `CLAUDE.md` claim | Done, inside #427 at the maintainer's request: the Jaguar3 result is no longer stated as general, both families are given as disagreeing measurements, and the flooder arm is paired in so the Jaguar1 number cannot be read as "disable everything". |
 
 Items 2 and 3 are the only open ones, and they are deliberately a question

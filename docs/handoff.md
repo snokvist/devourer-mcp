@@ -177,8 +177,17 @@ Settled, with evidence in [`hardware-evidence.md`](hardware-evidence.md):
 Two vendored patches carry the work, both hardware-verified before being
 proposed: `0001-rx-gain-range.patch` (the `RxGain*` contract) and
 `0002-cca-gates.patch` (the gate split). The gate split is upstream as
-[OpenIPC/devourer#427](https://github.com/OpenIPC/devourer/pull/427). Retire
-each patch when it lands.
+[OpenIPC/devourer#427](https://github.com/OpenIPC/devourer/pull/427), now
+through a bot review and a maintainer review — see
+[`hardware-evidence.md`](hardware-evidence.md) for what the bench said about
+each point, including the one maintainer claim that did not survive
+measurement. The EDCCA-at-bring-up policy question is
+[#428](https://github.com/OpenIPC/devourer/issues/428). Retire each patch when
+it lands.
+
+`0002` is a **superset** of #427: it is stacked on `0001` and additionally
+gives Jaguar1 the per-gate state that `SetRxGainRange`'s carrier-sense
+re-apply needs. `vendor/patches/README.md` says why.
 
 ## Picking up
 
