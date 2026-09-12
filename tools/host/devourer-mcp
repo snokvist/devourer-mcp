@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Launch the devourer-mcp server with the JDK this project is built against,
+# and make sure the bridge is up first.
+#
+# This is the command an MCP host should be pointed at. It exists because the
+# Gradle-generated start script honours whatever `java` happens to be on PATH,
+# and a host launching us with an older JVM fails with an UnsupportedClassVersionError
+# that says nothing about what to do next.
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+
+# Pin the toolchain, preferring the project's JDK but accepting any modern one.
+for candidate in "${DEVOURER_MCP_JDK:-}" /home/snokvist/dev-tools/jdk-21 "$JAVA_HOME"; do
+  [ -n "${candidate:-}" ] && [ -x "$candidate/bin/java" ] || continue
+  ver=$("$candidate/bin/java" -version 2>&1 | head -1 | grep -oE '"[0-9]+' | tr -d '"')
+  if [ "${ver:-0}" -ge 21 ]; then export JAVA_HOME="$candidate"; break; fi
+done
+if [ -z "${JAVA_HOME:-}" ] || [ ! -x "$JAVA_HOME/bin/java" ]; then
+  echo "devourer-mcp: need a JDK 21+; set DEVOURER_MCP_JDK or JAVA_HOME" >&2
+  exit 1
+fi
+
+APP="$ROOT/kotlin/mcp/build/install/mcp/bin/mcp"
+if [ ! -x "$APP" ]; then
+  echo "devourer-mcp: not built. Run: ./gradlew :mcp:installDist" >&2
+  exit 1
+fi
+
+# The server refuses to start without the bridge, so start it here rather than
+# making every host config a two-step setup.
+"$ROOT/tools/host/bridge-ctl.sh" start >&2
+
+exec "$APP" "$@"

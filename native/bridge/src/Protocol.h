@@ -38,7 +38,7 @@
 namespace bridge {
 
 inline constexpr int kProtocolVersionMajor = 1;
-inline constexpr int kProtocolVersionMinor = 0;
+inline constexpr int kProtocolVersionMinor = 1; /* +rx_chains in FrameRecord */
 
 /* 'D','V','R','F' — present on every frame record so a desynchronized reader
  * fails loudly at the next record instead of interpreting payload as a
@@ -107,7 +107,22 @@ struct FrameRecord {
   /* --- derived, computed once here so every consumer agrees --- */
   uint8_t  has_tx_egress_tsf; /* beacon/probe-resp carry the sender's TX TSF */
   uint8_t  truncated;         /* payload was cut to max_frame_bytes */
-  uint8_t  _pad[2];
+
+  /* How many RF chains this adapter actually has — the authoritative width of
+   * the rssi/snr/evm arrays above.
+   *
+   * Counting non-zero slots instead is WRONG, and quietly so. On a 2T2R
+   * RTL8812A the [2] and [3] SNR slots are not path C/D SNR at all: devourer
+   * fills them from csi_current, which on 8812 carries stream 1/2 CSI and is
+   * meaningful only on an 8814AU (src/jaguar1/FrameParser.cpp says exactly
+   * this). Those bytes are frequently non-zero, so a "count the non-zero
+   * chains" reader reports four chains on a two-chain radio and publishes CSI
+   * numbers as SNR measurements.
+   *
+   * Carried per-record rather than looked up per-session so a replayed or
+   * exported capture stays self-describing. */
+  uint8_t  rx_chains;
+  uint8_t  _pad;
   uint64_t tx_egress_tsf;
 };
 #pragma pack(pop)

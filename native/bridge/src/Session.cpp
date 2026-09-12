@@ -167,6 +167,8 @@ std::unique_ptr<Session> Session::open(uint32_t id, const OpenOptions &opts,
     s->_info.backend = devourer::generation_name(caps.generation);
     s->_info.variant = caps.variant;
     s->_info.id_source = IdSource::UsbId;
+    /* Cached here so the RX hot path never calls back into the HAL. */
+    s->_rx_chains = caps.rx_chains;
   }
   return s;
 }
@@ -241,23 +243,22 @@ Json Session::describe() {
         .set("rate_diffs_measured", caps.txpwr.rate_diffs_measured);
     c.set("tx_power", p);
 
-    /* The per-feature gates the MCP layer checks before offering an
-     * operation. Every one of these is a real "this adapter can / cannot",
-     * resolved by devourer from the chip identity — which is exactly why the
-     * instrument needs no chipset table of its own. */
+    /* The per-feature gates the MCP layer checks before offering an operation.
+     * Every one is a real "this adapter can / cannot", resolved by devourer
+     * from the chip identity — which is exactly why the instrument needs no
+     * chipset table of its own.
+     *
+     * Booleans and numbers are kept in separate objects. A gate ("can this
+     * adapter do per-packet TX power") and a parameter ("in steps of how many
+     * qdB") are different questions, and a consumer that has to type-sniff each
+     * value to tell them apart will eventually get one wrong. */
     Json f;
     f.set("ack_responder", caps.ack_responder_ok)
         .set("tx_retry_limit", caps.tx_retry_limit_ok)
         .set("per_packet_txpower", caps.per_packet_txpower)
-        .set("per_packet_txpower_steps", caps.per_pkt_txpwr_steps)
-        .set("per_packet_txpower_step_qdb", caps.per_pkt_txpwr_step_qdb)
-        .set("per_packet_txpower_min_qdb", caps.per_pkt_txpwr_min_qdb)
-        .set("per_packet_txpower_max_qdb", caps.per_pkt_txpwr_max_qdb)
         .set("per_packet_txpower_measured", caps.per_pkt_txpwr_measured)
         .set("narrowband", caps.narrowband_ok)
         .set("fast_retune", caps.fastretune_ok)
-        .set("xtal_cap_max", caps.xtal_cap_max)
-        .set("xtal_cap_default", caps.xtal_cap_default)
         .set("he_er_su", caps.he_er_su_ok)
         .set("per_chain_rssi", caps.per_chain_rssi)
         .set("hw_rx_timestamp", caps.hw_rx_timestamp)
@@ -266,6 +267,15 @@ Json Session::describe() {
         .set("twt", caps.twt_ok)
         .set("sounding", caps.sounding_ok);
     c.set("features", f);
+
+    Json prm;
+    prm.set("per_packet_txpower_steps", caps.per_pkt_txpwr_steps)
+        .set("per_packet_txpower_step_qdb", caps.per_pkt_txpwr_step_qdb)
+        .set("per_packet_txpower_min_qdb", caps.per_pkt_txpwr_min_qdb)
+        .set("per_packet_txpower_max_qdb", caps.per_pkt_txpwr_max_qdb)
+        .set("xtal_cap_max", caps.xtal_cap_max)
+        .set("xtal_cap_default", caps.xtal_cap_default);
+    c.set("parameters", prm);
   }
   j.set("capabilities", c);
 
@@ -392,6 +402,7 @@ void Session::on_packet(const Packet &pkt) {
   h.fcs_present = a.fcs_present ? 1 : 0;
   h.pkt_rpt_type = static_cast<uint8_t>(a.pkt_rpt_type);
   h.truncated = (take < avail) ? 1 : 0;
+  h.rx_chains = _rx_chains;
   if (auto tsf = pkt.TxEgressTsf()) {
     h.has_tx_egress_tsf = 1;
     h.tx_egress_tsf = *tsf;
@@ -505,6 +516,71 @@ bool Session::send_frame(const uint8_t *data, size_t len, std::string &err) {
   if (!ok)
     err = "send_packet returned false (queue full or TX path down)";
   return ok;
+}
+
+Json Session::rx_paths_json() {
+  Json j;
+  j.set("session", _id);
+  if (_radio == nullptr) {
+    j.set("valid", false).set("why", "session has no radio");
+    return j;
+  }
+  if (!_rx_running) {
+    /* Returning a zeroed report here would look like "no antennas active",
+     * which is a measurement claim we have no basis for. */
+    j.set("valid", false)
+        .set("why", "no RX loop running — start monitoring first; this estimate "
+                    "needs sampled frames");
+    return j;
+  }
+  const auto p = _radio->GetActiveRxPaths();
+  /* GetActiveRxPaths is an optional IRadio member with a not-ported default, so
+   * a backend that never implemented it returns a zeroed struct. Zero chains is
+   * not a measurement of zero active antennas — reporting it as one would be a
+   * fabricated result. Say "not implemented" and hand back the static chain
+   * count so the caller can fall back to analysing the capture itself. */
+  if (p.n_chains == 0) {
+    const auto caps = _radio->GetAdapterCaps();
+    j.set("valid", false)
+        .set("supported", false)
+        .set("why",
+             "this backend does not implement the live RX-path estimator "
+             "(IRadio::GetActiveRxPaths is optional and not ported here)")
+        .set("static_rx_chains", caps.rx_chains)
+        .set("fallback",
+             "derive per-chain balance from the capture instead: compare the "
+             "per-chain RSSI distributions in capture_summary");
+    return j;
+  }
+  j.set("supported", true);
+  j.set("valid", p.valid)
+      .set("frames_sampled", p.frames)
+      .set("chains", p.n_chains)
+      .set("chains_active", p.n_active)
+      .set("active_mask", p.active_mask);
+  Json per = Json::array();
+  for (int i = 0; i < p.n_chains && i < 4; ++i) {
+    Json c;
+    c.set("chain", std::string(1, static_cast<char>('A' + i)))
+        .set("sampled", p.chain_sampled[i])
+        .set("active", ((p.active_mask >> i) & 1) != 0);
+    if (p.chain_sampled[i])
+      c.set("rssi_mean_dbm", p.rssi_mean_dbm[i]);
+    if (p.snr_sampled[i])
+      c.set("snr_mean_db", p.snr_mean_db[i]);
+    if (p.evm_sampled[i])
+      c.set("evm_mean_db", p.evm_mean_db[i]);
+    per.push(c);
+  }
+  j.set("per_chain", per);
+  j.set("caveat",
+        "Best-effort: a chain is called active when its window-mean RSSI is "
+        "within a margin of the strongest chain. Strong near-field traffic can "
+        "light a chain whose antenna is absent, via coupling. Treat one window "
+        "as a hint; repeat across channels and signal levels for a verdict. "
+        "This reports CHAINS, not antenna connectors — a 2-chain part behind 4 "
+        "antennas with diversity switching still reports 2.");
+  return j;
 }
 
 SessionStats Session::stats() const {

@@ -90,6 +90,16 @@ public:
 
   bool send_frame(const uint8_t *data, size_t len, std::string &err);
 
+  /* Live estimate of which RF chains are actually carrying signal.
+   *
+   * The one antenna question that cannot be answered statically: a chain whose
+   * antenna is missing or blocked still exists in AdapterCaps, but its RSSI
+   * collapses toward the noise floor. Needs a running RX loop and ambient
+   * traffic; devourer is explicit that a single window is a hint, not a
+   * verdict, since a strong near-field frame can light a dead chain by
+   * coupling. */
+  Json rx_paths_json();
+
   SessionStats stats() const;
   Json stats_json() const;
   SelectedChannel channel() const { return _channel; }
@@ -127,6 +137,8 @@ private:
   mutable std::mutex _stats_mu;
   SessionStats _stats;
   uint32_t _max_frame_bytes = 4096;
+  /* From AdapterCaps at open; stamped into every frame record. */
+  uint8_t _rx_chains = 0;
 };
 
 } // namespace bridge

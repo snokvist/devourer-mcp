@@ -46,6 +46,18 @@ std::mutex g_mu;
 std::map<uint32_t, std::shared_ptr<Session>> g_sessions;
 uint32_t g_next_session = 1;
 
+/* Which control connection opened each session.
+ *
+ * A session outliving the client that created it strands the adapter: the chip
+ * stays claimed and powered, and the next client gets BUSY from a process that
+ * no longer exists. Crash isolation is the whole point of running the bridge
+ * separately, so the bridge has to survive a client dying — but it must not
+ * keep holding that client's hardware. Sessions are therefore owned by their
+ * creating control connection and released when it goes away. */
+std::map<uint32_t, uint64_t> g_session_owner;
+std::atomic<uint64_t> g_next_conn{1};
+thread_local uint64_t t_conn_id = 0;
+
 std::string g_devourer_commit = "unknown";
 
 /* --- small helpers ------------------------------------------------------- */
@@ -240,6 +252,7 @@ Json op_radio_open(const Json &req) {
   {
     std::lock_guard<std::mutex> lk(g_mu);
     g_sessions[id] = std::move(s);
+    g_session_owner[id] = t_conn_id;
   }
   return ok(desc);
 }
@@ -260,6 +273,7 @@ Json op_radio_close(const Json &req) {
   {
     std::lock_guard<std::mutex> lk(g_mu);
     g_sessions.erase(s->id());
+    g_session_owner.erase(s->id());
   }
   s->close();
   return ok(Json().set("closed", s->id()));
@@ -322,6 +336,14 @@ Json op_monitor_stop(const Json &req) {
     return fail("no_session", err);
   s->stop_monitor();
   return ok(Json().set("session", s->id()).set("monitoring", false));
+}
+
+Json op_radio_rx_paths(const Json &req) {
+  std::string err;
+  auto s = find_session(req, err);
+  if (!s)
+    return fail("no_session", err);
+  return ok(s->rx_paths_json());
 }
 
 Json op_monitor_stats(const Json &req) {
@@ -407,6 +429,8 @@ Json dispatch(const Json &req) {
     return op_monitor_stop(req);
   if (op == "monitor.stats")
     return op_monitor_stats(req);
+  if (op == "radio.rx_paths")
+    return op_radio_rx_paths(req);
   if (op == "tx.send")
     return op_tx_send(req);
   if (op == "shutdown") {
@@ -453,7 +477,34 @@ bool write_all(int fd, const std::string &s) {
   return true;
 }
 
+/* Release every session this control connection still owns. */
+void release_sessions_of(uint64_t conn) {
+  std::vector<std::shared_ptr<Session>> doomed;
+  {
+    std::lock_guard<std::mutex> lk(g_mu);
+    for (auto it = g_session_owner.begin(); it != g_session_owner.end();) {
+      if (it->second != conn) {
+        ++it;
+        continue;
+      }
+      auto s = g_sessions.find(it->first);
+      if (s != g_sessions.end()) {
+        doomed.push_back(s->second);
+        g_sessions.erase(s);
+      }
+      it = g_session_owner.erase(it);
+    }
+  }
+  for (auto &s : doomed) {
+    std::fprintf(stderr,
+                 "control connection gone — releasing orphaned session %u\n",
+                 s->id());
+    s->close();
+  }
+}
+
 void serve_control(int fd, std::string first_line) {
+  t_conn_id = g_next_conn.fetch_add(1);
   std::string line = std::move(first_line);
   for (;;) {
     Json req;
@@ -474,6 +525,7 @@ void serve_control(int fd, std::string first_line) {
       break;
   }
   ::close(fd);
+  release_sessions_of(t_conn_id);
 }
 
 void serve_connection(int fd) {
@@ -594,6 +646,7 @@ int main(int argc, char **argv) {
     for (auto &kv : g_sessions)
       kv.second->close();
     g_sessions.clear();
+    g_session_owner.clear();
   }
   ::close(listener);
   ::unlink(sock_path.c_str());
