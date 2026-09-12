@@ -58,7 +58,7 @@ Full evidence, including the findings below, is in
 
 ## The big one: `IRadio` coverage
 
-**The bridge calls 11 of `IRadio`'s 52 virtual methods.** That single number is
+**The bridge calls 14 of `IRadio`'s 52 virtual methods.** That single number is
 the most useful measure of what is left, and it is why this does not yet replace
 Devourer's own `rxdemo`/`txdemo` as research instruments (those expose ~60 and
 ~85 environment knobs respectively).

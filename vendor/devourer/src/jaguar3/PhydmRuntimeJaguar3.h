@@ -1,6 +1,7 @@
 #ifndef DEVOURER_JAGUAR3_PHYDM_RUNTIME_H
 #define DEVOURER_JAGUAR3_PHYDM_RUNTIME_H
 
+#include <atomic>
 #include <cstdint>
 
 #include "logger.h"
@@ -40,6 +41,30 @@ public:
    * re-applied when they change). */
   void on_channel_change() { _cck_lv_valid = false; }
 
+  /* Bound where DIG may take the IGI, and read it back. Same contract as the
+   * Jaguar1 watchdog: the loop keeps reacting to false alarms, it just does
+   * so inside the caller's window. min == max pins. Atomic because dig()
+   * runs from the RX tick while a control-plane caller may be setting it. */
+  void PinGainRange(uint8_t min, uint8_t max) {
+    _gain_min.store(min, std::memory_order_relaxed);
+    _gain_max.store(max, std::memory_order_relaxed);
+    _gain_pinned.store(true, std::memory_order_relaxed);
+  }
+  uint8_t GainRangeMin() const { return _gain_min.load(std::memory_order_relaxed); }
+  uint8_t GainRangeMax() const { return _gain_max.load(std::memory_order_relaxed); }
+  bool GainRangePinned() const { return _gain_pinned.load(std::memory_order_relaxed); }
+
+  /* The live index, and a direct write clamped to the range above — what a
+   * host clamp needs when no tick has run yet. */
+  uint8_t CurrentIgi() { return get_igi(); }
+  void ApplyIgiClamp() {
+    const uint8_t lo = GainRangeMin(), hi = GainRangeMax();
+    const uint8_t cur = get_igi();
+    const uint8_t want = cur < lo ? lo : (cur > hi ? hi : cur);
+    if (want != cur)
+      set_igi(want);
+  }
+
 private:
   /* --- false-alarm / CCA statistics (this tick's window) --- */
   struct FaStats {
@@ -72,6 +97,11 @@ private:
 
   /* EDCCA state (log-on-change) */
   int _last_l2h_logged = 0x7fff;
+
+  /* Host clamp on DIG's coverage window; defaults are phydm's own. */
+  std::atomic<uint8_t> _gain_min{0x1e}; /* DIG_MIN_COVERAGE */
+  std::atomic<uint8_t> _gain_max{0x22}; /* DIG_MAX_OF_MIN_COVERAGE */
+  std::atomic<bool> _gain_pinned{false};
 };
 
 } // namespace jaguar3

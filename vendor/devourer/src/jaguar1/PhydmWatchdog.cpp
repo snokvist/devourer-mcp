@@ -205,12 +205,16 @@ void PhydmWatchdog::DigInit() {
    * bound when nothing's linked. */
   _cur_ig_value =
       static_cast<uint8_t>(_radio->phy_query_bb_reg_public(0xc50, 0xff));
-  _rx_gain_range_max = _dig_max_of_min;
-  _rx_gain_range_min = _dm_dig_min;
-  _logger->info("PhydmWatchdog::DigInit cur_ig=0x{:02x} bounds=[0x{:02x},0x{:02x}]",
-                unsigned(_cur_ig_value),
-                unsigned(_rx_gain_range_min),
-                unsigned(_rx_gain_range_max));
+  /* Do not clobber a range the host already asked for: the watchdog can be
+   * started after a SetRxGainRange, and silently restoring the phydm default
+   * would undo it with nothing in the log to say so. */
+  if (!_gain_range_pinned.load(std::memory_order_relaxed))
+    SetGainRange(_dm_dig_min, _dig_max_of_min);
+  _logger->info("PhydmWatchdog::DigInit cur_ig=0x{:02x} bounds=[0x{:02x},0x{:02x}]{}",
+                unsigned(_cur_ig_value), unsigned(GainRangeMin()),
+                unsigned(GainRangeMax()),
+                _gain_range_pinned.load(std::memory_order_relaxed)
+                    ? " (host-set)" : "");
 }
 
 void PhydmWatchdog::DigTick(uint32_t fa_cnt) {
@@ -253,11 +257,13 @@ void PhydmWatchdog::DigTick(uint32_t fa_cnt) {
     }
   }
 
-  if (new_igi < _rx_gain_range_min) {
-    new_igi = _rx_gain_range_min;
+  const uint8_t range_min = GainRangeMin();
+  const uint8_t range_max = GainRangeMax();
+  if (new_igi < range_min) {
+    new_igi = range_min;
   }
-  if (new_igi > _rx_gain_range_max) {
-    new_igi = _rx_gain_range_max;
+  if (new_igi > range_max) {
+    new_igi = range_max;
   }
 
   if (new_igi != _cur_ig_value) {

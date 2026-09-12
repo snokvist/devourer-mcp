@@ -1107,6 +1107,54 @@ void RtlJaguar3Device::StopContinuousTx() {
  * channel-busy signal (a CW tone spikes OFDM CCA); OFDM FA is the vendor sum of
  * the sub-counters. Read-then-reset for a per-call delta; serialized on _reg_mu
  * so it does not race the coex thread's register access. */
+devourer::RxGainCaps RtlJaguar3Device::GetRxGainCaps() {
+  devourer::RxGainCaps c;
+  c.supported = true;
+  c.settable = true;
+  /* phydm's coverage window for this family is [0x1e, 0x22]; the clamp is
+   * allowed the wider span the 7-bit field supports, because backing gain
+   * off past DIG's own ceiling is exactly what a near-field host needs. */
+  c.index_min = 0x1e;
+  c.index_max = 0x3e;
+  c.index_name = "igi";
+  c.index_step_db = 1;
+  /* Unlike Jaguar1's opt-in watchdog, this generation's DIG runs from the RX
+   * tick, so it is live whenever frames are arriving. */
+  c.automatic = true;
+  c.automatic_input = "phydm DIG on the RX tick, keyed on the false-alarm rate";
+  return c;
+}
+
+devourer::RxGainState RtlJaguar3Device::GetRxGainState() {
+  devourer::RxGainState s;
+  /* Reading 0x1d70 before the BB is up returns whatever the bus gives back —
+   * measured as 0x6a on a freshly opened 8822C, which is outside DIG's window
+   * entirely. A plausible-looking number from a chip that is not powered is
+   * worse than no number. */
+  if (!_brought_up)
+    return s;
+  s.valid = true;
+  s.index = _phydm.CurrentIgi();
+  s.range_min = _phydm.GainRangeMin();
+  s.range_max = _phydm.GainRangeMax();
+  s.automatic = true;
+  return s;
+}
+
+bool RtlJaguar3Device::SetRxGainRange(uint8_t min, uint8_t max) {
+  const auto caps = GetRxGainCaps();
+  if (min > max || min < caps.index_min || max > caps.index_max)
+    return false;
+  _phydm.PinGainRange(min, max);
+  /* The window is remembered either way; the register write needs a BB. */
+  if (!_brought_up)
+    return true;
+  _phydm.ApplyIgiClamp();
+  _logger->info("Jaguar3: rx gain clamped to [0x{:02x},0x{:02x}], igi now 0x{:02x}",
+                unsigned(min), unsigned(max), unsigned(_phydm.CurrentIgi()));
+  return true;
+}
+
 RxEnergy RtlJaguar3Device::GetRxEnergy(bool with_nhm) {
   std::lock_guard<std::mutex> lk(_reg_mu);
   RxEnergy e;

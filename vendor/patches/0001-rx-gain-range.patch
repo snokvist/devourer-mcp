@@ -1,0 +1,529 @@
+diff --git a/vendor/devourer/src/IRadio.h b/vendor/devourer/src/IRadio.h
+index a6186a3..ec8cca5 100644
+--- a/vendor/devourer/src/IRadio.h
++++ b/vendor/devourer/src/IRadio.h
+@@ -10,6 +10,7 @@
+ #include "AmpduMode.h"
+ #include "DeviceConfig.h"
+ #include "AdapterHealth.h"
++#include "RxGain.h"
+ #include "RxQuality.h"
+ #include "SelectedChannel.h"
+ #include "ThermalStatus.h"
+@@ -551,6 +552,26 @@ public:
+    * snapshot; each generation overrides. */
+   virtual devourer::RxQuality GetRxQuality() { return {}; }
+ 
++  /* What this radio's receive gain is, and whether anything is adjusting it.
++   * See RxGain.h — the short version is that on most generations here the
++   * answer to the second half is "no", and nothing currently publishes that. */
++  virtual devourer::RxGainCaps GetRxGainCaps() { return {}; }
++  virtual devourer::RxGainState GetRxGainState() { return {}; }
++
++  /* Clamp the receive-gain index to [min, max].
++   *
++   * A range rather than a value because that is the one operation correct on
++   * every generation: where an adaptive loop exists this steers it rather
++   * than defeating it, and where none exists min == max sets the gain. Both
++   * ends are clamped to GetRxGainCaps()'s limits. Returns false where the
++   * backend cannot do it; pass the caps' own index_min/index_max to restore
++   * the default. */
++  virtual bool SetRxGainRange(uint8_t min, uint8_t max) {
++    (void)min;
++    (void)max;
++    return false;
++  }
++
+   /* --- Adapter health (see src/AdapterHealth.h; examples/doctor is the
+    * reference consumer; the EFUSE probe is on IRtlRadio) --- */
+ 
+diff --git a/vendor/devourer/src/RxGain.h b/vendor/devourer/src/RxGain.h
+new file mode 100644
+index 0000000..2a0af81
+--- /dev/null
++++ b/vendor/devourer/src/RxGain.h
+@@ -0,0 +1,66 @@
++#ifndef RX_GAIN_H
++#define RX_GAIN_H
++
++#include <cstdint>
++
++/* Receive-gain reporting and clamping, across generations.
++ *
++ * Every backend in this tree has a receive-gain index. On most of them
++ * nothing moves it: jaguar1's DIG watchdog is opt-in and its floor is written
++ * once at bring-up, jaguar3's IGI is static, kestrel has no DIG monitor at
++ * all, and the mt76 port's 1 Hz gain tracker runs with a hard-coded RSSI
++ * input because a monitor consumer has no associated-station table. Only
++ * jaguar2's ~100 ms dig_step genuinely adapts.
++ *
++ * That matters because the index decides more than sensitivity. On Realtek
++ * the EDCCA threshold is re-derived from IGI, so a gain pinned at the DIG
++ * floor is also a carrier-sense threshold pinned at its most trigger-happy
++ * value — measured on an RTL8812AU at bench distance as a transmitter that
++ * accepted every frame and aired none of them, on three channels, while its
++ * own receiver decoded 98% of what a neighbour sent it.
++ *
++ * The knob here is therefore a RANGE rather than a value. A range is the one
++ * operation correct on every generation: where an adaptive loop exists it
++ * steers the loop instead of fighting it (all three loops in this tree
++ * already clamp to exactly such bounds internally), where none exists
++ * min == max simply sets the gain, and "pin it" needs no second entry point.
++ */
++namespace devourer {
++
++struct RxGainCaps {
++  bool supported = false; /* the index can be read */
++  bool settable = false;  /* and clamped */
++
++  /* Hardware/driver limits for the clamp. Higher index is LESS gain on every
++   * family that implements this, and that is the only cross-family guarantee
++   * made here — the units themselves are native and not comparable. */
++  uint8_t index_min = 0;
++  uint8_t index_max = 0;
++  /* "igi" (Realtek, 7-bit, BB 0xc50/0xe50) or "gain_class" (mt76, 0..2). */
++  const char *index_name = "";
++  /* dB per index step, 0 when the steps are not uniform or not characterised.
++   * Same honesty as TxPowerCaps::step_measured: a caller converting index
++   * deltas to dB needs to know whether it may. */
++  uint8_t index_step_db = 0;
++
++  /* Is anything actually moving the index, and keyed on what.
++   *
++   * The distinction this struct exists to publish: "a periodic loop exists"
++   * and "a periodic loop is doing something" are different facts, and in this
++   * tree all but one backend are the second kind. [automatic_input] says what
++   * the loop keys on, or why it is inert. */
++  bool automatic = false;
++  const char *automatic_input = "";
++};
++
++struct RxGainState {
++  bool valid = false;
++  uint8_t index = 0;     /* read back from the hardware */
++  uint8_t range_min = 0; /* the clamp in force */
++  uint8_t range_max = 0;
++  bool automatic = false; /* a loop is running inside that clamp */
++};
++
++} // namespace devourer
++
++#endif /* RX_GAIN_H */
+diff --git a/vendor/devourer/src/jaguar1/PhydmWatchdog.cpp b/vendor/devourer/src/jaguar1/PhydmWatchdog.cpp
+index b75c08f..2dc8b87 100644
+--- a/vendor/devourer/src/jaguar1/PhydmWatchdog.cpp
++++ b/vendor/devourer/src/jaguar1/PhydmWatchdog.cpp
+@@ -205,12 +205,16 @@ void PhydmWatchdog::DigInit() {
+    * bound when nothing's linked. */
+   _cur_ig_value =
+       static_cast<uint8_t>(_radio->phy_query_bb_reg_public(0xc50, 0xff));
+-  _rx_gain_range_max = _dig_max_of_min;
+-  _rx_gain_range_min = _dm_dig_min;
+-  _logger->info("PhydmWatchdog::DigInit cur_ig=0x{:02x} bounds=[0x{:02x},0x{:02x}]",
+-                unsigned(_cur_ig_value),
+-                unsigned(_rx_gain_range_min),
+-                unsigned(_rx_gain_range_max));
++  /* Do not clobber a range the host already asked for: the watchdog can be
++   * started after a SetRxGainRange, and silently restoring the phydm default
++   * would undo it with nothing in the log to say so. */
++  if (!_gain_range_pinned.load(std::memory_order_relaxed))
++    SetGainRange(_dm_dig_min, _dig_max_of_min);
++  _logger->info("PhydmWatchdog::DigInit cur_ig=0x{:02x} bounds=[0x{:02x},0x{:02x}]{}",
++                unsigned(_cur_ig_value), unsigned(GainRangeMin()),
++                unsigned(GainRangeMax()),
++                _gain_range_pinned.load(std::memory_order_relaxed)
++                    ? " (host-set)" : "");
+ }
+ 
+ void PhydmWatchdog::DigTick(uint32_t fa_cnt) {
+@@ -253,11 +257,13 @@ void PhydmWatchdog::DigTick(uint32_t fa_cnt) {
+     }
+   }
+ 
+-  if (new_igi < _rx_gain_range_min) {
+-    new_igi = _rx_gain_range_min;
++  const uint8_t range_min = GainRangeMin();
++  const uint8_t range_max = GainRangeMax();
++  if (new_igi < range_min) {
++    new_igi = range_min;
+   }
+-  if (new_igi > _rx_gain_range_max) {
+-    new_igi = _rx_gain_range_max;
++  if (new_igi > range_max) {
++    new_igi = range_max;
+   }
+ 
+   if (new_igi != _cur_ig_value) {
+diff --git a/vendor/devourer/src/jaguar1/PhydmWatchdog.h b/vendor/devourer/src/jaguar1/PhydmWatchdog.h
+index e0fb4b8..51a6a39 100644
+--- a/vendor/devourer/src/jaguar1/PhydmWatchdog.h
++++ b/vendor/devourer/src/jaguar1/PhydmWatchdog.h
+@@ -53,6 +53,28 @@ public:
+   /* Run one watchdog cycle synchronously on the calling thread. */
+   void TickOnce();
+ 
++  /* Bound where DIG may take the initial-gain index.
++   *
++   * Steers the loop rather than replacing it: DigTick already clamps its
++   * next IGI to this range, so raising the minimum stops DIG choosing
++   * maximum sensitivity while leaving it free to react to false alarms
++   * above that. min == max pins it. */
++  void SetGainRange(uint8_t min, uint8_t max) {
++    _rx_gain_range_min.store(min, std::memory_order_relaxed);
++    _rx_gain_range_max.store(max, std::memory_order_relaxed);
++  }
++  /* As above, and remembered as a host decision so DigInit leaves it alone. */
++  void PinGainRange(uint8_t min, uint8_t max) {
++    SetGainRange(min, max);
++    _gain_range_pinned.store(true, std::memory_order_relaxed);
++  }
++  uint8_t GainRangeMin() const {
++    return _rx_gain_range_min.load(std::memory_order_relaxed);
++  }
++  uint8_t GainRangeMax() const {
++    return _rx_gain_range_max.load(std::memory_order_relaxed);
++  }
++
+   /* EDCCA threshold tracking (the SetCcaMode enable path): when on, each
+    * tick re-derives the BB 0x8a4 L2H/H2L from the IGI DIG just wrote —
+    * the vendor couples the EDCCA threshold to IGI per watchdog cycle
+@@ -126,8 +148,11 @@ private:
+   uint8_t _dm_dig_max = 0x26;       /* DIG_MAX_COVERAGR */
+   uint8_t _dm_dig_min = 0x1c;       /* DIG_MIN_COVERAGE */
+   uint8_t _dig_max_of_min = 0x2a;   /* DIG_MAX_OF_MIN_BALANCE_MODE */
+-  uint8_t _rx_gain_range_max = 0x2a;
+-  uint8_t _rx_gain_range_min = 0x1c;
++  /* Atomic: DigTick reads these on the watchdog thread while a control-plane
++   * caller may be setting them through SetGainRange. */
++  std::atomic<uint8_t> _rx_gain_range_max{0x2a};
++  std::atomic<uint8_t> _rx_gain_range_min{0x1c};
++  std::atomic<bool> _gain_range_pinned{false};
+ };
+ 
+ /* Vendor adaptivity operating point for the 11AC dies (phydm_adaptivity.c
+diff --git a/vendor/devourer/src/jaguar1/RtlJaguarDevice.cpp b/vendor/devourer/src/jaguar1/RtlJaguarDevice.cpp
+index 880f174..513f19e 100644
+--- a/vendor/devourer/src/jaguar1/RtlJaguarDevice.cpp
++++ b/vendor/devourer/src/jaguar1/RtlJaguarDevice.cpp
+@@ -126,6 +126,22 @@ void RtlJaguarDevice::InitWrite(SelectedChannel channel) {
+    * DEVOURER_DIS_CCA. Always applied — the enable path is what programs
+    * the BB EDCCA thresholds off their parked never-trigger table value. */
+   SetCcaMode(_cfg.tuning.disable_cca);
++
++  /* DEVOURER_IGI — pin the receive-gain index. Documented as a fixed
++   * initial-gain override and until now honoured only by Jaguar2, which
++   * meant it silently did nothing on the family whose gain is pinned at the
++   * DIG floor by phydm_SetIgiFloor_Jaguar just above. Applied as the
++   * degenerate clamp so there is one code path. */
++  if (_cfg.rx.igi) {
++    const uint8_t igi = *_cfg.rx.igi & 0x7f;
++    _rx_gain_min = igi;
++    _rx_gain_max = igi;
++    _rx_gain_clamped = true;
++  }
++  /* A clamp asked for before bring-up (config, or SetRxGainRange on a closed
++   * radio) lands here, once there is a BB to write it to. */
++  if (_rx_gain_clamped)
++    SetRxGainRange(_rx_gain_min, _rx_gain_max);
+   /* ACK window (DEVOURER_ACK_TIMEOUT_US): one library default on every
+    * generation — see the DeviceConfig field doc. */
+   _device.rtw_write8(0x0640, static_cast<uint8_t>(
+@@ -981,6 +997,10 @@ void RtlJaguarDevice::ClearAckResponder() {
+ }
+ 
+ void RtlJaguarDevice::SetCcaMode(bool disabled) {
++  /* Remembered so a later gain change can re-apply the same mode: the EDCCA
++   * thresholds this path programs are derived from IGI, so they are stale
++   * the moment the gain moves. */
++  _cca_disabled = disabled;
+   /* MAC carrier-sense gate: the same REG_TX_PTCL_CTRL bits as the HalMAC
+    * generations — the vendor's phydm_mac_edcca_state drives 0x520[15] on
+    * this family too; [14] is the primary-CCA defer. */
+@@ -2222,6 +2242,89 @@ uint32_t RtlJaguarDevice::ReadBBReg(uint16_t addr, uint32_t mask) {
+   return _radioManagement->phy_query_bb_reg_public(addr, mask);
+ }
+ 
++devourer::RxGainCaps RtlJaguarDevice::GetRxGainCaps() {
++  devourer::RxGainCaps c;
++  c.supported = true;
++  c.settable = true;
++  c.index_min = kRxGainIndexMin;
++  c.index_max = kRxGainIndexMax;
++  c.index_name = "igi";
++  c.index_step_db = 1;
++  /* The watchdog is what runs DIG, and it is opt-in
++   * (DeviceConfig tuning.phydm_watchdog). Without it the index is whatever
++   * bring-up left — which is dm_dig_min, the FLOOR, written on purpose by
++   * phydm_SetIgiFloor_Jaguar to match the kernel's sensitivity. */
++  const bool dig = _halModule.phydm_watchdog() != nullptr;
++  c.automatic = dig;
++  c.automatic_input =
++      dig ? "phydm DIG, keyed on the false-alarm rate"
++          : "nothing: the phydm watchdog is not running, so the index stays "
++            "where bring-up left it (dm_dig_min, i.e. maximum gain)";
++  return c;
++}
++
++devourer::RxGainState RtlJaguarDevice::GetRxGainState() {
++  devourer::RxGainState s;
++  if (!_brought_up)
++    return s; /* valid=false: the BB is not up, there is nothing to read */
++  s.valid = true;
++  s.index = static_cast<uint8_t>(
++      _radioManagement->phy_query_bb_reg_public(rA_IGI_Jaguar, 0x7f));
++  s.range_min = _rx_gain_min;
++  s.range_max = _rx_gain_max;
++  s.automatic = _halModule.phydm_watchdog() != nullptr;
++  return s;
++}
++
++bool RtlJaguarDevice::SetRxGainRange(uint8_t min, uint8_t max) {
++  if (min > max)
++    return false;
++  if (min < kRxGainIndexMin || max > kRxGainIndexMax)
++    return false;
++  if (!_brought_up) {
++    /* Remember it: bring-up applies the clamp once the BB exists. Refusing
++     * would make the open-time config path impossible. */
++    _rx_gain_min = min;
++    _rx_gain_max = max;
++    _rx_gain_clamped = true;
++    return true;
++  }
++
++  _rx_gain_min = min;
++  _rx_gain_max = max;
++  _rx_gain_clamped = true;
++
++  /* Steer DIG where it is running, so it keeps reacting to false alarms
++   * inside the new bounds instead of being overridden behind its back. */
++  if (auto *wd = _halModule.phydm_watchdog())
++    wd->PinGainRange(min, max);
++
++  /* And move the index now. Without the watchdog nothing else ever will,
++   * which is the default and the case this exists for. */
++  const uint8_t cur = static_cast<uint8_t>(
++      _radioManagement->phy_query_bb_reg_public(rA_IGI_Jaguar, 0x7f));
++  const uint8_t want = cur < min ? min : (cur > max ? max : cur);
++  if (want != cur) {
++    /* All populated path-IGI registers, as phydm_write_dig_reg_c50 does.
++     * C/D are 8814-only; the writes are ignored elsewhere. */
++    _device.phy_set_bb_reg(rA_IGI_Jaguar, bMaskByte0, want);
++    _device.phy_set_bb_reg(rB_IGI_Jaguar, bMaskByte0, want);
++    if (_eepromManager->version_id.ICType == CHIP_8814A) {
++      _device.phy_set_bb_reg(0x1850, bMaskByte0, want);
++      _device.phy_set_bb_reg(0x1A50, bMaskByte0, want);
++    }
++    _logger->info("Jaguar1: rx gain clamped to [0x{:02x},0x{:02x}], igi 0x{:02x}->0x{:02x}",
++                  unsigned(min), unsigned(max), unsigned(cur), unsigned(want));
++  } else {
++    _logger->info("Jaguar1: rx gain clamped to [0x{:02x},0x{:02x}], igi already 0x{:02x}",
++                  unsigned(min), unsigned(max), unsigned(cur));
++  }
++  /* The EDCCA threshold is derived from IGI, so re-apply carrier sense to
++   * pick the new value up rather than leaving the gate on the old one. */
++  SetCcaMode(_cca_disabled);
++  return true;
++}
++
+ devourer::EfuseStability RtlJaguarDevice::ProbeEfuseStability(int reads) {
+   if (!_brought_up)
+     return {}; /* supported=false — needs a powered, brought-up chip */
+diff --git a/vendor/devourer/src/jaguar1/RtlJaguarDevice.h b/vendor/devourer/src/jaguar1/RtlJaguarDevice.h
+index bd1de23..f042771 100644
+--- a/vendor/devourer/src/jaguar1/RtlJaguarDevice.h
++++ b/vendor/devourer/src/jaguar1/RtlJaguarDevice.h
+@@ -38,11 +38,31 @@ extern "C"
+  * baseband). The chip is identified at construction time via SYS_CFG bits and
+  * USB PID; this class drives bring-up, RX, and TX for whichever member of the
+  * family is present. */
++/* phydm DIG coverage floor for the Jaguar AC family (dm_dig_min), and a
++ * ceiling matching what jaguar2's dig_step already permits on the same BB
++ * register. IGI is 1 dB per step.
++ *
++ * The floor is the vendor's, deliberately. Below it the EDCCA coupling
++ * (L2H = th_l2h_ini + 0x32 - IGI, clamped to 10) reaches its permissive
++ * clamp at IGI 0x17, and that was measured on an 8812AU: it moves delivery
++ * under a deferring MAC from ~1% to ~4%, which is real and nowhere near a
++ * fix. Not worth putting outside phydm's designed coverage by default. */
++inline constexpr uint8_t kRxGainIndexMin = 0x1c;
++inline constexpr uint8_t kRxGainIndexMax = 0x3e;
++
+ class RtlJaguarDevice : public IRtlRadio {
+   /* Declared before every component that consumes it: members initialise in
+    * declaration order, and _eepromManager / _radioManagement / _halModule all
+    * take _cfg in the constructor's init list. */
+   const devourer::DeviceConfig _cfg;
++  /* The receive-gain clamp in force. Defaults are phydm's DIG coverage for
++   * this family; the ceiling is widened to the value jaguar2's dig_step
++   * already allows, because backing gain off is the direction a host needs
++   * and 0x2a is only DIG's own upper bound, not the register's. */
++  bool _cca_disabled = false; /* last SetCcaMode argument; see SetRxGainRange */
++  uint8_t _rx_gain_min = kRxGainIndexMin;
++  uint8_t _rx_gain_max = kRxGainIndexMax;
++  bool _rx_gain_clamped = false;
+   std::shared_ptr<EepromManager> _eepromManager;
+   std::shared_ptr<RadioManagementModule> _radioManagement;
+   /* Last channel handed to SetMonitorChannel. Value-initialised so the
+@@ -252,6 +272,14 @@ public:
+    * also running it shares/steals these counters. */
+   RxEnergy GetRxEnergy(bool with_nhm) override;
+ 
++  /* Receive gain — see RxGain.h. The index is phydm's IGI at BB 0xc50/0xe50,
++   * 1 dB per step, and on this family it also sets the EDCCA threshold: the
++   * adaptivity port re-derives L2H/H2L from IGI, so clamping the gain clamps
++   * carrier sense with it. */
++  devourer::RxGainCaps GetRxGainCaps() override;
++  devourer::RxGainState GetRxGainState() override;
++  bool SetRxGainRange(uint8_t min, uint8_t max) override;
++
+   /* Consolidated windowed RX link-quality snapshot (see RxQuality.h) — subsumes
+    * GetRxEnergy. Fed per decoded frame in the RX loop via _rxq. */
+   devourer::RxQuality GetRxQuality() override {
+diff --git a/vendor/devourer/src/jaguar3/PhydmRuntimeJaguar3.cpp b/vendor/devourer/src/jaguar3/PhydmRuntimeJaguar3.cpp
+index 58f843c..0ff5fd5 100644
+--- a/vendor/devourer/src/jaguar3/PhydmRuntimeJaguar3.cpp
++++ b/vendor/devourer/src/jaguar3/PhydmRuntimeJaguar3.cpp
+@@ -80,7 +80,9 @@ void PhydmRuntimeJaguar3::dig(const FaStats &fa, bool is_dfs) {
+   int igi = get_igi();
+ 
+   uint32_t th0 = 2000, th1 = 4000, th2 = 5000;
+-  uint8_t lo = DIG_MIN_COVERAGE, hi = DIG_MAX_OF_MIN_COVERAGE;
++  /* The host's window when it set one, phydm's otherwise. DFS still wins:
++   * pinning the IGI there is a regulatory boundary rule, not a preference. */
++  uint8_t lo = GainRangeMin(), hi = GainRangeMax();
+   if (is_dfs) {
+     th0 = 250; th1 = 1000; th2 = 2000;
+     lo = DIG_MIN_DFS; hi = DIG_MIN_DFS;
+diff --git a/vendor/devourer/src/jaguar3/PhydmRuntimeJaguar3.h b/vendor/devourer/src/jaguar3/PhydmRuntimeJaguar3.h
+index 1d75749..4bfe7e9 100644
+--- a/vendor/devourer/src/jaguar3/PhydmRuntimeJaguar3.h
++++ b/vendor/devourer/src/jaguar3/PhydmRuntimeJaguar3.h
+@@ -1,6 +1,7 @@
+ #ifndef DEVOURER_JAGUAR3_PHYDM_RUNTIME_H
+ #define DEVOURER_JAGUAR3_PHYDM_RUNTIME_H
+ 
++#include <atomic>
+ #include <cstdint>
+ 
+ #include "logger.h"
+@@ -40,6 +41,30 @@ public:
+    * re-applied when they change). */
+   void on_channel_change() { _cck_lv_valid = false; }
+ 
++  /* Bound where DIG may take the IGI, and read it back. Same contract as the
++   * Jaguar1 watchdog: the loop keeps reacting to false alarms, it just does
++   * so inside the caller's window. min == max pins. Atomic because dig()
++   * runs from the RX tick while a control-plane caller may be setting it. */
++  void PinGainRange(uint8_t min, uint8_t max) {
++    _gain_min.store(min, std::memory_order_relaxed);
++    _gain_max.store(max, std::memory_order_relaxed);
++    _gain_pinned.store(true, std::memory_order_relaxed);
++  }
++  uint8_t GainRangeMin() const { return _gain_min.load(std::memory_order_relaxed); }
++  uint8_t GainRangeMax() const { return _gain_max.load(std::memory_order_relaxed); }
++  bool GainRangePinned() const { return _gain_pinned.load(std::memory_order_relaxed); }
++
++  /* The live index, and a direct write clamped to the range above — what a
++   * host clamp needs when no tick has run yet. */
++  uint8_t CurrentIgi() { return get_igi(); }
++  void ApplyIgiClamp() {
++    const uint8_t lo = GainRangeMin(), hi = GainRangeMax();
++    const uint8_t cur = get_igi();
++    const uint8_t want = cur < lo ? lo : (cur > hi ? hi : cur);
++    if (want != cur)
++      set_igi(want);
++  }
++
+ private:
+   /* --- false-alarm / CCA statistics (this tick's window) --- */
+   struct FaStats {
+@@ -72,6 +97,11 @@ private:
+ 
+   /* EDCCA state (log-on-change) */
+   int _last_l2h_logged = 0x7fff;
++
++  /* Host clamp on DIG's coverage window; defaults are phydm's own. */
++  std::atomic<uint8_t> _gain_min{0x1e}; /* DIG_MIN_COVERAGE */
++  std::atomic<uint8_t> _gain_max{0x22}; /* DIG_MAX_OF_MIN_COVERAGE */
++  std::atomic<bool> _gain_pinned{false};
+ };
+ 
+ } // namespace jaguar3
+diff --git a/vendor/devourer/src/jaguar3/RtlJaguar3Device.cpp b/vendor/devourer/src/jaguar3/RtlJaguar3Device.cpp
+index 8cc3396..75aa732 100644
+--- a/vendor/devourer/src/jaguar3/RtlJaguar3Device.cpp
++++ b/vendor/devourer/src/jaguar3/RtlJaguar3Device.cpp
+@@ -1107,6 +1107,54 @@ void RtlJaguar3Device::StopContinuousTx() {
+  * channel-busy signal (a CW tone spikes OFDM CCA); OFDM FA is the vendor sum of
+  * the sub-counters. Read-then-reset for a per-call delta; serialized on _reg_mu
+  * so it does not race the coex thread's register access. */
++devourer::RxGainCaps RtlJaguar3Device::GetRxGainCaps() {
++  devourer::RxGainCaps c;
++  c.supported = true;
++  c.settable = true;
++  /* phydm's coverage window for this family is [0x1e, 0x22]; the clamp is
++   * allowed the wider span the 7-bit field supports, because backing gain
++   * off past DIG's own ceiling is exactly what a near-field host needs. */
++  c.index_min = 0x1e;
++  c.index_max = 0x3e;
++  c.index_name = "igi";
++  c.index_step_db = 1;
++  /* Unlike Jaguar1's opt-in watchdog, this generation's DIG runs from the RX
++   * tick, so it is live whenever frames are arriving. */
++  c.automatic = true;
++  c.automatic_input = "phydm DIG on the RX tick, keyed on the false-alarm rate";
++  return c;
++}
++
++devourer::RxGainState RtlJaguar3Device::GetRxGainState() {
++  devourer::RxGainState s;
++  /* Reading 0x1d70 before the BB is up returns whatever the bus gives back —
++   * measured as 0x6a on a freshly opened 8822C, which is outside DIG's window
++   * entirely. A plausible-looking number from a chip that is not powered is
++   * worse than no number. */
++  if (!_brought_up)
++    return s;
++  s.valid = true;
++  s.index = _phydm.CurrentIgi();
++  s.range_min = _phydm.GainRangeMin();
++  s.range_max = _phydm.GainRangeMax();
++  s.automatic = true;
++  return s;
++}
++
++bool RtlJaguar3Device::SetRxGainRange(uint8_t min, uint8_t max) {
++  const auto caps = GetRxGainCaps();
++  if (min > max || min < caps.index_min || max > caps.index_max)
++    return false;
++  _phydm.PinGainRange(min, max);
++  /* The window is remembered either way; the register write needs a BB. */
++  if (!_brought_up)
++    return true;
++  _phydm.ApplyIgiClamp();
++  _logger->info("Jaguar3: rx gain clamped to [0x{:02x},0x{:02x}], igi now 0x{:02x}",
++                unsigned(min), unsigned(max), unsigned(_phydm.CurrentIgi()));
++  return true;
++}
++
+ RxEnergy RtlJaguar3Device::GetRxEnergy(bool with_nhm) {
+   std::lock_guard<std::mutex> lk(_reg_mu);
+   RxEnergy e;
+diff --git a/vendor/devourer/src/jaguar3/RtlJaguar3Device.h b/vendor/devourer/src/jaguar3/RtlJaguar3Device.h
+index ced9c7d..f45d669 100644
+--- a/vendor/devourer/src/jaguar3/RtlJaguar3Device.h
++++ b/vendor/devourer/src/jaguar3/RtlJaguar3Device.h
+@@ -184,6 +184,13 @@ public:
+    * _reg_mu against the coex runtime thread. The read side of the CW tone. */
+   RxEnergy GetRxEnergy(bool with_nhm) override;
+ 
++  /* Receive gain — see RxGain.h. IGI at BB 0x1d70 (7 bits per RX path), and
++   * this generation's DIG runs from the RX tick rather than a thread, so the
++   * clamp steers it the same way the Jaguar1 watchdog is steered. */
++  devourer::RxGainCaps GetRxGainCaps() override;
++  devourer::RxGainState GetRxGainState() override;
++  bool SetRxGainRange(uint8_t min, uint8_t max) override;
++
+   /* Consolidated windowed RX link-quality snapshot (see RxQuality.h) — subsumes
+    * GetRxEnergy. Fed per decoded frame in the RX loop via _rxq. On Jaguar3 the
+    * noise-floor is the passive rssi-snr estimate (this generation has no

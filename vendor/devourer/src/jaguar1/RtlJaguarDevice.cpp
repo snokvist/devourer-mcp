@@ -126,6 +126,22 @@ void RtlJaguarDevice::InitWrite(SelectedChannel channel) {
    * DEVOURER_DIS_CCA. Always applied — the enable path is what programs
    * the BB EDCCA thresholds off their parked never-trigger table value. */
   SetCcaMode(_cfg.tuning.disable_cca);
+
+  /* DEVOURER_IGI — pin the receive-gain index. Documented as a fixed
+   * initial-gain override and until now honoured only by Jaguar2, which
+   * meant it silently did nothing on the family whose gain is pinned at the
+   * DIG floor by phydm_SetIgiFloor_Jaguar just above. Applied as the
+   * degenerate clamp so there is one code path. */
+  if (_cfg.rx.igi) {
+    const uint8_t igi = *_cfg.rx.igi & 0x7f;
+    _rx_gain_min = igi;
+    _rx_gain_max = igi;
+    _rx_gain_clamped = true;
+  }
+  /* A clamp asked for before bring-up (config, or SetRxGainRange on a closed
+   * radio) lands here, once there is a BB to write it to. */
+  if (_rx_gain_clamped)
+    SetRxGainRange(_rx_gain_min, _rx_gain_max);
   /* ACK window (DEVOURER_ACK_TIMEOUT_US): one library default on every
    * generation — see the DeviceConfig field doc. */
   _device.rtw_write8(0x0640, static_cast<uint8_t>(
@@ -981,6 +997,10 @@ void RtlJaguarDevice::ClearAckResponder() {
 }
 
 void RtlJaguarDevice::SetCcaMode(bool disabled) {
+  /* Remembered so a later gain change can re-apply the same mode: the EDCCA
+   * thresholds this path programs are derived from IGI, so they are stale
+   * the moment the gain moves. */
+  _cca_disabled = disabled;
   /* MAC carrier-sense gate: the same REG_TX_PTCL_CTRL bits as the HalMAC
    * generations — the vendor's phydm_mac_edcca_state drives 0x520[15] on
    * this family too; [14] is the primary-CCA defer. */
@@ -2220,6 +2240,89 @@ void RtlJaguarDevice::ClearTxMode() { _tx_mode_default.reset(); }
 
 uint32_t RtlJaguarDevice::ReadBBReg(uint16_t addr, uint32_t mask) {
   return _radioManagement->phy_query_bb_reg_public(addr, mask);
+}
+
+devourer::RxGainCaps RtlJaguarDevice::GetRxGainCaps() {
+  devourer::RxGainCaps c;
+  c.supported = true;
+  c.settable = true;
+  c.index_min = kRxGainIndexMin;
+  c.index_max = kRxGainIndexMax;
+  c.index_name = "igi";
+  c.index_step_db = 1;
+  /* The watchdog is what runs DIG, and it is opt-in
+   * (DeviceConfig tuning.phydm_watchdog). Without it the index is whatever
+   * bring-up left — which is dm_dig_min, the FLOOR, written on purpose by
+   * phydm_SetIgiFloor_Jaguar to match the kernel's sensitivity. */
+  const bool dig = _halModule.phydm_watchdog() != nullptr;
+  c.automatic = dig;
+  c.automatic_input =
+      dig ? "phydm DIG, keyed on the false-alarm rate"
+          : "nothing: the phydm watchdog is not running, so the index stays "
+            "where bring-up left it (dm_dig_min, i.e. maximum gain)";
+  return c;
+}
+
+devourer::RxGainState RtlJaguarDevice::GetRxGainState() {
+  devourer::RxGainState s;
+  if (!_brought_up)
+    return s; /* valid=false: the BB is not up, there is nothing to read */
+  s.valid = true;
+  s.index = static_cast<uint8_t>(
+      _radioManagement->phy_query_bb_reg_public(rA_IGI_Jaguar, 0x7f));
+  s.range_min = _rx_gain_min;
+  s.range_max = _rx_gain_max;
+  s.automatic = _halModule.phydm_watchdog() != nullptr;
+  return s;
+}
+
+bool RtlJaguarDevice::SetRxGainRange(uint8_t min, uint8_t max) {
+  if (min > max)
+    return false;
+  if (min < kRxGainIndexMin || max > kRxGainIndexMax)
+    return false;
+  if (!_brought_up) {
+    /* Remember it: bring-up applies the clamp once the BB exists. Refusing
+     * would make the open-time config path impossible. */
+    _rx_gain_min = min;
+    _rx_gain_max = max;
+    _rx_gain_clamped = true;
+    return true;
+  }
+
+  _rx_gain_min = min;
+  _rx_gain_max = max;
+  _rx_gain_clamped = true;
+
+  /* Steer DIG where it is running, so it keeps reacting to false alarms
+   * inside the new bounds instead of being overridden behind its back. */
+  if (auto *wd = _halModule.phydm_watchdog())
+    wd->PinGainRange(min, max);
+
+  /* And move the index now. Without the watchdog nothing else ever will,
+   * which is the default and the case this exists for. */
+  const uint8_t cur = static_cast<uint8_t>(
+      _radioManagement->phy_query_bb_reg_public(rA_IGI_Jaguar, 0x7f));
+  const uint8_t want = cur < min ? min : (cur > max ? max : cur);
+  if (want != cur) {
+    /* All populated path-IGI registers, as phydm_write_dig_reg_c50 does.
+     * C/D are 8814-only; the writes are ignored elsewhere. */
+    _device.phy_set_bb_reg(rA_IGI_Jaguar, bMaskByte0, want);
+    _device.phy_set_bb_reg(rB_IGI_Jaguar, bMaskByte0, want);
+    if (_eepromManager->version_id.ICType == CHIP_8814A) {
+      _device.phy_set_bb_reg(0x1850, bMaskByte0, want);
+      _device.phy_set_bb_reg(0x1A50, bMaskByte0, want);
+    }
+    _logger->info("Jaguar1: rx gain clamped to [0x{:02x},0x{:02x}], igi 0x{:02x}->0x{:02x}",
+                  unsigned(min), unsigned(max), unsigned(cur), unsigned(want));
+  } else {
+    _logger->info("Jaguar1: rx gain clamped to [0x{:02x},0x{:02x}], igi already 0x{:02x}",
+                  unsigned(min), unsigned(max), unsigned(cur));
+  }
+  /* The EDCCA threshold is derived from IGI, so re-apply carrier sense to
+   * pick the new value up rather than leaving the gate on the old one. */
+  SetCcaMode(_cca_disabled);
+  return true;
 }
 
 devourer::EfuseStability RtlJaguarDevice::ProbeEfuseStability(int reads) {
