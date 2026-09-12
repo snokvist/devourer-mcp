@@ -144,6 +144,17 @@ It is not reachable without that change: `RtlJaguarDevice` publishes
 `ReadBBReg` and no write. This is an upstream contribution, not a local patch
 — `vendor/patches/` is empty and should stay that way.
 
+Surveying the other five backends first changed the shape of the fix, so the
+two-liner is no longer the proposal:
+[`proposals/rx-gain-range.md`](proposals/rx-gain-range.md). Every family has a
+receive-gain index and on five of six nothing moves it — jaguar2 is the only
+one whose gain genuinely adapts. The MT7612U is not winning because its 1 Hz
+loop adapts either; its input is hard-coded (`const int avg = -75`), pinning
+it at the middle gain class rather than, like the Realtek, at maximum. So the
+vendor-neutral knob is the *bounds*, not the value: one `SetRxGainRange`
+steers a loop where one exists, sets the gain where none does, and needs no
+separate pin operation.
+
 ---
 
 ## Smaller gaps
