@@ -91,7 +91,7 @@ public fun main(args: Array<String>): Unit = runBlocking {
         ),
         instructions = INSTRUCTIONS,
     )
-    Tools(radios, captures, exportDir).registerAll(server)
+    Tools(radios, captures, exportDir, scope).registerAll(server)
 
     Runtime.getRuntime().addShutdownHook(
         Thread {

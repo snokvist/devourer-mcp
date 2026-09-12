@@ -58,7 +58,7 @@ cmake --build build/native-bridge -j          # devourer + the bridge
 
 tools/host/bridge-ctl.sh start                 # start|stop|restart|status|log
 tools/host/devourer-mcp                        # MCP server on stdio (starts the bridge)
-tools/host/smoke-test.py                       # end-to-end check against real adapters
+tools/smoke-test.py                            # end-to-end check against real adapters
 ```
 
 `tools/host/devourer-mcp` is the command an MCP host should be pointed at: it

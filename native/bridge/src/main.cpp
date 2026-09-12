@@ -21,6 +21,9 @@
 #include <sys/un.h>
 #include <unistd.h>
 
+#include <ctime>
+
+#include <algorithm>
 #include <atomic>
 #include <cerrno>
 #include <csignal>
@@ -36,7 +39,9 @@
 #include "Devices.h"
 #include "Json.h"
 #include "Protocol.h"
+#include "RadiotapBuilder.h"
 #include "Session.h"
+#include "TxMode.h"
 
 namespace bridge {
 namespace {
@@ -158,6 +163,31 @@ std::shared_ptr<Session> find_session(const Json &req, std::string &err) {
     return nullptr;
   }
   return it->second;
+}
+
+uint64_t now_monotonic_ns() {
+  timespec ts{};
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return static_cast<uint64_t>(ts.tv_sec) * 1000000000ull +
+         static_cast<uint64_t>(ts.tv_nsec);
+}
+
+/* Sleep until an ABSOLUTE monotonic deadline.
+ *
+ * A relative nanosleep per frame is the obvious implementation and it is wrong
+ * for pacing: each call sleeps *at least* the requested time, and the wakeup
+ * latency is added fresh every iteration rather than absorbed. Measured on this
+ * bench, a 200-frame burst asking for 1 ms spacing took 2226 ms instead of
+ * 200 ms — an 11x overshoot that would have been silently attributed to the
+ * radio.
+ *
+ * Scheduling against a fixed start time makes the error non-cumulative: a late
+ * wakeup shortens the next sleep instead of pushing every later frame back. */
+void sleep_until_ns(uint64_t deadline_ns) {
+  timespec ts{static_cast<time_t>(deadline_ns / 1000000000ull),
+              static_cast<long>(deadline_ns % 1000000000ull)};
+  while (::clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &ts, nullptr) == EINTR) {
+  }
 }
 
 Json ok(Json result) { return Json().set("ok", true).set("result", result); }
@@ -367,41 +397,173 @@ Json op_radio_channel(const Json &req) {
   return ok(Json().set("session", s->id()).set("channel", ch.Channel));
 }
 
+/* Assemble the frame to air.
+ *
+ * Two paths, deliberately unequal in ceremony:
+ *
+ *   NORMAL      `mode` (a TxMode spec such as "MCS5/40/SGI") + `body_hex` (the
+ *               802.11 MPDU). The bridge builds the radiotap header with
+ *               devourer's own build_stream_radiotap, so the wire-format rules
+ *               send_packet depends on — a 13-byte header keeps the legacy/HT
+ *               path, 22 bytes selects VHT — live in one place instead of being
+ *               re-derived by every caller.
+ *
+ *   PRIVILEGED  `frame_hex` / `frame_b64`: a complete radiotap header plus MPDU,
+ *               byte for byte. The escape hatch for development and for shapes
+ *               the builder cannot express. Never the normal interface.
+ */
+bool build_tx_frame(const Json &req, std::vector<uint8_t> &out,
+                    std::string &mode_used, size_t &body_at, std::string &err) {
+  const bool raw = req.at("frame_hex").is_string() || req.at("frame_b64").is_string();
+  const bool structured = req.at("body_hex").is_string();
+  if (raw && structured) {
+    err = "give either frame_hex/frame_b64 (raw, radiotap included) or "
+          "body_hex + mode (structured) — not both";
+    return false;
+  }
+  if (raw) {
+    mode_used = "raw";
+    body_at = 0; /* the caller supplied radiotap itself, so offsets are absolute */
+    if (req.at("frame_hex").is_string()) {
+      if (!decode_hex(req.at("frame_hex").str(), out)) {
+        err = "frame_hex is not valid hex";
+        return false;
+      }
+    } else if (!decode_b64(req.at("frame_b64").str(), out)) {
+      err = "frame_b64 is not valid base64";
+      return false;
+    }
+    if (out.empty()) {
+      err = "empty frame";
+      return false;
+    }
+    return true;
+  }
+  if (!structured) {
+    err = "one of body_hex (with optional mode) or frame_hex/frame_b64 is required";
+    return false;
+  }
+  std::vector<uint8_t> body;
+  if (!decode_hex(req.at("body_hex").str(), body)) {
+    err = "body_hex is not valid hex";
+    return false;
+  }
+  if (body.size() < 10) {
+    err = "body_hex is shorter than an 802.11 header (give the MPDU, not the "
+          "payload alone)";
+    return false;
+  }
+  const std::string spec = req.at("mode").str("6M");
+  const devourer::TxMode mode = devourer::parse_tx_mode_str(spec);
+  mode_used = spec;
+  out = devourer::build_stream_radiotap(mode);
+  body_at = out.size();
+  out.insert(out.end(), body.begin(), body.end());
+  return true;
+}
+
 Json op_tx_send(const Json &req) {
   std::string err;
   auto s = find_session(req, err);
   if (!s)
     return fail("no_session", err);
+
   std::vector<uint8_t> frame;
-  if (req.at("frame_hex").is_string()) {
-    if (!decode_hex(req.at("frame_hex").str(), frame))
-      return fail("bad_request", "frame_hex is not valid hex");
-  } else if (req.at("frame_b64").is_string()) {
-    if (!decode_b64(req.at("frame_b64").str(), frame))
-      return fail("bad_request", "frame_b64 is not valid base64");
-  } else {
-    return fail("bad_request", "one of frame_hex / frame_b64 is required");
-  }
-  if (frame.empty())
-    return fail("bad_request", "empty frame");
+  std::string mode_used;
+  size_t body_at = 0;
+  if (!build_tx_frame(req, frame, mode_used, body_at, err))
+    return fail("bad_request", err);
 
   const int64_t count = req.at("count").integer(1);
   if (count < 1 || count > 100000)
     return fail("bad_request", "count must be 1..100000");
+  const int64_t interval_us = req.at("interval_us").integer(0);
+  if (interval_us < 0 || interval_us > 1000000)
+    return fail("bad_request", "interval_us must be 0..1000000");
 
-  /* Bounded by construction: the bridge will not sit in an unbounded send
-   * loop. Longer or timed transmissions are the experiment engine's job, where
-   * there is a cancellation path and a caller watching. */
+  /* Bounded by construction: the bridge will not sit in an unbounded send loop.
+   * count*interval is capped so a paced burst cannot silently become a
+   * multi-minute transmission from a single request. */
+  const int64_t budget_us = count * interval_us;
+  if (budget_us > 30 * 1000000LL)
+    return fail("bad_request",
+                "count x interval_us exceeds the 30 s per-request transmit "
+                "budget; split it or run it as an experiment");
+
+  /* A per-frame sequence stamp, so a receiver can tell our frames apart and
+   * count losses. Written little-endian at `seq_offset`.
+   *
+   * The offset is relative to WHAT THE CALLER GAVE US: the MPDU on the
+   * structured path (where we prepended the radiotap header ourselves), the
+   * whole buffer on the raw path. Getting this wrong is silent and ruinous —
+   * stamping at the wrong place leaves every frame carrying sequence 0, and a
+   * burst that delivered perfectly reports one frame received and the rest as
+   * duplicates. */
+  const int64_t seq_offset = req.at("seq_offset").integer(-1);
+  const size_t stamp_at = body_at + static_cast<size_t>(seq_offset < 0 ? 0 : seq_offset);
+  const bool stamp = seq_offset >= 0 && stamp_at + 4 <= frame.size();
+  if (seq_offset >= 0 && !stamp)
+    return fail("bad_request",
+                "seq_offset+4 is past the end of the frame (offsets are "
+                "relative to body_hex on the structured path)");
+
+  const uint64_t t0 = now_monotonic_ns();
   int64_t sent = 0;
+  int64_t late = 0;          /* frames whose slot had already passed */
+  uint64_t max_late_ns = 0;  /* worst single miss */
+  uint64_t send_ns = 0;      /* time inside send_packet, summed */
   for (int64_t i = 0; i < count; ++i) {
-    if (!s->send_frame(frame.data(), frame.size(), err))
+    if (interval_us > 0 && i > 0) {
+      const uint64_t due = t0 + static_cast<uint64_t>(i) *
+                                    static_cast<uint64_t>(interval_us) * 1000ull;
+      const uint64_t before = now_monotonic_ns();
+      if (before >= due) {
+        ++late;
+        max_late_ns = std::max(max_late_ns, before - due);
+      } else {
+        sleep_until_ns(due);
+      }
+    }
+    if (stamp) {
+      const uint32_t v = static_cast<uint32_t>(i);
+      std::memcpy(frame.data() + stamp_at, &v, 4);
+    }
+    const uint64_t s0 = now_monotonic_ns();
+    const bool sent_ok = s->send_frame(frame.data(), frame.size(), err);
+    send_ns += now_monotonic_ns() - s0;
+    if (!sent_ok)
       break;
     ++sent;
   }
+  const uint64_t elapsed_ns = now_monotonic_ns() - t0;
+
   Json r;
-  r.set("session", s->id()).set("requested", count).set("sent", sent);
+  r.set("session", s->id())
+      .set("requested", count)
+      .set("sent", sent)
+      .set("mode", mode_used)
+      .set("frame_bytes", static_cast<int64_t>(frame.size()))
+      .set("elapsed_ns", elapsed_ns)
+      .set("seq_stamped", stamp)
+      .set("radiotap_bytes", static_cast<int64_t>(body_at))
+      /* Frames the loop could not start on time. Nonzero means the requested
+       * spacing was tighter than this host and adapter can sustain, so the
+       * burst is not the cadence that was asked for — a caller measuring
+       * against timing must know that rather than infer it from elapsed_ns. */
+      .set("late_frames", late)
+      .set("max_late_us", static_cast<int64_t>(max_late_ns / 1000))
+      .set("send_ns_total", send_ns);
+  if (sent > 0 && elapsed_ns > 0)
+    r.set("frames_per_second",
+          static_cast<double>(sent) * 1e9 / static_cast<double>(elapsed_ns));
   if (sent != count)
     r.set("stopped_because", err);
+  /* Say it here, not only in the tool description: a caller reading this
+   * result should not be able to mistake acceptance for arrival. */
+  r.set("note",
+        "`sent` counts frames the TX path accepted, which is NOT evidence they "
+        "reached the air. Confirm on an independent receiver before treating "
+        "this as TX_VERIFIED.");
   return ok(r);
 }
 

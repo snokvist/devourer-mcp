@@ -129,6 +129,42 @@ public class RadioManager(private val bridge: BridgeClient) {
      *
      * Requires a running monitor and ambient traffic.
      */
+    /**
+     * Transmits a probe burst: a structured TX mode plus an 802.11 MPDU, with a
+     * per-frame sequence counter stamped by the bridge.
+     *
+     * Distinct from [sendFrame] in that the bridge builds the radiotap header
+     * from [mode] using devourer's own builder, rather than the caller shipping
+     * pre-built radiotap bytes. That keeps the wire-format rules `send_packet`
+     * depends on in one place, and makes a rate sweep a matter of changing a
+     * string rather than re-encoding a header.
+     *
+     * Stamping happens in the bridge because the counter has to change between
+     * frames inside the tight send loop — doing it here would mean one socket
+     * round trip per frame, and the measurement would be of that.
+     */
+    public suspend fun sendProbe(
+        session: Int,
+        frameHex: String,
+        mode: String,
+        count: Int,
+        intervalUs: Int,
+        sequenceOffset: Int,
+    ): JsonObject {
+        require(count in 1..MAX_TX_COUNT) { "count must be 1..$MAX_TX_COUNT" }
+        return bridge.call(
+            "tx.send",
+            buildJsonObject {
+                put("session", JsonPrimitive(session))
+                put("body_hex", JsonPrimitive(frameHex))
+                put("mode", JsonPrimitive(mode))
+                put("count", JsonPrimitive(count))
+                put("interval_us", JsonPrimitive(intervalUs))
+                put("seq_offset", JsonPrimitive(sequenceOffset))
+            },
+        )
+    }
+
     public suspend fun activeRxPaths(session: Int): JsonObject =
         bridge.call("radio.rx_paths", buildJsonObject { put("session", JsonPrimitive(session)) })
 
@@ -193,9 +229,19 @@ public class RadioManager(private val bridge: BridgeClient) {
                 "its synthesizer covers ${caps.tune2g4.describe()} and ${caps.tune5g.describe()}",
             )
         }
+        // "Outside the characterized range" and "this backend publishes no
+        // characterized range" are different facts with different remedies, and
+        // conflating them produces a warning that fires on every channel and so
+        // gets ignored — which is worse than not warning at all.
+        val hasAnyRange = caps.characterized2g4.valid || caps.characterized5g.valid
+        if (!hasAnyRange) {
+            return "${radio.label} publishes no TX-power characterized range, so whether " +
+                "${mhz}MHz is calibrated is UNKNOWN rather than known-bad. Relative power " +
+                "comparisons on one adapter remain meaningful; absolute dBm claims do not."
+        }
         if (!caps.isCharacterized(mhz)) {
-            return "${mhz}MHz is tunable but OUTSIDE the TX-power characterized range " +
-                "(${caps.characterized2g4.describe()}, ${caps.characterized5g.describe()}). " +
+            return "${mhz}MHz is tunable but OUTSIDE this adapter's TX-power characterized " +
+                "range (${caps.characterized2g4.describe()}, ${caps.characterized5g.describe()}). " +
                 "Power there is extrapolated from the nearest calibrated channel — " +
                 "treat absolute power readings as uncalibrated."
         }

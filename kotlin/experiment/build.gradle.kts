@@ -1,21 +1,18 @@
 plugins {
     alias(libs.plugins.kotlin.serialization)
-    application
+}
+
+kotlin {
+    explicitApi()
 }
 
 dependencies {
-    implementation(project(":protocol"))
-    implementation(project(":radio"))
-    implementation(project(":capture"))
-    implementation(project(":experiment"))
-    implementation(libs.mcp.sdk)
+    api(project(":protocol"))
+    api(project(":radio"))
+    api(project(":capture"))
     implementation(libs.coroutines.core)
     testImplementation(kotlin("test"))
     testImplementation(libs.junit.jupiter)
     testImplementation(libs.coroutines.test)
     testRuntimeOnly(libs.junit.platform.launcher)
-}
-
-application {
-    mainClass.set("org.openipc.devourer.mcp.MainKt")
 }

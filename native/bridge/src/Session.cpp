@@ -2,6 +2,7 @@
 
 #include <libusb.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <cstring>
 #include <ctime>
@@ -483,6 +484,10 @@ void Session::on_packet(const Packet &pkt) {
       _stats.dropped++;
       return; /* whole record dropped: never write a partial one */
     }
+    /* Reserve in generous steps rather than letting vector growth realloc a
+     * multi-megabyte buffer while the lock is held. */
+    if (_buf.capacity() < _buf.size() + need)
+      _buf.reserve(std::max(_buf.capacity() * 2, _buf.size() + need + (1u << 20)));
     const size_t at = _buf.size();
     _buf.resize(at + need);
     std::memcpy(_buf.data() + at, &h, sizeof h);
@@ -529,6 +534,18 @@ void Session::stop_writer() {
 }
 
 void Session::writer_loop() {
+  /* Double-buffered: the producer keeps filling one vector while this thread
+   * writes the other, and handover is a swap.
+   *
+   * The obvious implementation — copy the pending bytes out under the lock —
+   * is a correctness bug on this hot path, not just a slow one. The copy is
+   * O(bytes pending), it runs while holding the same mutex on_packet needs, and
+   * the RX callback therefore blocks for the length of a multi-megabyte memcpy
+   * whenever the client falls behind. Devourer is explicit that an undrained
+   * MT7612U receiver wedges below the USB level, and that is what happened
+   * here: "rx.pool_exhaust=backpressure cannot be honoured", then MCU command
+   * timeouts and a dead adapter. Swapping makes the locked region constant
+   * time, so the producer is never held up by however much is queued. */
   std::vector<uint8_t> chunk;
   for (;;) {
     {
@@ -538,8 +555,9 @@ void Session::writer_loop() {
       });
       if (_writer_stop && _buf.size() == _buf_head)
         return;
-      chunk.assign(_buf.begin() + static_cast<long>(_buf_head), _buf.end());
-      _buf.clear();
+      chunk.clear();
+      chunk.swap(_buf); /* O(1): three pointer assignments */
+      _buf.reserve(chunk.capacity()); /* keep the producer allocation-free */
       _buf_head = 0;
     }
     size_t off = 0;

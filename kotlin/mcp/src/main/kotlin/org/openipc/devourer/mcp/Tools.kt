@@ -14,6 +14,9 @@ import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonPrimitive
 import org.openipc.devourer.capture.CaptureSummary
 import org.openipc.devourer.capture.analyseChainBalance
+import org.openipc.devourer.experiment.ExperimentBounds
+import org.openipc.devourer.experiment.ExperimentResult
+import org.openipc.devourer.experiment.LinkProbe
 import org.openipc.devourer.capture.FrameQuery
 import org.openipc.devourer.capture.PcapWriter
 import org.openipc.devourer.protocol.ChannelSpec
@@ -39,6 +42,7 @@ internal class Tools(
     private val radios: RadioManager,
     private val captures: CaptureService,
     private val exportDir: Path,
+    private val scope: kotlinx.coroutines.CoroutineScope,
 ) {
     /**
      * `encodeDefaults` keeps counts we always compute — a zero CRC-error count
@@ -58,6 +62,7 @@ internal class Tools(
         registerObserve(server)
         registerInspect(server)
         registerTransmit(server)
+        registerExperiment(server)
     }
 
     // ---------------------------------------------------------------- DISCOVER
@@ -543,6 +548,68 @@ internal class Tools(
         }
     }
 
+    // -------------------------------------------------------------- EXPERIMENT
+
+    private fun registerExperiment(server: Server) {
+        server.addTool(
+            name = "experiment_link_probe",
+            description = """
+                Transmit a bounded burst on one radio and count what a SECOND, independent radio
+                hears. Sweeps TX modes if given several.
+
+                This is the only tool that can establish TX_VERIFIED. A transmitting radio
+                reporting success proves its TX path accepted the frames — not that a photon left
+                the antenna. The receiver here is a different physical adapter, which is what makes
+                the result evidence rather than self-report.
+
+                Probe frames are broadcast, so they are never ACKed and never retried: what the
+                receiver counts is what the transmitter actually aired, once each. That makes the
+                delivery ratio a clean one-way measurement, and NOT a throughput figure.
+
+                Give several modes to find the highest reliable one, e.g.
+                ["6M","MCS0/20","MCS3/20","MCS5/20","MCS7/20"]. The whole run is bounded by
+                max_duration_ms and stops cleanly when it expires.
+            """.trimIndent(),
+            inputSchema = ToolSchema(
+                properties = buildJsonObject {
+                    put("tx_session", schema("integer", "Transmitting radio's session id."))
+                    put("rx_session", schema("integer", "Independent receiving radio. Must differ from tx_session."))
+                    put("channel", schema("integer", "Channel both radios use."))
+                    put("width_mhz", schema("integer", "5, 10, 20, 40, 80 or 160. Default 20."))
+                    put("modes", schema("array", "TX mode specs, e.g. [\"6M\",\"MCS5/20\"]. Default [\"6M\"]."))
+                    put("frames_per_point", schema("integer", "Frames transmitted per mode. Default 200."))
+                    put("interval_us", schema("integer", "Spacing between frames. Default 1000."))
+                    put("frame_bytes", schema("integer", "Probe MPDU size. Default 200."))
+                    put("max_duration_ms", schema("integer", "Hard ceiling on the run. Default 60000."))
+                },
+                required = listOf("tx_session", "rx_session", "channel"),
+            ),
+        ) { request ->
+            val modes = request.stringList("modes").ifEmpty { listOf("6M") }
+            val bounds = ExperimentBounds(
+                maxDurationMs = request.longOr("max_duration_ms", 60_000),
+                framesPerPoint = request.intOr("frames_per_point", 200),
+                intervalUs = request.intOr("interval_us", 1_000),
+            )
+            val result = LinkProbe(radios, scope).run(
+                txSession = request.intOr("tx_session", -1),
+                rxSession = request.intOr("rx_session", -1),
+                channel = ChannelSpec(
+                    channel = request.intOr("channel", -1),
+                    width = ChannelWidth.ofMhz(request.intOr("width_mhz", 20)),
+                    band = request.intOr("band", 0),
+                ),
+                modes = modes,
+                bounds = bounds,
+                frameBytes = request.intOr("frame_bytes", 200),
+            )
+            text(
+                json.encodeToString(ExperimentResult.serializer(), result),
+                isError = result.verification == VerificationState.FAILED,
+            )
+        }
+    }
+
     // ------------------------------------------------------------------ helpers
 
     private fun text(body: String, isError: Boolean = false) =
@@ -566,6 +633,12 @@ internal fun io.modelcontextprotocol.kotlin.sdk.types.CallToolRequest.boolOr(key
 
 internal fun io.modelcontextprotocol.kotlin.sdk.types.CallToolRequest.stringOr(key: String, default: String): String =
     runCatching { params.arguments?.get(key)?.jsonPrimitive?.content }.getOrNull() ?: default
+
+internal fun io.modelcontextprotocol.kotlin.sdk.types.CallToolRequest.stringList(key: String): List<String> =
+    runCatching {
+        (params.arguments?.get(key) as? kotlinx.serialization.json.JsonArray)
+            ?.map { it.jsonPrimitive.content }
+    }.getOrNull() ?: emptyList()
 
 internal fun io.modelcontextprotocol.kotlin.sdk.types.CallToolRequest.toQuery(): FrameQuery = FrameQuery(
     kind = stringOr("kind", "").ifBlank { null },
