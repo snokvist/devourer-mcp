@@ -1,7 +1,7 @@
-diff --git a/vendor/devourer/src/IRadio.h b/vendor/devourer/src/IRadio.h
+diff --git a/src/IRadio.h b/src/IRadio.h
 index a6186a3..ec8cca5 100644
---- a/vendor/devourer/src/IRadio.h
-+++ b/vendor/devourer/src/IRadio.h
+--- a/src/IRadio.h
++++ b/src/IRadio.h
 @@ -10,6 +10,7 @@
  #include "AmpduMode.h"
  #include "DeviceConfig.h"
@@ -37,11 +37,11 @@ index a6186a3..ec8cca5 100644
    /* --- Adapter health (see src/AdapterHealth.h; examples/doctor is the
     * reference consumer; the EFUSE probe is on IRtlRadio) --- */
  
-diff --git a/vendor/devourer/src/RxGain.h b/vendor/devourer/src/RxGain.h
+diff --git a/src/RxGain.h b/src/RxGain.h
 new file mode 100644
 index 0000000..2a0af81
 --- /dev/null
-+++ b/vendor/devourer/src/RxGain.h
++++ b/src/RxGain.h
 @@ -0,0 +1,66 @@
 +#ifndef RX_GAIN_H
 +#define RX_GAIN_H
@@ -109,10 +109,10 @@ index 0000000..2a0af81
 +} // namespace devourer
 +
 +#endif /* RX_GAIN_H */
-diff --git a/vendor/devourer/src/jaguar1/PhydmWatchdog.cpp b/vendor/devourer/src/jaguar1/PhydmWatchdog.cpp
+diff --git a/src/jaguar1/PhydmWatchdog.cpp b/src/jaguar1/PhydmWatchdog.cpp
 index b75c08f..2dc8b87 100644
---- a/vendor/devourer/src/jaguar1/PhydmWatchdog.cpp
-+++ b/vendor/devourer/src/jaguar1/PhydmWatchdog.cpp
+--- a/src/jaguar1/PhydmWatchdog.cpp
++++ b/src/jaguar1/PhydmWatchdog.cpp
 @@ -205,12 +205,16 @@ void PhydmWatchdog::DigInit() {
     * bound when nothing's linked. */
    _cur_ig_value =
@@ -154,10 +154,10 @@ index b75c08f..2dc8b87 100644
    }
  
    if (new_igi != _cur_ig_value) {
-diff --git a/vendor/devourer/src/jaguar1/PhydmWatchdog.h b/vendor/devourer/src/jaguar1/PhydmWatchdog.h
+diff --git a/src/jaguar1/PhydmWatchdog.h b/src/jaguar1/PhydmWatchdog.h
 index e0fb4b8..51a6a39 100644
---- a/vendor/devourer/src/jaguar1/PhydmWatchdog.h
-+++ b/vendor/devourer/src/jaguar1/PhydmWatchdog.h
+--- a/src/jaguar1/PhydmWatchdog.h
++++ b/src/jaguar1/PhydmWatchdog.h
 @@ -53,6 +53,28 @@ public:
    /* Run one watchdog cycle synchronously on the calling thread. */
    void TickOnce();
@@ -201,10 +201,10 @@ index e0fb4b8..51a6a39 100644
  };
  
  /* Vendor adaptivity operating point for the 11AC dies (phydm_adaptivity.c
-diff --git a/vendor/devourer/src/jaguar1/RtlJaguarDevice.cpp b/vendor/devourer/src/jaguar1/RtlJaguarDevice.cpp
+diff --git a/src/jaguar1/RtlJaguarDevice.cpp b/src/jaguar1/RtlJaguarDevice.cpp
 index 880f174..513f19e 100644
---- a/vendor/devourer/src/jaguar1/RtlJaguarDevice.cpp
-+++ b/vendor/devourer/src/jaguar1/RtlJaguarDevice.cpp
+--- a/src/jaguar1/RtlJaguarDevice.cpp
++++ b/src/jaguar1/RtlJaguarDevice.cpp
 @@ -126,6 +126,22 @@ void RtlJaguarDevice::InitWrite(SelectedChannel channel) {
     * DEVOURER_DIS_CCA. Always applied — the enable path is what programs
     * the BB EDCCA thresholds off their parked never-trigger table value. */
@@ -329,10 +329,10 @@ index 880f174..513f19e 100644
  devourer::EfuseStability RtlJaguarDevice::ProbeEfuseStability(int reads) {
    if (!_brought_up)
      return {}; /* supported=false — needs a powered, brought-up chip */
-diff --git a/vendor/devourer/src/jaguar1/RtlJaguarDevice.h b/vendor/devourer/src/jaguar1/RtlJaguarDevice.h
+diff --git a/src/jaguar1/RtlJaguarDevice.h b/src/jaguar1/RtlJaguarDevice.h
 index bd1de23..f042771 100644
---- a/vendor/devourer/src/jaguar1/RtlJaguarDevice.h
-+++ b/vendor/devourer/src/jaguar1/RtlJaguarDevice.h
+--- a/src/jaguar1/RtlJaguarDevice.h
++++ b/src/jaguar1/RtlJaguarDevice.h
 @@ -38,11 +38,31 @@ extern "C"
   * baseband). The chip is identified at construction time via SYS_CFG bits and
   * USB PID; this class drives bring-up, RX, and TX for whichever member of the
@@ -380,10 +380,10 @@ index bd1de23..f042771 100644
    /* Consolidated windowed RX link-quality snapshot (see RxQuality.h) — subsumes
     * GetRxEnergy. Fed per decoded frame in the RX loop via _rxq. */
    devourer::RxQuality GetRxQuality() override {
-diff --git a/vendor/devourer/src/jaguar3/PhydmRuntimeJaguar3.cpp b/vendor/devourer/src/jaguar3/PhydmRuntimeJaguar3.cpp
+diff --git a/src/jaguar3/PhydmRuntimeJaguar3.cpp b/src/jaguar3/PhydmRuntimeJaguar3.cpp
 index 58f843c..0ff5fd5 100644
---- a/vendor/devourer/src/jaguar3/PhydmRuntimeJaguar3.cpp
-+++ b/vendor/devourer/src/jaguar3/PhydmRuntimeJaguar3.cpp
+--- a/src/jaguar3/PhydmRuntimeJaguar3.cpp
++++ b/src/jaguar3/PhydmRuntimeJaguar3.cpp
 @@ -80,7 +80,9 @@ void PhydmRuntimeJaguar3::dig(const FaStats &fa, bool is_dfs) {
    int igi = get_igi();
  
@@ -395,10 +395,10 @@ index 58f843c..0ff5fd5 100644
    if (is_dfs) {
      th0 = 250; th1 = 1000; th2 = 2000;
      lo = DIG_MIN_DFS; hi = DIG_MIN_DFS;
-diff --git a/vendor/devourer/src/jaguar3/PhydmRuntimeJaguar3.h b/vendor/devourer/src/jaguar3/PhydmRuntimeJaguar3.h
+diff --git a/src/jaguar3/PhydmRuntimeJaguar3.h b/src/jaguar3/PhydmRuntimeJaguar3.h
 index 1d75749..4bfe7e9 100644
---- a/vendor/devourer/src/jaguar3/PhydmRuntimeJaguar3.h
-+++ b/vendor/devourer/src/jaguar3/PhydmRuntimeJaguar3.h
+--- a/src/jaguar3/PhydmRuntimeJaguar3.h
++++ b/src/jaguar3/PhydmRuntimeJaguar3.h
 @@ -1,6 +1,7 @@
  #ifndef DEVOURER_JAGUAR3_PHYDM_RUNTIME_H
  #define DEVOURER_JAGUAR3_PHYDM_RUNTIME_H
@@ -450,10 +450,10 @@ index 1d75749..4bfe7e9 100644
  };
  
  } // namespace jaguar3
-diff --git a/vendor/devourer/src/jaguar3/RtlJaguar3Device.cpp b/vendor/devourer/src/jaguar3/RtlJaguar3Device.cpp
+diff --git a/src/jaguar3/RtlJaguar3Device.cpp b/src/jaguar3/RtlJaguar3Device.cpp
 index 8cc3396..75aa732 100644
---- a/vendor/devourer/src/jaguar3/RtlJaguar3Device.cpp
-+++ b/vendor/devourer/src/jaguar3/RtlJaguar3Device.cpp
+--- a/src/jaguar3/RtlJaguar3Device.cpp
++++ b/src/jaguar3/RtlJaguar3Device.cpp
 @@ -1107,6 +1107,54 @@ void RtlJaguar3Device::StopContinuousTx() {
   * channel-busy signal (a CW tone spikes OFDM CCA); OFDM FA is the vendor sum of
   * the sub-counters. Read-then-reset for a per-call delta; serialized on _reg_mu
@@ -509,10 +509,10 @@ index 8cc3396..75aa732 100644
  RxEnergy RtlJaguar3Device::GetRxEnergy(bool with_nhm) {
    std::lock_guard<std::mutex> lk(_reg_mu);
    RxEnergy e;
-diff --git a/vendor/devourer/src/jaguar3/RtlJaguar3Device.h b/vendor/devourer/src/jaguar3/RtlJaguar3Device.h
+diff --git a/src/jaguar3/RtlJaguar3Device.h b/src/jaguar3/RtlJaguar3Device.h
 index ced9c7d..f45d669 100644
---- a/vendor/devourer/src/jaguar3/RtlJaguar3Device.h
-+++ b/vendor/devourer/src/jaguar3/RtlJaguar3Device.h
+--- a/src/jaguar3/RtlJaguar3Device.h
++++ b/src/jaguar3/RtlJaguar3Device.h
 @@ -184,6 +184,13 @@ public:
     * _reg_mu against the coex runtime thread. The read side of the CW tone. */
    RxEnergy GetRxEnergy(bool with_nhm) override;

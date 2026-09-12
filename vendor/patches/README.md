@@ -8,6 +8,12 @@ to look at what changed upstream.
 
 Empty is the goal. A patch here is a debt — upstream it.
 
+**Paths must be devourer-relative** (`a/src/...`, not
+`a/vendor/devourer/src/...`). `tools/host/vendor-devourer.sh` replays with
+`git apply --directory=devourer`, which prepends the prefix itself; a
+repo-relative patch doubles it and the sync aborts. Generate with
+`git diff --relative=vendor/devourer <from> <to> -- vendor/devourer`.
+
 ## 0001-rx-gain-range.patch
 
 A vendor-neutral receive-gain contract — `GetRxGainCaps` / `GetRxGainState` /

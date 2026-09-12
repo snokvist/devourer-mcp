@@ -1,7 +1,7 @@
-diff --git a/vendor/devourer/src/IRtlRadio.h b/vendor/devourer/src/IRtlRadio.h
+diff --git a/src/IRtlRadio.h b/src/IRtlRadio.h
 index a3f0794..739ac93 100644
---- a/vendor/devourer/src/IRtlRadio.h
-+++ b/vendor/devourer/src/IRtlRadio.h
+--- a/src/IRtlRadio.h
++++ b/src/IRtlRadio.h
 @@ -85,6 +85,33 @@ public:
     * tests/canary_diff.py. Reading a powered-down chip yields garbage or throws;
     * interpreting that is the caller's job. No-op where unsupported (default). */
@@ -36,15 +36,19 @@ index a3f0794..739ac93 100644
  };
  
  #endif /* IRTL_RADIO_H */
-diff --git a/vendor/devourer/src/jaguar1/RtlJaguarDevice.cpp b/vendor/devourer/src/jaguar1/RtlJaguarDevice.cpp
-index 513f19e..de39d93 100644
---- a/vendor/devourer/src/jaguar1/RtlJaguarDevice.cpp
-+++ b/vendor/devourer/src/jaguar1/RtlJaguarDevice.cpp
-@@ -996,20 +996,45 @@ void RtlJaguarDevice::ClearAckResponder() {
+diff --git a/src/jaguar1/RtlJaguarDevice.cpp b/src/jaguar1/RtlJaguarDevice.cpp
+index 513f19e..c3b7c52 100644
+--- a/src/jaguar1/RtlJaguarDevice.cpp
++++ b/src/jaguar1/RtlJaguarDevice.cpp
+@@ -996,20 +996,54 @@ void RtlJaguarDevice::ClearAckResponder() {
    (void)disarm_ack_responder();
  }
  
 +bool RtlJaguarDevice::GetCcaGates(bool &primary_disabled, bool &edcca_disabled) {
++  /* The MAC register is meaningless before bring-up, and reporting whatever
++   * the bus returns as the gate state would be a fabricated measurement. */
++  if (!_brought_up)
++    return false;
 +  const uint32_t v = _device.rtw_read<uint32_t>(0x0520);
 +  primary_disabled = (v & (1u << 14)) != 0;
 +  edcca_disabled = (v & (1u << 15)) != 0;
@@ -52,9 +56,12 @@ index 513f19e..de39d93 100644
 +}
 +
 +bool RtlJaguarDevice::SetCcaGates(bool primary_disabled, bool edcca_disabled) {
++  if (!_brought_up)
++    return false;
 +  apply_cca(primary_disabled, edcca_disabled);
-+  /* Remembered for the gain path's re-apply: "disabled" means both gates
-+   * are off, which is the only state SetCcaMode can express. */
++  _cca_primary_disabled = primary_disabled;
++  _cca_edcca_disabled = edcca_disabled;
++  /* "disabled" is both gates off, the only state SetCcaMode can express. */
 +  _cca_disabled = primary_disabled && edcca_disabled;
 +  _logger->info("Jaguar1: CCA gates primary={} edcca={}",
 +                primary_disabled ? "OFF" : "on",
@@ -67,6 +74,8 @@ index 513f19e..de39d93 100644
     * thresholds this path programs are derived from IGI, so they are stale
     * the moment the gain moves. */
    _cca_disabled = disabled;
++  _cca_primary_disabled = disabled;
++  _cca_edcca_disabled = disabled;
 +  apply_cca(disabled, disabled);
 +  _logger->info("Jaguar1: MAC carrier-sense {}",
 +                disabled ? "DISABLED (dis_cca: CCA+EDCCA)"
@@ -91,7 +100,7 @@ index 513f19e..de39d93 100644
  
    /* BB EDCCA thresholds (rEDCCA_Jaguar 0x8a4: L2H byte0 / H2L byte1). The
     * BB init table parks them at 0x7f/0x7f = never-trigger — the vendor's
-@@ -1040,9 +1065,6 @@ void RtlJaguarDevice::SetCcaMode(bool disabled) {
+@@ -1040,9 +1074,6 @@ void RtlJaguarDevice::SetCcaMode(bool disabled) {
     * threshold follows (vendor couples them per adaptivity cycle). */
    if (auto *wd = _halModule.phydm_watchdog())
      wd->SetEdccaTrack(!disabled);
@@ -101,14 +110,33 @@ index 513f19e..de39d93 100644
  }
  
  bool RtlJaguarDevice::SetAmpduMode(const devourer::AmpduMode &mode) {
-diff --git a/vendor/devourer/src/jaguar1/RtlJaguarDevice.h b/vendor/devourer/src/jaguar1/RtlJaguarDevice.h
-index f042771..01d86ad 100644
---- a/vendor/devourer/src/jaguar1/RtlJaguarDevice.h
-+++ b/vendor/devourer/src/jaguar1/RtlJaguarDevice.h
-@@ -60,6 +60,10 @@ class RtlJaguarDevice : public IRtlRadio {
+@@ -2320,8 +2351,10 @@ bool RtlJaguarDevice::SetRxGainRange(uint8_t min, uint8_t max) {
+                   unsigned(min), unsigned(max), unsigned(cur));
+   }
+   /* The EDCCA threshold is derived from IGI, so re-apply carrier sense to
+-   * pick the new value up rather than leaving the gate on the old one. */
+-  SetCcaMode(_cca_disabled);
++   * pick the new value up rather than leaving the gate on the old one.
++   * Re-apply the GATES, not SetCcaMode: a caller who disabled one of them
++   * would otherwise have it switched back on by an unrelated gain change. */
++  apply_cca(_cca_primary_disabled, _cca_edcca_disabled);
+   return true;
+ }
+ 
+diff --git a/src/jaguar1/RtlJaguarDevice.h b/src/jaguar1/RtlJaguarDevice.h
+index f042771..fa48117 100644
+--- a/src/jaguar1/RtlJaguarDevice.h
++++ b/src/jaguar1/RtlJaguarDevice.h
+@@ -60,6 +60,16 @@ class RtlJaguarDevice : public IRtlRadio {
     * already allows, because backing gain off is the direction a host needs
     * and 0x2a is only DIG's own upper bound, not the register's. */
    bool _cca_disabled = false; /* last SetCcaMode argument; see SetRxGainRange */
++  /* The two gates, tracked separately so a later re-apply restores what the
++   * caller actually asked for. Collapsing them to _cca_disabled made
++   * SetRxGainRange's re-apply silently re-enable a gate the caller had
++   * turned off, with nothing in the log to say so. */
++  bool _cca_primary_disabled = false;
++  bool _cca_edcca_disabled = false;
 +  /* Programs 0x520[14]/[15] and the BB EDCCA thresholds. The EDCCA half of
 +   * the work keys off the edcca argument: parked at never-trigger when that
 +   * gate is off, at the vendor IGI-coupled operating point when it is on. */
@@ -116,7 +144,7 @@ index f042771..01d86ad 100644
    uint8_t _rx_gain_min = kRxGainIndexMin;
    uint8_t _rx_gain_max = kRxGainIndexMax;
    bool _rx_gain_clamped = false;
-@@ -331,6 +335,10 @@ public:
+@@ -331,6 +341,10 @@ public:
     * parked at never-trigger by the BB table, programmed to the vendor
     * operating point on enable (EDCCA only exists once they are set). */
    void SetCcaMode(bool disabled) override;
@@ -127,10 +155,10 @@ index f042771..01d86ad 100644
    /* A-MPDU TX mode (IRadio contract; src/AmpduMode.h). Programs the
     * Jaguar1 aggregate-fill timer (0x0456 — NOT the 0x0455 the HalMAC chips
     * use) + the 8814A burst-mode gate (0x04BC), and records the descriptor
-diff --git a/vendor/devourer/src/jaguar3/RtlJaguar3Device.cpp b/vendor/devourer/src/jaguar3/RtlJaguar3Device.cpp
+diff --git a/src/jaguar3/RtlJaguar3Device.cpp b/src/jaguar3/RtlJaguar3Device.cpp
 index 75aa732..6e658c1 100644
---- a/vendor/devourer/src/jaguar3/RtlJaguar3Device.cpp
-+++ b/vendor/devourer/src/jaguar3/RtlJaguar3Device.cpp
+--- a/src/jaguar3/RtlJaguar3Device.cpp
++++ b/src/jaguar3/RtlJaguar3Device.cpp
 @@ -1230,22 +1230,56 @@ RxEnergy RtlJaguar3Device::GetRxEnergy(bool with_nhm) {
   * MEASURED: the full recipe dropped 8822EU delivery from ~6800 to ~10 frames.
   * These MAC 0x520/0x524 bits gate TX only and are safe on a live RX. */
@@ -206,10 +234,10 @@ index 75aa732..6e658c1 100644
    /* Per-packet power banks are sticky too (the lever contract): the channel
     * set doesn't touch 0x1e70[31:16] today, but a cheap RMW re-assert keeps
     * the contract robust against future channel-path changes. */
-diff --git a/vendor/devourer/src/jaguar3/RtlJaguar3Device.h b/vendor/devourer/src/jaguar3/RtlJaguar3Device.h
+diff --git a/src/jaguar3/RtlJaguar3Device.h b/src/jaguar3/RtlJaguar3Device.h
 index f45d669..6404042 100644
---- a/vendor/devourer/src/jaguar3/RtlJaguar3Device.h
-+++ b/vendor/devourer/src/jaguar3/RtlJaguar3Device.h
+--- a/src/jaguar3/RtlJaguar3Device.h
++++ b/src/jaguar3/RtlJaguar3Device.h
 @@ -207,6 +207,10 @@ public:
     * downlink residual from ~472 µs to 0.39 µs on a crowded channel (the TBTT
     * beacon airs on schedule instead of after a CSMA backoff). */

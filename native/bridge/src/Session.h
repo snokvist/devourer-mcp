@@ -146,6 +146,7 @@ public:
    * has traffic on it" and "the channel has energy on it", which is the
    * distinction a deferral diagnosis turns on. */
   Json cca_gates_json();
+  bool get_cca_gates(bool &primary_disabled, bool &edcca_disabled, std::string &err);
   bool set_cca_gates(bool primary_disabled, bool edcca_disabled, std::string &err);
 
   /* Receive gain: the index, its bounds, and whether anything is moving it.
@@ -195,7 +196,10 @@ public:
    * by an over-sensitive EDCCA threshold — frames are accepted, reported
    * submitted, and never aired. Bounded use on owned hardware only. */
   bool set_cca(bool disabled, std::string &err);
-  bool cca_disabled() const { return _cca_disabled; }
+  /* True when carrier sense is not fully on — EITHER gate disabled, not
+   * both. It feeds the "this radio transmits without listening" warning, and
+   * a radio with only the energy gate off still belongs in that warning. */
+  bool cca_disabled() const { return _cca_primary_disabled || _cca_edcca_disabled; }
 
   SessionStats stats() const;
   Json stats_json() const;
@@ -252,6 +256,8 @@ private:
   /* From AdapterCaps at open; stamped into every frame record. */
   uint8_t _rx_chains = 0;
   bool _cca_disabled = false;
+  bool _cca_primary_disabled = false;
+  bool _cca_edcca_disabled = false;
 };
 
 } // namespace bridge

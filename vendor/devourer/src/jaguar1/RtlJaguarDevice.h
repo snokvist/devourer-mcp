@@ -60,6 +60,12 @@ class RtlJaguarDevice : public IRtlRadio {
    * already allows, because backing gain off is the direction a host needs
    * and 0x2a is only DIG's own upper bound, not the register's. */
   bool _cca_disabled = false; /* last SetCcaMode argument; see SetRxGainRange */
+  /* The two gates, tracked separately so a later re-apply restores what the
+   * caller actually asked for. Collapsing them to _cca_disabled made
+   * SetRxGainRange's re-apply silently re-enable a gate the caller had
+   * turned off, with nothing in the log to say so. */
+  bool _cca_primary_disabled = false;
+  bool _cca_edcca_disabled = false;
   /* Programs 0x520[14]/[15] and the BB EDCCA thresholds. The EDCCA half of
    * the work keys off the edcca argument: parked at never-trigger when that
    * gate is off, at the vendor IGI-coupled operating point when it is on. */

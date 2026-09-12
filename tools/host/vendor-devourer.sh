@@ -29,7 +29,11 @@ rm -rf "$tmp/devourer/.git"
 shopt -s nullglob
 for p in "$ROOT"/vendor/patches/*.patch; do
   echo "==> applying $(basename "$p")"
-  git apply --directory=vendor/devourer --check "$p" 2>/dev/null \
+  # Check against the tree we are about to patch, not against $ROOT's copy.
+  # $ROOT's vendor/devourer already has the previous run's patches applied,
+  # so checking there fails on every re-sync and reported the patch as bad
+  # when the patch was fine.
+  ( cd "$tmp" && git apply --directory=devourer --check "$p" ) \
     || { echo "FATAL: $(basename "$p") does not apply to $SHA" >&2; exit 1; }
   ( cd "$tmp" && git apply --directory=devourer "$p" )
 done
