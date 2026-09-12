@@ -10,6 +10,7 @@ import kotlin.test.assertTrue
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.test.runTest
 import org.openipc.devourer.protocol.ChannelSpec
+import org.openipc.devourer.protocol.RxEnergy
 import org.openipc.devourer.radio.FakeRadios
 import org.openipc.devourer.radio.SafetyLevel
 import org.openipc.devourer.radio.SafetyLevelException
@@ -276,6 +277,46 @@ class LinkProbeTest {
 
         assertEquals(VerificationState.TX_VERIFIED, result.verification)
         assertEquals(40, result.points.single().framesReceived)
+    }
+
+    @Test
+    fun `each channel carries the transmitter's own view of it`() = runTest {
+        // The radio that decides not to transmit is the transmitter, so its
+        // PHY's view is the one that explains a deferral. A witness's frame
+        // count cannot see energy that never becomes a frame.
+        val radios = fake()
+        radios.energy[1] = RxEnergy(
+            supported = true, validCounters = true, ccaOfdm = 4200, faOfdm = 310,
+            validIgi = true, igi = 34,
+        )
+
+        val result = LinkProbe(radios, backgroundScope)
+            .run(spec(sweep = Sweep(channels = listOf("ch1", "ch6"))))
+
+        assertEquals(2, result.points.size)
+        result.points.forEach { p ->
+            val e = assertNotNull(p.channelEnergy, "no energy for ${p.point}")
+            assertEquals(4200L, e.ccaOfdm)
+            assertEquals(34, e.igi)
+        }
+        // Two reads per channel: one to reset the counters, one to measure.
+        assertEquals(4, radios.calls.count { it.startsWith("rxEnergy") })
+    }
+
+    @Test
+    fun `a transmitter that cannot measure energy reports absent, not quiet`() = runTest {
+        // The MediaTek has no such counter. A zero here would be a fabricated
+        // reading, and it would read as "the channel was silent".
+        val radios = fake()
+        val result = LinkProbe(radios, backgroundScope).run(
+            spec(roles = mapOf(RadioRole.TX_PEER to 2, RadioRole.RX_PEER to 1)),
+        )
+
+        val energy = assertNotNull(result.points.single().channelEnergy)
+        assertFalse(energy.supported)
+        assertNull(energy.ccaOfdm)
+        // And it does not pay the dwell: one read, then it gives up.
+        assertEquals(1, radios.calls.count { it.startsWith("rxEnergy") })
     }
 
     @Test

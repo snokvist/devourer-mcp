@@ -15,6 +15,7 @@
 #include "TxStats.h"
 #include "DeviceConfig.h"
 #include "IRadio.h"
+#include "IRtlRadio.h"
 #include "Protocol.h"
 #include "RxPacket.h"
 #include "UsbOpen.h"
@@ -247,7 +248,20 @@ std::unique_ptr<Session> Session::open(uint32_t id, const OpenOptions &opts,
   dev_session->adopt_lock(lock);
 
   WiFiDriver driver(logger);
-  auto radio = driver.CreateRadio(handle, ctx, lock, devourer::DeviceConfig{});
+  devourer::DeviceConfig cfg;
+  /* Set before CreateRadio because devourer measures the absolute idle floor
+   * inside Init, before the RX loop starts — there is no later. */
+  cfg.rx.abs_noise_floor = opts.noise_floor;
+  cfg.tuning.phydm_watchdog = opts.adaptive_gain;
+  s->_noise_floor_requested = opts.noise_floor;
+  /* Say when a session is brought up on anything but the default tuning. A
+   * run whose behaviour depends on an option nobody can see afterwards is
+   * not reproducible, and both of these change what the radio does. */
+  if (opts.noise_floor || opts.adaptive_gain) {
+    logger->info("bridge: open with noise_floor={} adaptive_gain={}",
+                 opts.noise_floor, opts.adaptive_gain);
+  }
+  auto radio = driver.CreateRadio(handle, ctx, lock, cfg);
   if (!radio) {
     code = "unsupported_chip";
     msg = "no devourer backend for this chip in this build (the factory "
@@ -787,6 +801,78 @@ bool Session::set_cca(bool disabled, std::string &err) {
   }
   _cca_disabled = disabled;
   return true;
+}
+
+Json Session::rx_energy_json(bool with_nhm) {
+  std::lock_guard<std::recursive_mutex> life(_life_mu);
+  Json j;
+  j.set("session", _id);
+  if (_radio == nullptr) {
+    j.set("supported", false).set("why", "session has no radio");
+    return j;
+  }
+  /* The documented way to reach a Realtek-family member: CreateRadio returns
+   * an IRadio, a caller that needs one of these dynamic_casts, and nullptr
+   * means "not a Realtek radio — skip the feature, never fake a reading". */
+  auto *rtl = dynamic_cast<IRtlRadio *>(_radio);
+  if (rtl == nullptr) {
+    j.set("supported", false)
+        .set("why",
+             "frame-free energy is a Realtek phydm facility "
+             "(IRtlRadio::GetRxEnergy); this backend is not a Realtek radio")
+        .set("fallback",
+             "count what a receiver can decode instead: monitor the channel "
+             "and compare frame rates. That is a different quantity — it "
+             "cannot see energy that never becomes a frame.");
+    return j;
+  }
+
+  const auto e = rtl->GetRxEnergy(with_nhm);
+  j.set("supported", true);
+  j.set("channel", _channel.Channel);
+  /* Every field behind its own valid flag: the facilities differ by chip
+   * generation, and a zero from a generation that does not fill the field is
+   * not a measurement of zero. */
+  j.set("valid_counters", e.valid_fa);
+  if (e.valid_fa) {
+    j.set("fa_ofdm", e.fa_ofdm)
+        .set("fa_cck", e.fa_cck)
+        .set("cca_ofdm", e.cca_ofdm)
+        .set("cca_cck", e.cca_cck);
+  }
+  j.set("valid_igi", e.valid_igi);
+  if (e.valid_igi)
+    j.set("igi", static_cast<int>(e.igi));
+  j.set("valid_noise_floor", e.valid_noise_floor);
+  if (e.valid_noise_floor) {
+    j.set("abs_noise_floor_dbm", static_cast<int>(e.abs_noise_floor_dbm));
+  } else {
+    /* Three different absences, and a bare false cannot tell them apart. */
+    j.set("noise_floor_why",
+          !_noise_floor_requested
+              ? "not requested: open the radio with noise_floor=true"
+              : "requested, but this generation did not fill it. On Jaguar1 "
+                "(8812A/8821A) the vendor CAL runs inside IRadio::Init and "
+                "this bridge brings radios up with InitWrite + StartRxLoop, "
+                "so it never runs; on Jaguar2 the live report is best-effort "
+                "and often unpopulated in monitor mode. Use igi as the "
+                "relative floor proxy instead.");
+  }
+  j.set("valid_nhm", e.valid_nhm);
+  if (e.valid_nhm) {
+    Json buckets = Json::array();
+    for (unsigned char b : e.nhm)
+      buckets.push(static_cast<int>(b));
+    j.set("nhm", buckets);
+    j.set("nhm_duration", static_cast<int>(e.nhm_duration));
+  }
+  j.set("note",
+        "fa/cca are DELTAS since the previous read, which resets the hardware "
+        "counters. To measure a window, read once and throw it away, wait, "
+        "then read again. igi is the AGC's initial-gain index: the gain backs "
+        "off as the in-band floor rises, so higher means a noisier channel. "
+        "These are channel-wide scalars, not a spectrum.");
+  return j;
 }
 
 Json Session::tx_stats_json() {

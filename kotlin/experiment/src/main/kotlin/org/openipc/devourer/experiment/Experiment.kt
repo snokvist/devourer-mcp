@@ -4,6 +4,7 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.Transient
 import org.openipc.devourer.protocol.ChannelSpec
+import org.openipc.devourer.protocol.RxEnergy
 import org.openipc.devourer.radio.VerificationState
 
 /**
@@ -144,6 +145,20 @@ public data class PointResult(
      * witness, could not have done that — the air changes between them.
      */
     val witnesses: Map<String, WitnessResult> = emptyMap(),
+    /**
+     * What the TRANSMITTER's own PHY saw on this channel with nothing of ours
+     * on the air.
+     *
+     * Here rather than on the witnesses on purpose. When a burst is accepted
+     * and not aired, the radio that decided not to transmit is the
+     * transmitter, and carrier sense acts on energy rather than on frames a
+     * receiver could decode. This is that energy, measured by the deciding
+     * radio, over a fixed idle dwell taken after tuning and before any burst.
+     *
+     * Null when the transmitter is not a Realtek part: no other family
+     * exposes the counters, and a zero would be a fabricated reading.
+     */
+    @SerialName("channel_energy") val channelEnergy: RxEnergy? = null,
     val note: String? = null,
 )
 

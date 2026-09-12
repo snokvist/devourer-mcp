@@ -16,8 +16,8 @@ The architecture is proven end to end on real hardware:
 LLM ──MCP(stdio)──▶ Kotlin runtime ──UDS──▶ devourer-bridge ──libusb──▶ adapter
 ```
 
-25 MCP tools across DISCOVER / OBSERVE / INSPECT / TRANSMIT / EXPERIMENT /
-CHARACTERIZE / BUILD TOOL. 148 offline tests plus 63 vendored Devourer
+26 MCP tools across DISCOVER / OBSERVE / INSPECT / TRANSMIT / EXPERIMENT /
+CHARACTERIZE / BUILD TOOL. 150 offline tests plus 63 vendored Devourer
 selftests, none of which need hardware. Three hardware tests that refuse to
 pass vacuously: the end-to-end smoke test, a stalled-sink test, and a
 sustained-overload test.
@@ -70,13 +70,14 @@ set. Roughly in value order:
 | Gap | Effort | Why it matters |
 |---|---|---|
 | TX power: `SetTxPower`, `SetTxPowerOffsetQdb`, `GetTxPowerState` | small | Turns link probes into power sweeps. Note `step_measured=false` on most families — the slope is uncalibrated, and results must say so. |
-| `GetRxQuality` / `LinkHealth` | small | Windowed link aggregates Devourer already computes; today we recompute a weaker version from frames. |
+| `GetRxQuality` / `LinkHealth` | small | Windowed link aggregates Devourer already computes, plus its fused verdict; today we recompute a weaker version from frames. Subsumes `GetRxEnergy`, which `channel_energy` already exposes. |
 | `GetThermalStatus` | small | Long experiments drift thermally and nothing currently notices. |
 | `FastRetune` + channel sweep | medium | Scanning and survey. `FastRetune` is the lean path Devourer added for dwell loops; a naive `SetMonitorChannel` per dwell costs ~130 ms. |
 | `SetAckResponder` | medium | Required for any bidirectional or associated-link work. |
 | `SetAmpduMode` | medium | Aggregation is observable on RX today but not controllable on TX. |
 | Frequency hopping / FHSS | large | Substantial in both demos, with adaptive policy. Real algorithms, not register access. |
-| Spectrum sensing (`RxSense`, NHM, noise floor) | large | The missing half of "why is this link bad" — we can see frames but not the noise between them. |
+| Spectrum sensing: sweep `channel_energy` into a survey | medium | The single-channel read exists (`IRtlRadio::GetRxEnergy` — FA/CCA, IGI, NHM histogram). What is missing is the sweep: dwell per channel, build a coarse energy picture, and say which channel is actually clear rather than which one a receiver decodes least on. Realtek only; nothing equivalent exists on MediaTek. |
+| Absolute noise floor | medium | Blocked on bring-up, not on the API. Devourer measures it inside `IRadio::Init` and this bridge uses `InitWrite` + `StartRxLoop`; reaching it means moving bring-up onto `Init`, which is the one path currently sustaining 6000 frames/s. |
 | Beamforming (`StartSounding`, `RegisterBeamformee`) | large | 8814/Kestrel territory; no hardware here to verify against. |
 | HE trigger / TWT / UL-OFDMA | large | Kestrel only — `UNAVAILABLE` until an 11ax adapter exists on this bench. |
 | CSI / LA capture | large | Devourer has both; nothing here surfaces them. |
@@ -124,11 +125,17 @@ that difference does not attribute to the antenna configuration. Settling it
 needs a fixed transmitter and the two receivers swapped between positions — a
 multi-witness experiment, which is the feature above.
 
-**Whether the RTL8812AU's EDCCA threshold is tunable.** Carrier sense was
-deferring ~90% of transmissions on an idle channel. Disabling it is the current
-workaround, and it is antisocial. Devourer logs the threshold
-(`L2H/H2L = 5/-2`); whether it can be raised rather than bypassed is unexplored
-and would be the better fix.
+**Whether the RTL8812AU's EDCCA threshold can be raised rather than bypassed.**
+Answered halfway. The deferral is now understood: the gain index sits at
+0x1C, which is the bottom of DIG's range, and the vendor re-derives the EDCCA
+threshold from it — so the threshold is the most sensitive value the adaptive
+loop can produce, on every channel, and no channel choice moves it. See
+`hardware-evidence.md`.
+
+What is left is the lever. Devourer's fixed-IGI override is Jaguar2 only, so
+on a wave-1 part raising the gain means writing BB 0x8a4 directly, which is
+below the boundary this project keeps. Either devourer grows a Jaguar1
+equivalent upstream, or this stays a documented property of the part.
 
 ---
 

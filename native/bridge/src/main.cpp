@@ -298,6 +298,8 @@ Json op_radio_open(const Json &req) {
   o.bus = static_cast<uint8_t>(bus);
   o.address = static_cast<uint8_t>(addr);
   o.reset = req.at("reset").boolean(true);
+  o.noise_floor = req.at("noise_floor").boolean(false);
+  o.adaptive_gain = req.at("adaptive_gain").boolean(false);
   if (req.at("buffer_bytes").is_number()) {
     int64_t v = 0;
     if (!ranged(req, "buffer_bytes", 1 << 20, 256LL << 20, v, err))
@@ -427,6 +429,16 @@ Json op_radio_rx_paths(const Json &req) {
   if (!s)
     return fail("no_session", err);
   return ok(s->rx_paths_json());
+}
+
+Json op_radio_rx_energy(const Json &req) {
+  std::string err;
+  auto s = find_session(req, err);
+  if (!s)
+    return fail("no_session", err);
+  /* Default false: the histogram arms a ~2 ms measurement window, which
+   * dominates a call that is otherwise a handful of register reads. */
+  return ok(s->rx_energy_json(req.at("with_nhm").boolean(false)));
 }
 
 Json op_radio_tx_stats(const Json &req) {
@@ -687,6 +699,8 @@ Json dispatch(const Json &req) {
     return op_radio_rx_paths(req);
   if (op == "radio.tx_stats")
     return op_radio_tx_stats(req);
+  if (op == "radio.rx_energy")
+    return op_radio_rx_energy(req);
   if (op == "radio.cca")
     return op_radio_cca(req);
   if (op == "tx.send")

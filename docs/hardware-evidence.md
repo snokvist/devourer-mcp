@@ -77,36 +77,77 @@ nothing gated it at all: `characterize_run` disabled carrier sense
 caller could set to decline. The retry is now opt-in by name and needs the
 level. The claim and the code agree as of the remediation pass.
 
-## Carrier-sense deferral does not track how busy the channel is
+## Carrier sense: the gain is at the bottom of its adaptive range
 
 The obvious explanation for the 90% transmit loss above is that the MAC is
 deferring to traffic. Three channels, two MT7612U witnesses hearing every
-burst simultaneously, 200 broadcast frames at 6M per point:
+burst simultaneously, 200 broadcast frames at 6M per point — and, since the
+second pass, the transmitter's own frame-free energy view of each channel
+(`channel_energy`, `IRtlRadio::GetRxEnergy`).
 
-| Channel | ambient | delivered | RX_PEER | MONITOR | burst took | vs 400 ms asked |
-|---|---|---|---|---|---|---|
-| ch1 | 36.8/s | **0.0%** | 0 | 0 | 398 ms | on time |
-| ch6 | 17.8/s | **3.0%** | 6 | 6 | 398 ms | on time |
-| ch11 | 38.1/s | **43.5%** | 87 | 90 | 11 342 ms | 28x over |
-| ch6, carrier sense OFF | 17.8/s | **89.0%** | 178 | 195 | 398 ms | on time |
+| Channel | frames/3 s (RTL) | cca_ofdm | cca_cck | fa_ofdm | igi | delivered | burst took |
+|---|---|---|---|---|---|---|---|
+| ch1 | 170 | 35 | 43 | 14 | 28 | **0.0%** | 398 ms |
+| ch6 | 0 | 62 | 0 | 61 | 28 | **6.0%** | 398 ms |
+| ch11 | 120 | 51 | 343 | 15 | 28 | **45.0%** | 10 294 ms |
+| ch6, carrier sense OFF | — | — | — | — | 28 | **90.5%** | 398 ms |
 
 `tx_stats` reported `submitted=200, failed=0` on every one of those lines.
 
-Two things fall out. The busiest channel delivered best and the middle one
-delivered nothing, so the deferral does not order by decodable ambient traffic
-— which is expected if EDCCA is responding to *energy*, a quantity nothing
-here measures. And it fails in two distinct shapes: on ch1 and ch6 the
-transmit loop finished exactly on schedule with the frames consumed and not
-aired, while on ch11 the same loop blocked for eleven seconds and 43.5% got
-out. A stalled queue and a silent discard report identically to the host.
+**Nothing measurable orders with delivery.** Not the decodable frame count —
+the busiest channel delivered best and the one in between delivered nothing.
+Not the channel-busy counters — ch11 had the *fewest* OFDM CCA events during
+its own sweep point and delivered the most. Not the false-alarm rate. And not
+the gain index, which brings us to the answer.
 
-It also moves. An identical sweep twelve minutes earlier gave ch1 0%, ch6 2.5%
-and **no measurement at all** for ch11 — the transmit call did not return
-inside its 12.1 s per-point deadline, and the run recorded that point as
-absent rather than as zero.
+**IGI is pinned at 0x1C on every channel, because that is DIG's floor.**
+Devourer logs both halves at bring-up:
 
-Settling this needs a noise-floor reading (`RxSense` / NHM), which the bridge
-cannot currently take. Until then "the channel was busy" stays an inference.
+```
+PhydmWatchdog::DigInit cur_ig=0x1c bounds=[0x1c,0x2a]
+Jaguar1: EDCCA thresholds L2H/H2L = 5/-2 (igi=0x1c)
+PhydmWatchdog: EDCCA L2H/H2L re-tracked to 5/-2 (igi=0x1c)
+```
+
+The adaptive loop is not broken and it is not asleep. It is working and it is
+parked at the bottom of its range: DIG raises the initial-gain index when the
+false-alarm rate climbs, the false-alarm rate here is tens of events per
+second, so the gain stays at maximum — and the EDCCA threshold, which the
+vendor re-derives from IGI every watchdog tick, therefore sits at the most
+trigger-happy value the algorithm can produce. The NHM power histogram agrees:
+every sample lands in its top bucket on all three channels, which is what a
+receiver running at maximum gain sees.
+
+So the deferral is not a mis-adaptation to a busy channel. **It is what the
+bottom of this part's adaptive range does on this bench**, and no amount of
+channel choice moves it, because the loop is already as sensitive as it goes.
+
+Running the watchdog explicitly (`adaptive_gain=true` at open) changes
+nothing measurable: ch1 0%, ch6 6%, ch11 38.5% against 45%, all within
+run-to-run spread. Devourer warns that the watchdog's periodic BB traffic
+shares libusb's transfer queue with the TX bulk path — it measured
+4500 → 1000 TX submits in 10 s under sustained TX — so leave it off outside
+this kind of investigation; our 200-frame bursts are too short to show it.
+
+**Two absences worth recording rather than re-deriving.** The absolute
+frame-free noise floor is unreachable on this part through this bridge:
+devourer measures it inside `IRadio::Init` and the bridge brings radios up
+with `InitWrite` + `StartRxLoop`. And devourer's fixed-IGI override
+(`DEVOURER_IGI`) is Jaguar2 only, so there is no supported knob for raising
+this adapter's gain above DIG's floor — moving the EDCCA threshold would mean
+writing BB 0x8a4 directly, which is below the boundary this project keeps.
+
+It also moves between runs. An identical sweep twelve minutes earlier gave
+ch1 0%, ch6 2.5% and **no measurement at all** for ch11 — the transmit call
+did not return inside its 12.1 s per-point deadline, and the run recorded that
+point as absent rather than as zero. The 10-second ch11 burst is the
+reproducible part: three runs, all ~10 s for a burst asked to take 400 ms, and
+it is the channel that delivers.
+
+**And the two failure shapes are real.** On ch1 and ch6 the transmit loop
+finishes exactly on schedule with the frames consumed and not aired; on ch11
+the same loop blocks for ten seconds and 43-45% get out. A stalled queue and a
+silent discard report identically to the host.
 
 ## The MT7612U's pacing floor is airtime plus ~112 us a frame
 

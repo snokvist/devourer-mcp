@@ -15,6 +15,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.openipc.devourer.protocol.ChannelSpec
 import org.openipc.devourer.protocol.FrameRecord
+import org.openipc.devourer.protocol.RxEnergy
 import org.openipc.devourer.radio.OpenRadio
 import org.openipc.devourer.radio.Radios
 import org.openipc.devourer.radio.SafetyLevel
@@ -83,6 +84,7 @@ public class LinkProbe(
         }
 
         val results = mutableListOf<PointResult>()
+        val channelEnergy = mutableMapOf<String, RxEnergy?>()
         var truncated = false
         var tuned: String? = null
         // One collector per witness for the whole run, started before any
@@ -105,11 +107,13 @@ public class LinkProbe(
                 if (point.channel.text != tuned) {
                     retuneAll(spec, witnesses, point.channel.spec())
                     tuned = point.channel.text
+                    channelEnergy[point.channel.text] = idleEnergy(spec.transmitter)
                 }
 
                 val measured = try {
                     withTimeout(spec.bounds.pointTimeoutMs) {
-                        measure(spec, point, runId, witnesses)
+                        measure(spec, point, runId, witnesses,
+                            channelEnergy[point.channel.text])
                     }
                 } catch (e: TimeoutCancellationException) {
                     truncated = true
@@ -222,11 +226,30 @@ public class LinkProbe(
         }
     }
 
+    /**
+     * The transmitter's own view of the channel, with nothing of ours on it.
+     *
+     * Two reads around a fixed dwell: the first resets the hardware counters
+     * and is discarded, the second is the delta over the dwell. Taken after
+     * tuning and before the first burst, so it describes the channel the MAC
+     * is about to decide about — not the channel plus our own transmissions.
+     *
+     * Costs nothing on a radio that cannot do it: the first read says
+     * unsupported and the dwell is skipped.
+     */
+    private suspend fun idleEnergy(session: Int): RxEnergy? {
+        val reset = runCatching { radios.rxEnergy(session) }.getOrNull() ?: return null
+        if (!reset.supported) return reset
+        delay(ENERGY_DWELL_MS)
+        return runCatching { radios.rxEnergy(session, withNhm = true) }.getOrNull()
+    }
+
     private suspend fun measure(
         spec: ExperimentSpec,
         point: SweepPoint,
         runId: Int,
         witnesses: List<Witness>,
+        channelEnergy: RxEnergy?,
     ): PointResult {
         witnesses.forEach { it.reset() }
         val frameHex = ProbeFrame.toHex(ProbeFrame.build(runId, point.frameBytes))
@@ -269,6 +292,7 @@ public class LinkProbe(
             txLateFrames = txResult.int("late_frames"),
             txMaxLateUs = txResult.long("max_late_us"),
             witnesses = perWitness,
+            channelEnergy = channelEnergy,
             note = if (accepted < sent) "TX path accepted only $accepted of $sent" else null,
         )
     }
@@ -399,6 +423,14 @@ public class LinkProbe(
     private companion object {
         /** How long cleanup waits for a frame collector to stop. */
         const val CLEANUP_JOIN_MS = 5_000L
+
+        /**
+         * Idle dwell for the channel-energy sample, per channel visited.
+         *
+         * Long enough that the counters accumulate something and short enough
+         * that a three-channel sweep does not pay a second and a half for it.
+         */
+        const val ENERGY_DWELL_MS = 500L
     }
 
     /**

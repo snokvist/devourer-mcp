@@ -9,6 +9,7 @@ import org.openipc.devourer.protocol.ChannelWidth
 import org.openipc.devourer.protocol.FrameRecord
 import org.openipc.devourer.protocol.MonitorStats
 import org.openipc.devourer.protocol.RadioListResult
+import org.openipc.devourer.protocol.RxEnergy
 import org.openipc.devourer.protocol.UsbDevice
 
 /** The channel a radio is currently tuned to, as the bridge reports it. */
@@ -79,7 +80,19 @@ public interface Radios {
     public suspend fun list(includeAll: Boolean = false): RadioListResult
 
     /** Opens and claims an adapter. Does not power the chip — monitoring does. */
-    public suspend fun open(bus: Int, address: Int, reset: Boolean = true): OpenRadio
+    /**
+     * @param noiseFloor ask devourer for an absolute frame-free noise floor in
+     *  [rxEnergy]. Set at open because the backend reads its config once. It
+     *  is unreachable on Realtek wave-1 parts through this bridge — see
+     *  [RxEnergy.noiseFloorWhy], which says which kind of absent applies.
+     */
+    public suspend fun open(
+        bus: Int,
+        address: Int,
+        reset: Boolean = true,
+        noiseFloor: Boolean = false,
+        adaptiveGain: Boolean = false,
+    ): OpenRadio
 
     public suspend fun describe(session: Int): OpenRadio
 
@@ -137,6 +150,19 @@ public interface Radios {
         enabled: Boolean,
         safety: SafetyLevel = SafetyLevel.NORMAL,
     ): JsonObject
+
+    /**
+     * What this radio's own PHY sees on the channel, without decoding a frame.
+     *
+     * The measurement that separates "the channel is busy" from "a receiver
+     * can decode a lot here" — two things a frame count cannot tell apart,
+     * and the distinction carrier sense actually acts on.
+     *
+     * Counters are deltas since the previous call, which resets them: to
+     * measure a window, read once and discard, wait, read again. [withNhm]
+     * adds a 12-bucket in-band power histogram and costs about 2ms.
+     */
+    public suspend fun rxEnergy(session: Int, withNhm: Boolean = false): RxEnergy
 
     public suspend fun txStats(session: Int): JsonObject
 
