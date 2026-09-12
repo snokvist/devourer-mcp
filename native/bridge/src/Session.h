@@ -46,6 +46,39 @@ struct OpenOptions {
   bool reset = true;       /* libusb_reset_device during claim */
   size_t buffer_bytes = 16u << 20; /* frame buffer high-water */
   uint32_t max_frame_bytes = 4096; /* payload cap; excess marks truncated */
+  /* Ask for the ABSOLUTE frame-free noise floor in rx_energy (DeviceConfig
+   * rx.abs_noise_floor). An open-time option rather than a call because
+   * devourer reads the config once, at CreateRadio.
+   *
+   * What it actually reaches, per generation, is worth knowing before relying
+   * on it. Jaguar2 measures live inside GetRxEnergy and is wedge-free, so the
+   * flag works — best-effort, since the BB's idle-power report is often
+   * unpopulated in monitor mode. Jaguar1 8812A/8821A measure it once, RX-idle,
+   * inside `IRadio::Init` — and THIS BRIDGE NEVER CALLS Init: it brings a
+   * radio up with InitWrite + StartRxLoop, so the CAL never runs and the field
+   * stays invalid however this flag is set. Reaching it on a Realtek wave-1
+   * part would mean moving bring-up onto Init, which is a change to the one
+   * path that currently sustains 6000 frames/s.
+   *
+   * rx_energy says which of those cases applies rather than leaving the caller
+   * to read a bare `valid_noise_floor: false`. */
+  bool noise_floor = false;
+
+  /* Run devourer's optional phydm watchdog (DeviceConfig tuning.phydm_watchdog).
+   *
+   * The thing that makes carrier sense adaptive. Off by default in devourer
+   * and therefore here, and that default is load-bearing: without the
+   * watchdog, DIG never runs, so the initial-gain index stays pinned at its
+   * bring-up value and the EDCCA threshold stays at the static value
+   * SetCcaMode programmed. Measured on this bench, igi read 28 (0x1C) on
+   * three channels with very different traffic, which is what a pinned gain
+   * looks like.
+   *
+   * With it on, a ~2s thread runs FA statistics and DIG, and SetCcaMode's
+   * enable path re-derives the BB 0x8a4 L2H/H2L from the IGI DIG just wrote.
+   * Jaguar1 only. It writes BB registers from a background thread, which is
+   * why it is opt-in per session rather than always on. */
+  bool adaptive_gain = false;
 };
 
 struct SessionStats {
@@ -105,6 +138,27 @@ public:
    * coupling. */
   Json rx_paths_json();
 
+  /* Frame-free RX energy: what the chip's own PHY thinks is on the channel,
+   * without decoding anything.
+   *
+   * The measurement the carrier-sense question needs. A frame counter says how
+   * much traffic a receiver could decode; EDCCA defers on ENERGY, including
+   * energy that never resolves into a frame. These are different quantities,
+   * and this is the second one: phydm false-alarm and CCA (channel-busy)
+   * counters, the DIG initial-gain index as a noise-floor proxy, and
+   * optionally the NHM in-band power histogram.
+   *
+   * Realtek only — it is IRtlRadio, not IRadio. A MediaTek radio reports
+   * unsupported rather than zeros, because zero channel-busy counts and "this
+   * chip has no such counter" are opposite claims.
+   *
+   * FA/CCA are DELTAS since the previous call, which resets them. To measure a
+   * window: read once and discard, wait, read again.
+   *
+   * `with_nhm` is a cost decision. The histogram arms a ~2 ms measurement and
+   * then polls for it; the scalars are a handful of register reads. */
+  Json rx_energy_json(bool with_nhm);
+
   /* Driver-side TX submission health (devourer's TxStats): frames handed to the
    * USB stack and how many the stack refused. The missing half of "did it
    * transmit" — send_packet returning true means queued, and this is where a
@@ -142,6 +196,7 @@ private:
   IRadio *_radio = nullptr; /* owned by _dev */
 
   SelectedChannel _channel{};
+  bool _noise_floor_requested = false;
   std::atomic<bool> _up{false};
   std::atomic<bool> _rx_running{false};
   std::thread _rx_thread;

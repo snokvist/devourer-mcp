@@ -9,6 +9,7 @@ import org.openipc.devourer.protocol.ChannelSpec
 import org.openipc.devourer.protocol.FrameRecord
 import org.openipc.devourer.protocol.MonitorStats
 import org.openipc.devourer.protocol.RadioListResult
+import org.openipc.devourer.protocol.RxEnergy
 
 /**
  * [Radios] over the real bridge.
@@ -33,13 +34,21 @@ public class RadioManager(private val bridge: BridgeClient) : Radios {
         return BridgeJson.format.decodeFromJsonElement(RadioListResult.serializer(), result)
     }
 
-    override suspend fun open(bus: Int, address: Int, reset: Boolean): OpenRadio {
+    override suspend fun open(
+        bus: Int,
+        address: Int,
+        reset: Boolean,
+        noiseFloor: Boolean,
+        adaptiveGain: Boolean,
+    ): OpenRadio {
         val result = bridge.call(
             "radio.open",
             buildJsonObject {
                 put("bus", JsonPrimitive(bus))
                 put("address", JsonPrimitive(address))
                 put("reset", JsonPrimitive(reset))
+                put("noise_floor", JsonPrimitive(noiseFloor))
+                put("adaptive_gain", JsonPrimitive(adaptiveGain))
             },
         )
         return BridgeJson.format.decodeFromJsonElement(OpenRadio.serializer(), result)
@@ -123,6 +132,17 @@ public class RadioManager(private val bridge: BridgeClient) : Radios {
                 put("disabled", JsonPrimitive(!enabled))
             },
         )
+    }
+
+    override suspend fun rxEnergy(session: Int, withNhm: Boolean): RxEnergy {
+        val result = bridge.call(
+            "radio.rx_energy",
+            buildJsonObject {
+                put("session", JsonPrimitive(session))
+                put("with_nhm", JsonPrimitive(withNhm))
+            },
+        )
+        return BridgeJson.format.decodeFromJsonElement(RxEnergy.serializer(), result)
     }
 
     override suspend fun txStats(session: Int): JsonObject =

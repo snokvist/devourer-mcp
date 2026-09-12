@@ -13,6 +13,7 @@ import org.openipc.devourer.protocol.FrameRecord
 import org.openipc.devourer.protocol.Identification
 import org.openipc.devourer.protocol.MonitorStats
 import org.openipc.devourer.protocol.RadioListResult
+import org.openipc.devourer.protocol.RxEnergy
 import org.openipc.devourer.protocol.SyntheticFrames
 import org.openipc.devourer.protocol.UsbDevice
 
@@ -97,6 +98,17 @@ public class FakeRadios(radios: List<OpenRadio> = emptyList()) : Radios {
      * instead.
      */
     public var onMonitorStart: ((Int, ChannelSpec) -> Unit)? = null
+
+    /** What [rxEnergy] reports for a Realtek session, keyed by session. */
+    public val energy: MutableMap<Int, RxEnergy> = ConcurrentHashMap()
+
+    /** Whether the last [open] asked for an absolute noise floor. */
+    public var noiseFloorRequested: Boolean = false
+        private set
+
+    /** Whether the last [open] asked for adaptive gain (the phydm watchdog). */
+    public var adaptiveGainRequested: Boolean = false
+        private set
 
     /** Set to throw from the next call to the named op, once. */
     public var failNext: MutableMap<String, Throwable> = mutableMapOf()
@@ -199,8 +211,16 @@ public class FakeRadios(radios: List<OpenRadio> = emptyList()) : Radios {
         return RadioListResult(devices = listed)
     }
 
-    override suspend fun open(bus: Int, address: Int, reset: Boolean): OpenRadio {
+    override suspend fun open(
+        bus: Int,
+        address: Int,
+        reset: Boolean,
+        noiseFloor: Boolean,
+        adaptiveGain: Boolean,
+    ): OpenRadio {
         record("open", "$bus/$address")
+        noiseFloorRequested = noiseFloor
+        adaptiveGainRequested = adaptiveGain
         return open.values.firstOrNull { it.device.bus == bus && it.device.address == address }
             ?: throw IllegalArgumentException("no fake radio at bus $bus address $address")
     }
@@ -320,6 +340,34 @@ public class FakeRadios(radios: List<OpenRadio> = emptyList()) : Radios {
         return buildJsonObject { put("ok", JsonPrimitive(true)) }
     }
 
+    /**
+     * Frame-free energy, on the Realtek fake only.
+     *
+     * The MediaTek fake refuses it the way the bridge does, because that
+     * refusal is the interesting case: a caller that treats "no counter on
+     * this silicon" as "zero channel activity" has invented a measurement.
+     */
+    override suspend fun rxEnergy(session: Int, withNhm: Boolean): RxEnergy {
+        record("rxEnergy", "$session,nhm=$withNhm")
+        val radio = radio(session)
+        if (radio.capabilities.generation !in REALTEK_GENERATIONS) {
+            return RxEnergy(
+                session = session,
+                supported = false,
+                why = "frame-free energy is a Realtek phydm facility " +
+                    "(IRtlRadio::GetRxEnergy); this backend is not a Realtek radio",
+            )
+        }
+        val e = energy[session] ?: RxEnergy(session = session, supported = true)
+        return e.copy(
+            session = session,
+            supported = true,
+            channel = radio.channel?.channel ?: 0,
+            nhm = if (withNhm) e.nhm else null,
+            validNhm = withNhm && e.validNhm,
+        )
+    }
+
     override suspend fun txStats(session: Int): JsonObject {
         record("txStats", "$session")
         radio(session)
@@ -362,6 +410,11 @@ public class FakeRadios(radios: List<OpenRadio> = emptyList()) : Radios {
     }
 
     public companion object {
+        /** Generations whose backend derives from IRtlRadio. */
+        private val REALTEK_GENERATIONS = setOf(
+            "jaguar1", "jaguar2", "jaguar3", "rtl8733b", "kestrel",
+        )
+
         /**
          * A 2T2R Realtek, modelled on the bench RTL8812AU.
          *

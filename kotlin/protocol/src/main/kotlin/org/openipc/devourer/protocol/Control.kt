@@ -129,6 +129,61 @@ public data class MonitorStats(
     @SerialName("sink_attached") val sinkAttached: Boolean = false,
 )
 
+/**
+ * What the chip's own PHY sees on the channel, without decoding a frame.
+ *
+ * The companion to a frame count, and a different quantity. A receiver's frame
+ * rate says how much traffic it could *decode*; carrier sense defers on
+ * *energy*, including energy that never resolves into a frame — a microwave,
+ * an overlapping-channel emitter, a noisy port. This is the second one.
+ *
+ * Realtek only: it comes from `IRtlRadio::GetRxEnergy`, so a MediaTek reports
+ * [supported] false rather than zeros. Every field carries its own validity
+ * flag because the facilities differ by chip generation, and zero from a
+ * generation that does not fill a counter is not a measurement of zero.
+ *
+ * [faOfdm], [faCck], [ccaOfdm] and [ccaCck] are DELTAS since the previous
+ * read, which resets the hardware counters.
+ */
+@Serializable
+public data class RxEnergy(
+    val session: Int = 0,
+    val supported: Boolean = false,
+    val why: String? = null,
+    val fallback: String? = null,
+    val channel: Int = 0,
+    @SerialName("valid_counters") val validCounters: Boolean = false,
+    /** OFDM false alarms: energy that started a decode and was not a frame. */
+    @SerialName("fa_ofdm") val faOfdm: Long? = null,
+    @SerialName("fa_cck") val faCck: Long? = null,
+    /** OFDM channel-busy count — the closest thing to "what CCA saw". */
+    @SerialName("cca_ofdm") val ccaOfdm: Long? = null,
+    @SerialName("cca_cck") val ccaCck: Long? = null,
+    @SerialName("valid_igi") val validIgi: Boolean = false,
+    /**
+     * DIG initial-gain index: the AGC backs gain off as the in-band floor
+     * rises, so a higher value means a noisier channel. A relative proxy for
+     * the noise floor, not a dBm figure.
+     */
+    val igi: Int? = null,
+    @SerialName("valid_noise_floor") val validNoiseFloor: Boolean = false,
+    @SerialName("abs_noise_floor_dbm") val absNoiseFloorDbm: Int? = null,
+    /** Which kind of absent, when [validNoiseFloor] is false. */
+    @SerialName("noise_floor_why") val noiseFloorWhy: String? = null,
+    @SerialName("valid_nhm") val validNhm: Boolean = false,
+    /** 12 IGI-referenced in-band power buckets. Costs ~2ms to arm. */
+    val nhm: List<Int>? = null,
+    @SerialName("nhm_duration") val nhmDuration: Int? = null,
+    val note: String? = null,
+) {
+    /** Channel-busy count across both modulations, when the chip reported it. */
+    public val ccaTotal: Long?
+        get() = if (validCounters) (ccaOfdm ?: 0) + (ccaCck ?: 0) else null
+
+    public val faTotal: Long?
+        get() = if (validCounters) (faOfdm ?: 0) + (faCck ?: 0) else null
+}
+
 /** Channel width in MHz. The bridge takes MHz; the enum keeps callers honest. */
 public enum class ChannelWidth(public val mhz: Int) {
     W5(5), W10(10), W20(20), W40(40), W80(80), W160(160),

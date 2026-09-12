@@ -40,6 +40,7 @@ import org.openipc.devourer.capture.PcapWriter
 import org.openipc.devourer.protocol.ChannelSpec
 import org.openipc.devourer.protocol.ChannelWidth
 import org.openipc.devourer.protocol.FrameAddresses
+import org.openipc.devourer.protocol.RxEnergy
 import org.openipc.devourer.radio.CapabilityException
 import org.openipc.devourer.radio.OpenRadio
 import org.openipc.devourer.radio.Radios
@@ -173,6 +174,30 @@ internal class Tools(
                         "reset",
                         schema("boolean", "USB-reset during claim. Default true; a warm pickup may set false."),
                     )
+                    put(
+                        "noise_floor",
+                        schema(
+                            "boolean",
+                            "Ask for an ABSOLUTE frame-free noise floor in channel_energy. Must be " +
+                                "set at open: the backend reads its config once. Reaches a live " +
+                                "reading on Jaguar2 only; on Realtek wave-1 (8812AU) the vendor " +
+                                "measurement lives in a bring-up path this bridge does not use, and " +
+                                "channel_energy will say so rather than return a zero. Default false.",
+                        ),
+                    )
+                    put(
+                        "adaptive_gain",
+                        schema(
+                            "boolean",
+                            "Run devourer's phydm watchdog (DIG + EDCCA threshold tracking) on this " +
+                                "radio. Default false, which is devourer's default and NOT a neutral " +
+                                "one: without it the initial-gain index stays pinned at its bring-up " +
+                                "value and carrier sense keeps the static threshold set then, whatever " +
+                                "the channel is doing. Turn it on when you are asking why a " +
+                                "transmitter defers. Jaguar1 only; it writes BB registers from a " +
+                                "background thread.",
+                        ),
+                    )
                 },
                 required = listOf("bus", "address"),
             ),
@@ -181,6 +206,8 @@ internal class Tools(
                 bus = request.intOr("bus", -1),
                 address = request.intOr("address", -1),
                 reset = request.boolOr("reset", true),
+                noiseFloor = request.boolOr("noise_floor", false),
+                adaptiveGain = request.boolOr("adaptive_gain", false),
             )
             text(json.encodeToString(OpenRadio.serializer(), radio))
         }
@@ -324,6 +351,63 @@ internal class Tools(
                 )
             }
             text(json.encodeToString(kotlinx.serialization.builtins.ListSerializer(CaptureStatus.serializer()), rows))
+        }
+
+        register(
+            server,
+            name = "channel_energy",
+            description = """
+                What this radio's own PHY sees on its channel, WITHOUT decoding a frame.
+
+                A different quantity from a frame count, and the one that actually matters when a
+                transmitter will not transmit. capture_summary tells you how much traffic a receiver
+                could decode; carrier sense defers on ENERGY, including energy that never resolves
+                into a frame — a microwave, an overlapping-channel emitter, a noisy port. This reads
+                the chip's own false-alarm and channel-busy counters, plus the AGC's initial-gain
+                index as a relative noise-floor proxy, and optionally a 12-bucket in-band power
+                histogram.
+
+                The counters are deltas, and the hardware resets them on every read, so this tool
+                owns the protocol: it reads once to reset, dwells, and reads again. A single raw read
+                would be a delta since some unknown earlier moment.
+
+                Realtek only. A MediaTek says so rather than reporting zeros — "this silicon has no
+                such counter" and "the channel is quiet" are opposite claims.
+
+                Read it on the radio whose behaviour you are asking about. If a transmitter is
+                deferring, it is that transmitter's PHY whose view decides, not a witness's.
+            """.trimIndent(),
+            inputSchema = ToolSchema(
+                properties = buildJsonObject {
+                    put("session", schema("integer", "Session id from radio_open."))
+                    put("dwell_ms", schema("integer", "Measurement window. Default 500, max 10000."))
+                    put("with_nhm", schema("boolean", "Include the power histogram (~2ms extra). Default true."))
+                },
+                required = listOf("session"),
+            ),
+        ) { request ->
+            val session = request.intOr("session", -1)
+            val dwell = request.longOr("dwell_ms", 500).coerceIn(10, 10_000)
+            val withNhm = request.boolOr("with_nhm", true)
+            val first = radios.rxEnergy(session)
+            if (!first.supported) {
+                text(json.encodeToString(RxEnergy.serializer(), first))
+            } else {
+                kotlinx.coroutines.delay(dwell)
+                val measured = radios.rxEnergy(session, withNhm = withNhm)
+                text(
+                    json.encodeToString(
+                        JsonObject.serializer(),
+                        buildJsonObject {
+                            put("dwell_ms", JsonPrimitive(dwell))
+                            put(
+                                "energy",
+                                json.encodeToJsonElement(RxEnergy.serializer(), measured),
+                            )
+                        },
+                    ),
+                )
+            }
         }
 
         register(
