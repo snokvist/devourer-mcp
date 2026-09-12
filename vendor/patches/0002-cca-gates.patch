@@ -1,0 +1,129 @@
+diff --git a/vendor/devourer/src/IRtlRadio.h b/vendor/devourer/src/IRtlRadio.h
+index a3f0794..739ac93 100644
+--- a/vendor/devourer/src/IRtlRadio.h
++++ b/vendor/devourer/src/IRtlRadio.h
+@@ -85,6 +85,33 @@ public:
+    * tests/canary_diff.py. Reading a powered-down chip yields garbage or throws;
+    * interpreting that is the caller's job. No-op where unsupported (default). */
+   virtual void DumpChipState() {}
++
++  /* The carrier-sense gate, one bit at a time.
++   *
++   * SetCcaMode is all-or-nothing, and on this family it is two gates:
++   * 0x520[14] primary CCA (defers to a decodable preamble) and 0x520[15]
++   * EDCCA (defers to raw in-band energy). They answer different questions
++   * and devourer's own on-air work found they behave very differently —
++   * tests/dis_cca_tx_onair.sh measured primary CCA costing a Jaguar3
++   * injector 41-45% against a co-channel flooder while the energy bit alone
++   * was null. A caller that only needs one of them should not have to turn
++   * off both, and a caller diagnosing a deferral needs to tell them apart.
++   *
++   * `true` means DISABLED, matching SetCcaMode's argument sense and the
++   * register's own polarity (the bit set = gate off). Returns false where
++   * the split is not ported; SetCcaMode remains the portable call. */
++  virtual bool SetCcaGates(bool primary_disabled, bool edcca_disabled) {
++    (void)primary_disabled;
++    (void)edcca_disabled;
++    return false;
++  }
++
++  /* Current gate state, read back from the hardware rather than remembered. */
++  virtual bool GetCcaGates(bool &primary_disabled, bool &edcca_disabled) {
++    (void)primary_disabled;
++    (void)edcca_disabled;
++    return false;
++  }
+ };
+ 
+ #endif /* IRTL_RADIO_H */
+diff --git a/vendor/devourer/src/jaguar1/RtlJaguarDevice.cpp b/vendor/devourer/src/jaguar1/RtlJaguarDevice.cpp
+index 513f19e..de39d93 100644
+--- a/vendor/devourer/src/jaguar1/RtlJaguarDevice.cpp
++++ b/vendor/devourer/src/jaguar1/RtlJaguarDevice.cpp
+@@ -996,20 +996,45 @@ void RtlJaguarDevice::ClearAckResponder() {
+   (void)disarm_ack_responder();
+ }
+ 
++bool RtlJaguarDevice::GetCcaGates(bool &primary_disabled, bool &edcca_disabled) {
++  const uint32_t v = _device.rtw_read<uint32_t>(0x0520);
++  primary_disabled = (v & (1u << 14)) != 0;
++  edcca_disabled = (v & (1u << 15)) != 0;
++  return true;
++}
++
++bool RtlJaguarDevice::SetCcaGates(bool primary_disabled, bool edcca_disabled) {
++  apply_cca(primary_disabled, edcca_disabled);
++  /* Remembered for the gain path's re-apply: "disabled" means both gates
++   * are off, which is the only state SetCcaMode can express. */
++  _cca_disabled = primary_disabled && edcca_disabled;
++  _logger->info("Jaguar1: CCA gates primary={} edcca={}",
++                primary_disabled ? "OFF" : "on",
++                edcca_disabled ? "OFF" : "on");
++  return true;
++}
++
+ void RtlJaguarDevice::SetCcaMode(bool disabled) {
+   /* Remembered so a later gain change can re-apply the same mode: the EDCCA
+    * thresholds this path programs are derived from IGI, so they are stale
+    * the moment the gain moves. */
+   _cca_disabled = disabled;
++  apply_cca(disabled, disabled);
++  _logger->info("Jaguar1: MAC carrier-sense {}",
++                disabled ? "DISABLED (dis_cca: CCA+EDCCA)"
++                         : "enabled (default)");
++}
++
++void RtlJaguarDevice::apply_cca(bool primary_disabled, bool edcca_disabled) {
+   /* MAC carrier-sense gate: the same REG_TX_PTCL_CTRL bits as the HalMAC
+    * generations — the vendor's phydm_mac_edcca_state drives 0x520[15] on
+-   * this family too; [14] is the primary-CCA defer. */
++   * this family too; [14] is the primary-CCA defer. A set bit DISABLES its
++   * gate. */
+   uint32_t v520 = _device.rtw_read<uint32_t>(0x0520);
+-  if (disabled)
+-    v520 |= (1u << 15) | (1u << 14);
+-  else
+-    v520 &= ~((1u << 15) | (1u << 14));
++  if (primary_disabled) v520 |= (1u << 14); else v520 &= ~(1u << 14);
++  if (edcca_disabled)   v520 |= (1u << 15); else v520 &= ~(1u << 15);
+   _device.rtw_write<uint32_t>(0x0520, v520);
++  const bool disabled = edcca_disabled;
+ 
+   /* BB EDCCA thresholds (rEDCCA_Jaguar 0x8a4: L2H byte0 / H2L byte1). The
+    * BB init table parks them at 0x7f/0x7f = never-trigger — the vendor's
+@@ -1040,9 +1065,6 @@ void RtlJaguarDevice::SetCcaMode(bool disabled) {
+    * threshold follows (vendor couples them per adaptivity cycle). */
+   if (auto *wd = _halModule.phydm_watchdog())
+     wd->SetEdccaTrack(!disabled);
+-  _logger->info("Jaguar1: MAC carrier-sense {}",
+-                disabled ? "DISABLED (dis_cca: CCA+EDCCA)"
+-                         : "enabled (default)");
+ }
+ 
+ bool RtlJaguarDevice::SetAmpduMode(const devourer::AmpduMode &mode) {
+diff --git a/vendor/devourer/src/jaguar1/RtlJaguarDevice.h b/vendor/devourer/src/jaguar1/RtlJaguarDevice.h
+index f042771..01d86ad 100644
+--- a/vendor/devourer/src/jaguar1/RtlJaguarDevice.h
++++ b/vendor/devourer/src/jaguar1/RtlJaguarDevice.h
+@@ -60,6 +60,10 @@ class RtlJaguarDevice : public IRtlRadio {
+    * already allows, because backing gain off is the direction a host needs
+    * and 0x2a is only DIG's own upper bound, not the register's. */
+   bool _cca_disabled = false; /* last SetCcaMode argument; see SetRxGainRange */
++  /* Programs 0x520[14]/[15] and the BB EDCCA thresholds. The EDCCA half of
++   * the work keys off the edcca argument: parked at never-trigger when that
++   * gate is off, at the vendor IGI-coupled operating point when it is on. */
++  void apply_cca(bool primary_disabled, bool edcca_disabled);
+   uint8_t _rx_gain_min = kRxGainIndexMin;
+   uint8_t _rx_gain_max = kRxGainIndexMax;
+   bool _rx_gain_clamped = false;
+@@ -331,6 +335,10 @@ public:
+    * parked at never-trigger by the BB table, programmed to the vendor
+    * operating point on enable (EDCCA only exists once they are set). */
+   void SetCcaMode(bool disabled) override;
++  /* The two gates independently — see IRtlRadio. SetCcaMode is
++   * SetCcaGates(d, d) plus the remembered state. */
++  bool SetCcaGates(bool primary_disabled, bool edcca_disabled) override;
++  bool GetCcaGates(bool &primary_disabled, bool &edcca_disabled) override;
+   /* A-MPDU TX mode (IRadio contract; src/AmpduMode.h). Programs the
+    * Jaguar1 aggregate-fill timer (0x0456 — NOT the 0x0455 the HalMAC chips
+    * use) + the 8814A burst-mode gate (0x04BC), and records the descriptor

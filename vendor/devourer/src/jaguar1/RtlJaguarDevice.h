@@ -60,6 +60,10 @@ class RtlJaguarDevice : public IRtlRadio {
    * already allows, because backing gain off is the direction a host needs
    * and 0x2a is only DIG's own upper bound, not the register's. */
   bool _cca_disabled = false; /* last SetCcaMode argument; see SetRxGainRange */
+  /* Programs 0x520[14]/[15] and the BB EDCCA thresholds. The EDCCA half of
+   * the work keys off the edcca argument: parked at never-trigger when that
+   * gate is off, at the vendor IGI-coupled operating point when it is on. */
+  void apply_cca(bool primary_disabled, bool edcca_disabled);
   uint8_t _rx_gain_min = kRxGainIndexMin;
   uint8_t _rx_gain_max = kRxGainIndexMax;
   bool _rx_gain_clamped = false;
@@ -331,6 +335,10 @@ public:
    * parked at never-trigger by the BB table, programmed to the vendor
    * operating point on enable (EDCCA only exists once they are set). */
   void SetCcaMode(bool disabled) override;
+  /* The two gates independently — see IRtlRadio. SetCcaMode is
+   * SetCcaGates(d, d) plus the remembered state. */
+  bool SetCcaGates(bool primary_disabled, bool edcca_disabled) override;
+  bool GetCcaGates(bool &primary_disabled, bool &edcca_disabled) override;
   /* A-MPDU TX mode (IRadio contract; src/AmpduMode.h). Programs the
    * Jaguar1 aggregate-fill timer (0x0456 — NOT the 0x0455 the HalMAC chips
    * use) + the 8814A burst-mode gate (0x04BC), and records the descriptor

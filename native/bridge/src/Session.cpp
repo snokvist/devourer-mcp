@@ -841,6 +841,54 @@ bool Session::set_cca(bool disabled, std::string &err) {
   return true;
 }
 
+Json Session::cca_gates_json() {
+  std::lock_guard<std::recursive_mutex> life(_life_mu);
+  Json j;
+  j.set("session", _id);
+  if (_radio == nullptr) {
+    j.set("supported", false).set("why", "session has no radio");
+    return j;
+  }
+  auto *rtl = dynamic_cast<IRtlRadio *>(_radio);
+  bool primary = false, edcca = false;
+  if (rtl == nullptr || !rtl->GetCcaGates(primary, edcca)) {
+    j.set("supported", false)
+        .set("why",
+             "splitting the carrier-sense gate is a Realtek 0x520 facility "
+             "(IRtlRadio::GetCcaGates) and is not ported for this backend; "
+             "radio.cca still turns both gates off together")
+        .set("cca_disabled", _cca_disabled);
+    return j;
+  }
+  j.set("supported", true)
+      .set("primary_cca_disabled", primary)
+      .set("edcca_disabled", edcca)
+      .set("note",
+           "primary CCA defers to a DECODABLE PREAMBLE; EDCCA defers to raw "
+           "in-band ENERGY. Devourer's own on-air work (tests/"
+           "dis_cca_tx_onair.sh, Jaguar3) found primary CCA costing an "
+           "injector 41-45% against a co-channel flooder while the energy "
+           "bit alone was null. Both disabled is the antisocial setting.");
+  return j;
+}
+
+bool Session::set_cca_gates(bool primary_disabled, bool edcca_disabled,
+                            std::string &err) {
+  std::lock_guard<std::recursive_mutex> life(_life_mu);
+  if (_radio == nullptr) {
+    err = "session has no radio";
+    return false;
+  }
+  auto *rtl = dynamic_cast<IRtlRadio *>(_radio);
+  if (rtl == nullptr || !rtl->SetCcaGates(primary_disabled, edcca_disabled)) {
+    err = "this backend cannot address the two carrier-sense gates "
+          "separately; use radio.cca";
+    return false;
+  }
+  _cca_disabled = primary_disabled && edcca_disabled;
+  return true;
+}
+
 Json Session::rx_gain_json() {
   std::lock_guard<std::recursive_mutex> life(_life_mu);
   Json j;

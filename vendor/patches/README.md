@@ -23,3 +23,15 @@ hypothesis that motivated it. Carrying it here rather than in a fork keeps
 makes the divergence from `DEVOURER_VERSION` a file someone can read.
 
 Retire it the moment it lands upstream.
+
+## 0002-cca-gates.patch
+
+`IRtlRadio::SetCcaGates` / `GetCcaGates` — the MAC carrier-sense gate one bit
+at a time, because on Jaguar1 the two bits do opposite things and
+`SetCcaMode` can only move them together. See
+[`docs/proposals/cca-gates-and-adaptivity.md`](../../docs/proposals/cca-gates-and-adaptivity.md);
+the measurement it enabled is that EDCCA alone costs an 8812AU injector 94%
+of its frames, which inverts the Jaguar3 result devourer documents as general.
+
+Retire it the moment it lands upstream.
+

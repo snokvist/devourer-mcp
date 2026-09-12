@@ -72,6 +72,7 @@ public:
   bool is_array() const { return _type == Type::Array; }
   bool is_string() const { return _type == Type::String; }
   bool is_number() const { return _type == Type::Int || _type == Type::Real; }
+  bool is_boolean() const { return _type == Type::Bool; }
 
   /* --- object/array building ---------------------------------------------
    * set() on a non-object promotes it, so `Json r; r.set("a",1)` works without

@@ -138,6 +138,16 @@ public:
    * coupling. */
   Json rx_paths_json();
 
+  /* The carrier-sense gate, one bit at a time.
+   *
+   * `radio.cca` is all-or-nothing and on Realtek that is two gates doing
+   * different jobs: primary CCA defers to a decodable preamble, EDCCA to raw
+   * in-band energy. Telling them apart is the difference between "the channel
+   * has traffic on it" and "the channel has energy on it", which is the
+   * distinction a deferral diagnosis turns on. */
+  Json cca_gates_json();
+  bool set_cca_gates(bool primary_disabled, bool edcca_disabled, std::string &err);
+
   /* Receive gain: the index, its bounds, and whether anything is moving it.
    *
    * Vendor-neutral (IRadio), unlike rx_energy. The index also sets the EDCCA
