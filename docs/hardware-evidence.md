@@ -142,6 +142,21 @@ states with a **fresh radio open per arm**:
 | primary CCA off only | 13.7%, 2.7% |
 | both off | 94.3%, 95.3% |
 
+Re-run 2026-09-12 after the MT7612U was swapped out, so the two witnesses are
+now an RTL8822C and an RTL8733BU — different families from each other and from
+the original pair, which is a stronger cross-check than two identical
+MT7612Us. The witnesses agreed within ~2% on every arm:
+
+| Gate state | delivered (2 reps) | witnesses (w0 / w1) |
+|---|---|---|
+| both on (devourer's default) | 5.7%, 15.7% | 17/14, 47/35 |
+| **EDCCA off only** | **95.3%, 95.7%** | 274/286, 280/287 |
+| primary CCA off only | 31.0%, 12.7% | 93/55, 38/29 |
+| both off | 94.0%, 95.0% | 274/282, 275/285 |
+
+Same shape, different receivers. "Primary CCA off only" is the noisiest arm in
+both runs and is the one to re-measure before quoting a number for it.
+
 **EDCCA is the gate.** That inverts what devourer documents — its `CLAUDE.md`
 says the primary-CCA bit "is the one that matters" and the energy bit "alone
 is null against a decodable preamble", measured on Jaguar3 with
