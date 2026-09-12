@@ -6,6 +6,7 @@
 #include <cerrno>
 #include <cstring>
 #include <fcntl.h>
+#include <sys/file.h>
 #include <poll.h>
 #include <sys/socket.h>
 #include <ctime>
@@ -40,8 +41,37 @@ uint64_t now_ns() {
  * stamp can be stale — a crashed process leaves its pid behind while the flock
  * is long released — so it is only reported when that pid is still alive, and
  * never used to decide anything. */
+/* Is devourer's lock actually held right now?
+ *
+ * The decisive question, and the pid stamp cannot answer it. Taking the flock
+ * non-blocking and immediately dropping it says yes or no with no guesswork
+ * and no privileges — which matters, because the interesting case is a
+ * FOREIGN process holding the kernel interface while our own stale stamp sits
+ * in the file. Observed on this bench: a waybeam-link run had claimed the
+ * adapter, our stamp from a previous open was still there, and the refusal
+ * named us instead of it. */
+bool devourer_lock_held(uint8_t bus, const std::string &port_path) {
+  if (port_path.empty())
+    return false;
+  const std::string path = "/tmp/devourer-usb-" + std::to_string(bus) + "-" +
+                           port_path + ".lock";
+  const int fd = ::open(path.c_str(), O_RDONLY);
+  if (fd < 0)
+    return false;
+  const bool free_now = ::flock(fd, LOCK_EX | LOCK_NB) == 0;
+  if (free_now)
+    ::flock(fd, LOCK_UN);
+  ::close(fd);
+  return !free_now;
+}
+
 std::string lock_holder(uint8_t bus, const std::string &port_path) {
   if (port_path.empty())
+    return {};
+  /* A stamp with no lock behind it is a fossil from some earlier open —
+   * possibly our own. Naming it would point the caller at the wrong process,
+   * which is worse than admitting we do not know. */
+  if (!devourer_lock_held(bus, port_path))
     return {};
   const std::string path = "/tmp/devourer-usb-" + std::to_string(bus) + "-" +
                            port_path + ".lock";
@@ -232,7 +262,15 @@ std::unique_ptr<Session> Session::open(uint32_t id, const OpenOptions &opts,
        * a second tool running, that is the whole answer. */
       const auto holder = lock_holder(info.bus, info.port_path);
       if (holder.empty()) {
-        msg = "adapter is already in use by another process";
+        /* Nobody holds devourer's lock, so whatever claimed the USB
+         * interface is not using devourer's locking at all — another tool,
+         * or the same tool run as root. The kernel knows who; we cannot see
+         * it without privileges, so hand over the command that can. */
+        msg = "the kernel refused the interface claim (EBUSY) and devourer's "
+              "own lock is NOT held, so the holder is a process outside "
+              "devourer. Find it with: sudo fuser -v /dev/bus/usb/" +
+              std::string(info.bus < 100 ? (info.bus < 10 ? "00" : "0") : "") +
+              std::to_string(info.bus) + "/...";
       } else if (holder.rfind("this bridge", 0) == 0) {
         msg = "adapter is already in use by " + holder;
       } else {
@@ -800,6 +838,81 @@ bool Session::set_cca(bool disabled, std::string &err) {
     return false;
   }
   _cca_disabled = disabled;
+  return true;
+}
+
+Json Session::rx_gain_json() {
+  std::lock_guard<std::recursive_mutex> life(_life_mu);
+  Json j;
+  j.set("session", _id);
+  if (_radio == nullptr) {
+    j.set("supported", false).set("why", "session has no radio");
+    return j;
+  }
+  const auto caps = _radio->GetRxGainCaps();
+  if (!caps.supported) {
+    j.set("supported", false)
+        .set("why",
+             "this backend does not report a receive-gain index "
+             "(IRadio::GetRxGainCaps is optional and not ported here)");
+    return j;
+  }
+  j.set("supported", true)
+      .set("settable", caps.settable)
+      .set("index_name", caps.index_name)
+      .set("index_min", caps.index_min)
+      .set("index_max", caps.index_max);
+  if (caps.index_step_db > 0)
+    j.set("index_step_db", caps.index_step_db);
+  /* The field this whole op exists for: whether anything is adjusting the
+   * gain, and what it keys on. "A periodic loop exists" and "a periodic loop
+   * is doing something" are different facts. */
+  j.set("automatic", caps.automatic).set("automatic_input", caps.automatic_input);
+
+  const auto st = _radio->GetRxGainState();
+  j.set("valid", st.valid);
+  if (st.valid) {
+    j.set("index", st.index)
+        .set("range_min", st.range_min)
+        .set("range_max", st.range_max);
+    if (st.index == st.range_min && st.range_min != st.range_max)
+      j.set("note",
+            "the index is sitting at the bottom of its range, i.e. maximum "
+            "gain. On Realtek the EDCCA threshold is derived from it, so "
+            "carrier sense is at its most sensitive too.");
+  } else {
+    j.set("why",
+          "the baseband is not up yet — bring the radio up (retune or start "
+          "a monitor) before reading the gain");
+  }
+  return j;
+}
+
+bool Session::set_rx_gain(int min, int max, std::string &err) {
+  std::lock_guard<std::recursive_mutex> life(_life_mu);
+  if (_radio == nullptr) {
+    err = "session has no radio";
+    return false;
+  }
+  const auto caps = _radio->GetRxGainCaps();
+  if (!caps.settable) {
+    err = "this backend cannot clamp its receive gain";
+    return false;
+  }
+  if (min > max) {
+    err = "min must be <= max";
+    return false;
+  }
+  if (min < caps.index_min || max > caps.index_max) {
+    err = "range must lie inside [" + std::to_string(caps.index_min) + ", " +
+          std::to_string(caps.index_max) + "]";
+    return false;
+  }
+  if (!_radio->SetRxGainRange(static_cast<uint8_t>(min),
+                              static_cast<uint8_t>(max))) {
+    err = "the backend refused the clamp";
+    return false;
+  }
   return true;
 }
 

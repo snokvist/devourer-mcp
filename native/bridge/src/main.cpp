@@ -431,6 +431,22 @@ Json op_radio_rx_paths(const Json &req) {
   return ok(s->rx_paths_json());
 }
 
+Json op_radio_rx_gain(const Json &req) {
+  std::string err;
+  auto s = find_session(req, err);
+  if (!s)
+    return fail("no_session", err);
+  if (req.at("min_index").is_number() || req.at("max_index").is_number()) {
+    int64_t lo = 0, hi = 0;
+    if (!ranged(req, "min_index", 0, 127, lo, err) ||
+        !ranged(req, "max_index", 0, 127, hi, err))
+      return fail("bad_request", err);
+    if (!s->set_rx_gain(static_cast<int>(lo), static_cast<int>(hi), err))
+      return fail("unsupported", err);
+  }
+  return ok(s->rx_gain_json());
+}
+
 Json op_radio_rx_energy(const Json &req) {
   std::string err;
   auto s = find_session(req, err);
@@ -701,6 +717,8 @@ Json dispatch(const Json &req) {
     return op_radio_tx_stats(req);
   if (op == "radio.rx_energy")
     return op_radio_rx_energy(req);
+  if (op == "radio.rx_gain")
+    return op_radio_rx_gain(req);
   if (op == "radio.cca")
     return op_radio_cca(req);
   if (op == "tx.send")

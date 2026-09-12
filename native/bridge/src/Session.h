@@ -138,6 +138,18 @@ public:
    * coupling. */
   Json rx_paths_json();
 
+  /* Receive gain: the index, its bounds, and whether anything is moving it.
+   *
+   * Vendor-neutral (IRadio), unlike rx_energy. The index also sets the EDCCA
+   * threshold on Realtek, so on that family this is the carrier-sense
+   * sensitivity as much as the receive sensitivity. */
+  Json rx_gain_json();
+
+  /* Clamp the receive-gain index. min == max pins it; passing the caps' own
+   * limits restores the default. Steers an adaptive loop where one runs
+   * rather than overriding it behind its back. */
+  bool set_rx_gain(int min, int max, std::string &err);
+
   /* Frame-free RX energy: what the chip's own PHY thinks is on the channel,
    * without decoding anything.
    *

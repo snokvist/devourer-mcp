@@ -129,7 +129,56 @@ shares libusb's transfer queue with the TX bulk path — it measured
 4500 → 1000 TX submits in 10 s under sustained TX — so leave it off outside
 this kind of investigation; our 200-frame bursts are too short to show it.
 
-### What it would take to drive the gain
+### The gain hypothesis was wrong, and driving the gain is what showed it
+
+Having built the knob (`rx_gain`, below), the obvious experiment became
+possible: pin the RTL8812AU's gain index at a series of values with carrier
+sense ON and count what two independent receivers hear.
+
+The first sweep looked like a triumph — delivery climbing 7.7% -> 35% -> 96% ->
+98.7% as the index dropped from 0x1c to 0x10. **It was an artefact.** The
+control point at the end, back at the starting index, returned 90.3% instead
+of the 7.7% it started at. Whatever the sweep changed, it was not undone by
+putting the index back.
+
+Re-run with a **fresh radio open per point**, so every measurement starts from
+the same bring-up state, and interleaved so drift shows up as disagreement
+between repeats:
+
+| # | igi | L2H | MT7612U | RTL8822C | delivered | tx took |
+|---|---|---|---|---|---|---|
+| 1 | 0x1c | +5 | 5 | 2 | 1.7% | 0.3 s |
+| 2 | 0x14 | +10 | 9 | 7 | 3.0% | 0.3 s |
+| 3 | 0x1c | +5 | 0 | 0 | 0.0% | 0.3 s |
+| 4 | 0x14 | +10 | 13 | 9 | 4.3% | 0.3 s |
+| 5 | 0x1c | +5 | 2 | 2 | 0.7% | 0.3 s |
+| 6 | 0x14 | +10 | 16 | 8 | 5.3% | 0.3 s |
+
+0x14 beats 0x1c in all three pairs, so the effect is real and in the direction
+the coupling predicts. It is also about **four percentage points**, not ninety.
+The 96% was session state accumulated across points in one bring-up, not gain.
+
+**So receive gain is not the lever for this deferral.** Two corrections to
+what this file said before:
+
+- *"The gain is at its floor, therefore carrier sense is at its most
+  trigger-happy"* was backwards. On this family
+  `L2H = th_l2h_ini + (0x32 - IGI)`, clamped to 10, with `th_l2h_ini = -17`.
+  The formula reproduces every threshold devourer logged — IGI 0x1c -> +5,
+  0x22 -> -1, 0x28 -> -7, 0x2e -> -13 — so a HIGHER index means a LOWER
+  threshold and MORE deferral. At the DIG floor the radio already sits at the
+  most permissive setting the coupling can reach.
+- Backing the gain off makes it far worse, and measurably so: OFDM CCA counts
+  went 98 -> 1150 -> 8462 and a 300-frame burst went 0.3 s -> 13 s -> 36 s ->
+  over two minutes as the index rose from 0x1c to 0x2e.
+
+Disabling carrier sense remains the only thing that reliably recovers
+transmission (90.5%). And `SetCcaMode` clears **two** bits in 0x520 — bit 15
+(EDCCA) and bit 14 (primary CCA defer) — which have never been separated. If
+the primary CCA defer is what is stopping transmission, the entire EDCCA and
+gain line of inquiry was the wrong tree, and that is the next experiment.
+
+### What driving the gain took
 
 Not a missing capability in devourer — a missing way in. Everything needed is
 already implemented:
@@ -150,7 +199,10 @@ config struct, and ignored by the family that needs it here.
 `_device`. We can read the gain — `channel_energy` already reports it — and we
 cannot set it without changing devourer.
 
-The smallest change that fixes it is two lines: make
+That gap is now closed locally — see
+[`proposals/rx-gain-range.md`](proposals/rx-gain-range.md) and the `rx_gain`
+bridge op — by three `IRadio` virtuals implemented on jaguar1 and jaguar3 and
+verified on both. The alternative considered first was two lines: make
 `phydm_SetIgiFloor_Jaguar()` write `_cfg.rx.igi.value_or(0x1c)` instead of a
 literal `0x1c`. Existing field, unchanged default, and `DEVOURER_IGI` then
 means the same thing on Jaguar1 as on Jaguar2. With that, this bridge sets it

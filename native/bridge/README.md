@@ -54,6 +54,7 @@ header.
 | `tx.send` | structured `mode` + `body_hex`, or raw `frame_hex`/`frame_b64`; bounded `count` ≤ 100000 and a 30 s wall-clock budget |
 | `radio.rx_paths` | live per-chain activity estimate; reports `supported:false` where a backend has not ported it |
 | `radio.tx_stats` | devourer's driver-side `TxStats` — submitted vs failed, i.e. host-side only |
+| `radio.rx_gain` | receive-gain index, its bounds, and whether any loop is adjusting it (`automatic_input` says what that loop keys on, or why it is inert). Pass `min_index`/`max_index` to clamp it — `min == max` pins. Vendor-neutral (`IRadio`). |
 | `radio.rx_energy` | frame-free channel energy from the chip's own PHY: phydm FA/CCA counters, the DIG initial-gain index, optionally the NHM power histogram (`with_nhm`). Realtek only — `IRtlRadio`, not `IRadio` — and reports `supported:false` elsewhere rather than zeros. FA/CCA are deltas since the previous read, which resets them. |
 | `radio.cca` | MAC carrier-sense gate. Antisocial when disabled; the Kotlin layer requires `SafetyLevel.EXPERIMENTAL` |
 | `sessions` / `shutdown` | |

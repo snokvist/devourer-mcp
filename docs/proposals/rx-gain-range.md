@@ -1,9 +1,25 @@
 # Upstream proposal: a vendor-neutral receive-gain clamp
 
-For OpenIPC/devourer. Written after an RTL8812AU on this bench refused to
-transmit on three channels while its receiver worked perfectly — the cause was
-its receive gain pinned at maximum, and there was no way to read that from
-outside the library, let alone change it.
+For OpenIPC/devourer. **Implemented and verified on this bench before
+proposing** — the patch is `vendor/patches/0001-rx-gain-range.patch`, applied
+to the pinned tree and exercised on two families.
+
+| Backend | Adapter | Result |
+|---|---|---|
+| jaguar1 | RTL8812AU | implemented, verified: index read, clamp applied, DIG steered, out-of-range refused |
+| jaguar3 | RTL8822C (sold as 8812CU) | implemented, verified: index moved 0x20 -> 0x2c -> 0x36 -> 0x22, `rx_energy` agreeing independently each time |
+| mt7612u | MT7612U | not implemented: reports `supported:false` via the not-ported default, which is the behaviour under test |
+| jaguar2, kestrel, rtl8733b | — | no hardware here; not implemented, not claimed |
+
+The upstream PR will name only the two families actually verified and leave
+the rest to the maintainer.
+
+Written after an RTL8812AU refused to transmit on three channels while its
+receiver worked perfectly. The hypothesis was that its receive gain, pinned at
+maximum, held carrier sense at its most trigger-happy. **Building this is what
+proved that wrong** — see "What the knob measured", below. The API is proposed
+on the strength of being able to answer the question at all, not on the
+strength of the answer.
 
 ## The survey that decides the design
 
@@ -128,11 +144,40 @@ care about" does not exist, so there is no correct input to synthesise. The
 honest position is to let the operator bound the loop and say so, which is what
 the clamp does.
 
+## What the knob measured
+
+Worth stating plainly, because it is the reason to build the thing and also
+the reason not to oversell it.
+
+The EDCCA coupling on Jaguar1 is `L2H = th_l2h_ini + (0x32 - IGI)`, clamped to
+10, with `th_l2h_ini = -17`. That formula reproduces every threshold devourer
+logged as the clamp moved: IGI 0x1c -> +5, 0x22 -> -1, 0x28 -> -7, 0x2e -> -13.
+So a HIGHER gain index gives a LOWER carrier-sense threshold and MORE
+deferral, which is the opposite of what was assumed — and backing the gain off
+made things dramatically worse: OFDM CCA counts 98 -> 1150 -> 8462, and a
+300-frame burst taking 0.3 s -> 13 s -> 36 s -> over two minutes.
+
+Going the other way, to the permissive end of the clamp, helps a little and
+not much. With a **fresh radio open per point** — necessary, because a first
+sweep that kept one session showed delivery climbing to 96% and its own
+return-to-baseline control came back at 90% instead of the 8% it started at —
+three interleaved pairs gave:
+
+| igi | L2H | delivered |
+|---|---|---|
+| 0x1c | +5 | 1.7%, 0.0%, 0.7% |
+| 0x14 | +10 | 3.0%, 4.3%, 5.3% |
+
+Consistent in all three pairs, in the direction the coupling predicts, and
+about four percentage points. Disabling carrier sense on the same link gives
+90%. **Receive gain is not the lever for this deferral**, and the honest
+version of that sentence only exists because the knob does.
+
 ## Implementation sketch
 
 Ordered by value, and only the first two need to land together.
 
-**jaguar1** — the family with the problem. `PhydmWatchdog` already holds
+**jaguar1** — implemented and verified. `PhydmWatchdog` already holds
 `_rx_gain_range_min = 0x1c` / `_rx_gain_range_max = 0x2a` and clamps `DigTick`
 to them, so the change is a setter plus an immediate `DigWriteIgi(clamp(cur))`
 for the case where the watchdog is not running, which is the default.
@@ -144,14 +189,22 @@ Caps: `index_name = "igi"`, `index_min = 0x1c`, `index_max = 0x2a`,
 `automatic = <watchdog running>`,
 `automatic_input = "phydm DIG, keyed on the false-alarm rate"`.
 
-**mt7612u** — the family that documents the trap. Clamp `low_gain` right after
+**mt7612u** — NOT implemented here; no hardware time was spent on it and the
+not-ported default is what it reports. Sketch retained because it is the
+family that documents the trap. Clamp `low_gain` right after
 it is computed in `phy_update_channel_gain`, store the range in `d->cal`, and
 reprogram on the next tick. Caps: `index_name = "gain_class"`, `0..2`,
 `automatic = true`, and the string worth the whole patch:
 `automatic_input = "min avg RSSI — pinned to -75; no associated-station table in monitor mode"`.
 
-**jaguar2** — `dig_step()` already bounds to `[0x1c, 0x3e]`; make those bounds
-members and honour `rx.igi`. It is the reference implementation of the concept.
+**jaguar3** — implemented and verified. `PhydmRuntimeJaguar3` already has
+`get_igi`/`set_igi` and a DIG that runs from the RX tick, so the change is the
+same shape as jaguar1's: atomics for the window, `dig()` clamping to them, and
+the three virtuals on the device. Caps `[0x1e, 0x3e]`, `automatic = true`.
+
+**jaguar2** — not implemented, no hardware. `dig_step()` already bounds to
+`[0x1c, 0x3e]`; making those bounds members and honouring `rx.igi` would be
+the same change again.
 
 **jaguar3, kestrel, rtl8733b** — `supported`/`settable` false via the
 not-ported default, or read-only caps where the index is readable but static.
@@ -168,9 +221,22 @@ Saying "static, nothing adapts it" is itself worth publishing.
   gain is at the floor" from a consistent hypothesis into a result. On this
   bench that is one `experiment_link_probe` with an extra axis.
 
-## Test plan
+## Verification done
 
-A selftest per family asserting caps are self-consistent (`index_min <=
+Both families were driven from the bridge with the radio live:
+
+- caps self-consistent, `settable` honoured, out-of-range and `min > max`
+  refused with a reason;
+- the clamp moves the index and the loop keeps running inside it
+  (`Jaguar3 dig: IGI=0x2c (fa=329 cca=359)` after clamping to `[0x2c,0x3e]`);
+- a second, independent read path — `GetRxEnergy`'s `igi` field — agreed with
+  `GetRxGainState` at every point;
+- reading before bring-up returns `valid = false` rather than a number. That
+  one was a real defect found in testing: jaguar3 returned `0x6a` from an
+  unpowered baseband, which is outside DIG's window entirely and would have
+  read as a measurement.
+
+Still to do upstream: a selftest per family asserting caps are self-consistent (`index_min <=
 index_max`, `settable` implies `supported`, a non-empty `automatic_input`
 whenever `automatic`), plus a round trip on any backend reporting `settable`:
 clamp, read back, restore, read back. On hardware, the sweep above with an

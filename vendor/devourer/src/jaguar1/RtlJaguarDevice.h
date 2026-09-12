@@ -38,11 +38,31 @@ extern "C"
  * baseband). The chip is identified at construction time via SYS_CFG bits and
  * USB PID; this class drives bring-up, RX, and TX for whichever member of the
  * family is present. */
+/* phydm DIG coverage floor for the Jaguar AC family (dm_dig_min), and a
+ * ceiling matching what jaguar2's dig_step already permits on the same BB
+ * register. IGI is 1 dB per step.
+ *
+ * The floor is the vendor's, deliberately. Below it the EDCCA coupling
+ * (L2H = th_l2h_ini + 0x32 - IGI, clamped to 10) reaches its permissive
+ * clamp at IGI 0x17, and that was measured on an 8812AU: it moves delivery
+ * under a deferring MAC from ~1% to ~4%, which is real and nowhere near a
+ * fix. Not worth putting outside phydm's designed coverage by default. */
+inline constexpr uint8_t kRxGainIndexMin = 0x1c;
+inline constexpr uint8_t kRxGainIndexMax = 0x3e;
+
 class RtlJaguarDevice : public IRtlRadio {
   /* Declared before every component that consumes it: members initialise in
    * declaration order, and _eepromManager / _radioManagement / _halModule all
    * take _cfg in the constructor's init list. */
   const devourer::DeviceConfig _cfg;
+  /* The receive-gain clamp in force. Defaults are phydm's DIG coverage for
+   * this family; the ceiling is widened to the value jaguar2's dig_step
+   * already allows, because backing gain off is the direction a host needs
+   * and 0x2a is only DIG's own upper bound, not the register's. */
+  bool _cca_disabled = false; /* last SetCcaMode argument; see SetRxGainRange */
+  uint8_t _rx_gain_min = kRxGainIndexMin;
+  uint8_t _rx_gain_max = kRxGainIndexMax;
+  bool _rx_gain_clamped = false;
   std::shared_ptr<EepromManager> _eepromManager;
   std::shared_ptr<RadioManagementModule> _radioManagement;
   /* Last channel handed to SetMonitorChannel. Value-initialised so the
@@ -251,6 +271,14 @@ public:
    * fresh delta. The read side of the CW tone. NB: if DEVOURER_PHYDM_WATCHDOG is
    * also running it shares/steals these counters. */
   RxEnergy GetRxEnergy(bool with_nhm) override;
+
+  /* Receive gain — see RxGain.h. The index is phydm's IGI at BB 0xc50/0xe50,
+   * 1 dB per step, and on this family it also sets the EDCCA threshold: the
+   * adaptivity port re-derives L2H/H2L from IGI, so clamping the gain clamps
+   * carrier sense with it. */
+  devourer::RxGainCaps GetRxGainCaps() override;
+  devourer::RxGainState GetRxGainState() override;
+  bool SetRxGainRange(uint8_t min, uint8_t max) override;
 
   /* Consolidated windowed RX link-quality snapshot (see RxQuality.h) — subsumes
    * GetRxEnergy. Fed per decoded frame in the RX loop via _rxq. */

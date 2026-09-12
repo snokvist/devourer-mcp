@@ -151,7 +151,7 @@ testing is currently the Python smoke test.
 
 ## Picking up
 
-The highest-value next step is closing `IRadio` coverage — the bridge calls 11 of
+The highest-value next step is closing `IRadio` coverage — the bridge calls 14 of
 52 methods, and that single number explains most of what this cannot yet do.
 `radio.tx_stats` and `radio.cca` are the pattern to copy: a bridge op, a
 `RadioManager` method, an MCP tool with a description that says what the result

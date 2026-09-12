@@ -80,7 +80,9 @@ void PhydmRuntimeJaguar3::dig(const FaStats &fa, bool is_dfs) {
   int igi = get_igi();
 
   uint32_t th0 = 2000, th1 = 4000, th2 = 5000;
-  uint8_t lo = DIG_MIN_COVERAGE, hi = DIG_MAX_OF_MIN_COVERAGE;
+  /* The host's window when it set one, phydm's otherwise. DFS still wins:
+   * pinning the IGI there is a regulatory boundary rule, not a preference. */
+  uint8_t lo = GainRangeMin(), hi = GainRangeMax();
   if (is_dfs) {
     th0 = 250; th1 = 1000; th2 = 2000;
     lo = DIG_MIN_DFS; hi = DIG_MIN_DFS;

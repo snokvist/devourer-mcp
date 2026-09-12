@@ -10,6 +10,7 @@
 #include "AmpduMode.h"
 #include "DeviceConfig.h"
 #include "AdapterHealth.h"
+#include "RxGain.h"
 #include "RxQuality.h"
 #include "SelectedChannel.h"
 #include "ThermalStatus.h"
@@ -550,6 +551,26 @@ public:
    * reads, so do not poll both on the same cadence. Default is an all-invalid
    * snapshot; each generation overrides. */
   virtual devourer::RxQuality GetRxQuality() { return {}; }
+
+  /* What this radio's receive gain is, and whether anything is adjusting it.
+   * See RxGain.h — the short version is that on most generations here the
+   * answer to the second half is "no", and nothing currently publishes that. */
+  virtual devourer::RxGainCaps GetRxGainCaps() { return {}; }
+  virtual devourer::RxGainState GetRxGainState() { return {}; }
+
+  /* Clamp the receive-gain index to [min, max].
+   *
+   * A range rather than a value because that is the one operation correct on
+   * every generation: where an adaptive loop exists this steers it rather
+   * than defeating it, and where none exists min == max sets the gain. Both
+   * ends are clamped to GetRxGainCaps()'s limits. Returns false where the
+   * backend cannot do it; pass the caps' own index_min/index_max to restore
+   * the default. */
+  virtual bool SetRxGainRange(uint8_t min, uint8_t max) {
+    (void)min;
+    (void)max;
+    return false;
+  }
 
   /* --- Adapter health (see src/AdapterHealth.h; examples/doctor is the
    * reference consumer; the EFUSE probe is on IRtlRadio) --- */

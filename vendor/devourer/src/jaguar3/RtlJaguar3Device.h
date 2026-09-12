@@ -184,6 +184,13 @@ public:
    * _reg_mu against the coex runtime thread. The read side of the CW tone. */
   RxEnergy GetRxEnergy(bool with_nhm) override;
 
+  /* Receive gain — see RxGain.h. IGI at BB 0x1d70 (7 bits per RX path), and
+   * this generation's DIG runs from the RX tick rather than a thread, so the
+   * clamp steers it the same way the Jaguar1 watchdog is steered. */
+  devourer::RxGainCaps GetRxGainCaps() override;
+  devourer::RxGainState GetRxGainState() override;
+  bool SetRxGainRange(uint8_t min, uint8_t max) override;
+
   /* Consolidated windowed RX link-quality snapshot (see RxQuality.h) — subsumes
    * GetRxEnergy. Fed per decoded frame in the RX loop via _rxq. On Jaguar3 the
    * noise-floor is the passive rssi-snr estimate (this generation has no
