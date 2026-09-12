@@ -16,7 +16,14 @@ import org.openipc.devourer.capture.CaptureSummary
 import org.openipc.devourer.capture.analyseChainBalance
 import org.openipc.devourer.experiment.ExperimentBounds
 import org.openipc.devourer.experiment.ExperimentResult
+import org.openipc.devourer.characterize.AdapterIdentity
+import org.openipc.devourer.characterize.Characterization
+import org.openipc.devourer.characterize.Characterizer
+import org.openipc.devourer.characterize.EvidenceStore
 import org.openipc.devourer.experiment.LinkProbe
+import org.openipc.devourer.scratchpad.CapabilityGrant
+import org.openipc.devourer.scratchpad.ScratchpadProgram
+import org.openipc.devourer.scratchpad.ScratchpadService
 import org.openipc.devourer.capture.FrameQuery
 import org.openipc.devourer.capture.PcapWriter
 import org.openipc.devourer.protocol.ChannelSpec
@@ -43,6 +50,8 @@ internal class Tools(
     private val captures: CaptureService,
     private val exportDir: Path,
     private val scope: kotlinx.coroutines.CoroutineScope,
+    private val evidence: EvidenceStore,
+    private val scratchpads: ScratchpadService,
 ) {
     /**
      * `encodeDefaults` keeps counts we always compute — a zero CRC-error count
@@ -63,6 +72,8 @@ internal class Tools(
         registerInspect(server)
         registerTransmit(server)
         registerExperiment(server)
+        registerCharacterize(server)
+        registerScratchpad(server)
     }
 
     // ---------------------------------------------------------------- DISCOVER
@@ -624,6 +635,335 @@ internal class Tools(
         }
     }
 
+    // ------------------------------------------------------------ CHARACTERIZE
+
+    private fun registerCharacterize(server: Server) {
+        server.addTool(
+            name = "characterize_run",
+            description = """
+                Walk an adapter up the verification ladder and file the evidence.
+
+                Establishes, separately and without merging them:
+                  what it is            — chip, backend, and a stable identity
+                  what the SOURCE claims — devourer's capability report
+                  what the HARDWARE showed — frames actually received, frames actually
+                                             witnessed by another radio
+                  what remains UNKNOWN   — claimed capabilities nothing exercised, each
+                                           with why
+
+                RX is attempted across several channels because an empty channel is
+                indistinguishable from a deaf receiver. TX needs peer_session: a transmitter
+                cannot witness itself, so without a second adapter TX is recorded as
+                unverifiable-here rather than failed. If TX delivers almost nothing it retries
+                once with carrier sense off, which separates a MAC that is declining to
+                transmit from a link that cannot carry.
+
+                Results accumulate per adapter. Nothing is overwritten.
+            """.trimIndent(),
+            inputSchema = ToolSchema(
+                properties = buildJsonObject {
+                    put("session", schema("integer", "The adapter to characterize."))
+                    put(
+                        "peer_session",
+                        schema("integer", "A SECOND adapter to witness transmission. Without it, TX cannot be verified."),
+                    )
+                    put("rx_channels", schema("array", "Channels to try for RX. Default [1,6,11,36]."))
+                    put("rx_dwell_ms", schema("integer", "Listen time per channel. Default 4000."))
+                    put("tx_channel", schema("integer", "Channel for the TX test. Default 6."))
+                    put("tx_modes", schema("array", "TX modes to try. Default [\"6M\",\"MCS0/20\"]."))
+                },
+                required = listOf("session"),
+            ),
+        ) { request ->
+            val peer = request.intOr("peer_session", -1).takeIf { it >= 0 }
+            val channels = request.intList("rx_channels").ifEmpty { listOf(1, 6, 11, 36) }
+            val modes = request.stringList("tx_modes").ifEmpty { listOf("6M", "MCS0/20") }
+            val result = Characterizer(radios, evidence, scope).run(
+                session = request.intOr("session", -1),
+                options = Characterizer.Options(
+                    rxChannels = channels,
+                    rxDwellMs = request.longOr("rx_dwell_ms", 4_000),
+                    txPeerSession = peer,
+                    txChannel = request.intOr("tx_channel", 6),
+                    txModes = modes,
+                ),
+            )
+            text(json.encodeToString(Characterization.serializer(), result))
+        }
+
+        server.addTool(
+            name = "characterize_report",
+            description = """
+                Read the stored characterization for one adapter, or list every adapter on
+                file.
+
+                This is the accumulated hardware evidence database. Each record keeps the
+                source's claims and the hardware's demonstrations apart, so a capability the
+                vendor lists but nothing ever exercised stays visibly unverified rather than
+                quietly becoming a fact.
+            """.trimIndent(),
+            inputSchema = ToolSchema(
+                properties = buildJsonObject {
+                    put("key", schema("string", "Record key from a previous run, or a session id via 'session'."))
+                    put("session", schema("integer", "An open adapter; reports its stored record."))
+                },
+            ),
+        ) { request ->
+            val key = request.stringOr("key", "")
+            val session = request.intOr("session", -1)
+            when {
+                key.isNotBlank() -> {
+                    val rec = evidence.load(key)
+                        ?: return@addTool text(
+                            """{"error": "no record with key $key"}""", isError = true,
+                        )
+                    text(json.encodeToString(Characterization.serializer(), rec))
+                }
+                session >= 0 -> {
+                    val identity = AdapterIdentity.of(radios.describe(session))
+                    val rec = evidence.load(identity)
+                        ?: return@addTool text(
+                            """{"error": "no stored characterization for ${'$'}{identity.describe()}; run characterize_run first", "identity_key": "${'$'}{identity.key}"}""",
+                            isError = true,
+                        )
+                    text(json.encodeToString(Characterization.serializer(), rec))
+                }
+                else -> {
+                    val all = evidence.list()
+                    text(
+                        json.encodeToString(
+                            kotlinx.serialization.builtins.ListSerializer(CharacterizationSummary.serializer()),
+                            all.map {
+                                CharacterizationSummary(
+                                    key = it.identity.key,
+                                    identity = it.identity.describe(),
+                                    chip = it.chip,
+                                    backend = it.backend,
+                                    state = it.state,
+                                    runs = it.runs.size,
+                                    unverified = it.unverified.size,
+                                    summary = it.summary(),
+                                )
+                            },
+                        ),
+                    )
+                }
+            }
+        }
+    }
+
+    // --------------------------------------------------------------- SCRATCHPAD
+
+    private fun registerScratchpad(server: Server) {
+        server.addTool(
+            name = "scratchpad_capabilities",
+            description = """
+                List the primitives a scratchpad program can be built from, and the shape of a
+                program.
+
+                Read this before writing one. A scratchpad is NOT code — it is a declarative
+                program of sources sampled on a schedule, values computed from them, and a view
+                over the result. It cannot open a file, run a process or reach a host that is not
+                in its allowlist, because no step exists that does those things. Anything needing
+                real control flow belongs in the experiment engine instead.
+            """.trimIndent(),
+            inputSchema = ToolSchema(properties = buildJsonObject {}),
+        ) { _ ->
+            text(json.encodeToString(ScratchpadDoc.serializer(), ScratchpadDoc.build()))
+        }
+
+        server.addTool(
+            name = "scratchpad_run",
+            description = """
+                Validate a scratchpad program, grant it exactly the capabilities it declared, run
+                it, and serve a live view.
+
+                The grant is per-run and explicit: radio sessions, capture ids and HTTP hosts are
+                named here, not in the program. A program that names a capture it was not granted
+                is refused, so a generated program cannot widen its own reach.
+
+                Returns a loopback URL for the live view. Nothing is exposed off this machine.
+                Use scratchpad_result for the numbers, scratchpad_promote to keep one worth reusing.
+            """.trimIndent(),
+            inputSchema = ToolSchema(
+                properties = buildJsonObject {
+                    put("program", schema("object", "The program. See scratchpad_capabilities for its shape."))
+                    put("radio_sessions", schema("array", "Radio session ids this program may read."))
+                    put("capture_ids", schema("array", "Capture ids this program may read."))
+                    put("http_hosts", schema("array", "Hosts or host:port this program may GET. Exact match."))
+                    put("max_runtime_ms", schema("integer", "Ceiling on the run. Default 120000."))
+                    put("ui", schema("boolean", "Serve the live view. Default true."))
+                },
+                required = listOf("program"),
+            ),
+        ) { request ->
+            val programJson = request.params.arguments?.get("program")
+                ?: return@addTool text("""{"error":"program is required"}""", isError = true)
+            val program = try {
+                scratchpads.json.decodeFromJsonElement(ScratchpadProgram.serializer(), programJson)
+            } catch (e: Exception) {
+                return@addTool text(
+                    json.encodeToString(
+                        JsonObject.serializer(),
+                        buildJsonObject {
+                            put("error", JsonPrimitive("could not parse the program: ${'$'}{e.message}"))
+                            put("hint", JsonPrimitive("call scratchpad_capabilities for the exact shape"))
+                        },
+                    ),
+                    isError = true,
+                )
+            }
+            val grant = CapabilityGrant(
+                capabilities = program.capabilities.toSet(),
+                radioSessions = request.intList("radio_sessions").toSet(),
+                captureIds = request.stringList("capture_ids").toSet(),
+                httpHosts = request.stringList("http_hosts").toSet(),
+                maxRuntimeMs = request.longOr("max_runtime_ms", 120_000),
+            )
+            val inspection = scratchpads.inspect(program)
+            if (!inspection.valid) {
+                return@addTool text(
+                    json.encodeToString(ScratchpadService.InspectionResult.serializer(), inspection),
+                    isError = true,
+                )
+            }
+            val handle = try {
+                scratchpads.start(program, grant, withUi = request.boolOr("ui", true))
+            } catch (e: Exception) {
+                return@addTool text("""{"error":${'"'}${'$'}{e.message}${'"'}}""", isError = true)
+            }
+            text(
+                json.encodeToString(ScratchpadStarted.serializer(), ScratchpadStarted(handle, inspection)),
+            )
+        }
+
+        server.addTool(
+            name = "scratchpad_inspect",
+            description = """
+                Validate a program and report exactly what it would touch, WITHOUT running it.
+
+                The review step. It enumerates every external thing the program reaches — each
+                capture, radio and URL — and flags privileged capabilities, so a generated program
+                can be read before it is trusted.
+            """.trimIndent(),
+            inputSchema = ToolSchema(
+                properties = buildJsonObject { put("program", schema("object", "The program to inspect.")) },
+                required = listOf("program"),
+            ),
+        ) { request ->
+            val programJson = request.params.arguments?.get("program")
+                ?: return@addTool text("""{"error":"program is required"}""", isError = true)
+            val program = try {
+                scratchpads.json.decodeFromJsonElement(ScratchpadProgram.serializer(), programJson)
+            } catch (e: Exception) {
+                return@addTool text("""{"error":"could not parse: ${'$'}{e.message}"}""", isError = true)
+            }
+            text(json.encodeToString(ScratchpadService.InspectionResult.serializer(), scratchpads.inspect(program)))
+        }
+
+        server.addTool(
+            name = "scratchpad_result",
+            description = """
+                Current values of a running or finished scratchpad: per series, the last value and
+                its min, mean, max and sample count, plus the run log.
+
+                Pass window_ms for a trailing window rather than the whole run.
+            """.trimIndent(),
+            inputSchema = ToolSchema(
+                properties = buildJsonObject {
+                    put("run_id", schema("string", "From scratchpad_run."))
+                    put("window_ms", schema("integer", "Trailing window. Omit for the whole run."))
+                },
+                required = listOf("run_id"),
+            ),
+        ) { request ->
+            val id = request.stringOr("run_id", "")
+            val run = scratchpads.get(id)
+                ?: return@addTool text("""{"error":"no run ${'$'}id"}""", isError = true)
+            val window = request.longOr("window_ms", 0).takeIf { it > 0 }
+            text(
+                json.encodeToString(
+                    ScratchpadResult.serializer(),
+                    ScratchpadResult(
+                        runId = id,
+                        name = run.program.name,
+                        running = run.state.finishedAtEpochMs == 0L,
+                        elapsedMs = (run.state.finishedAtEpochMs.takeIf { it > 0 }
+                            ?: System.currentTimeMillis()) - run.state.startedAtEpochMs,
+                        uiUrl = run.ui?.url,
+                        error = run.error,
+                        series = scratchpads.results(id, window).mapValues {
+                            SeriesStats(it.value.count, it.value.min, it.value.mean, it.value.max, it.value.last)
+                        },
+                        log = run.state.logs().takeLast(40),
+                    ),
+                ),
+            )
+        }
+
+        server.addTool(
+            name = "scratchpad_stop",
+            description = "Stop a running scratchpad and close its live view.",
+            inputSchema = ToolSchema(
+                properties = buildJsonObject { put("run_id", schema("string", "From scratchpad_run.")) },
+                required = listOf("run_id"),
+            ),
+        ) { request ->
+            val id = request.stringOr("run_id", "")
+            text("""{"run_id":"${'$'}id","stopped":${'$'}{scratchpads.stop(id)}}""")
+        }
+
+        server.addTool(
+            name = "scratchpad_promote",
+            description = """
+                Save a scratchpad as a reusable tool.
+
+                What is stored is the program itself, so it re-runs identically rather than
+                approximately. The capability GRANT is deliberately not stored: permissions are
+                given per run against the radios and captures that exist then, and a saved grant
+                would be a standing permission nobody reviewed.
+            """.trimIndent(),
+            inputSchema = ToolSchema(
+                properties = buildJsonObject {
+                    put("run_id", schema("string", "The run to promote."))
+                    put("save_as", schema("string", "Optional name. Defaults to the program's name."))
+                },
+                required = listOf("run_id"),
+            ),
+        ) { request ->
+            val path = try {
+                scratchpads.promote(request.stringOr("run_id", ""), request.stringOr("save_as", "").ifBlank { null })
+            } catch (e: Exception) {
+                return@addTool text("""{"error":"${'$'}{e.message}"}""", isError = true)
+            }
+            text("""{"saved":"${'$'}path","note":"re-run it with scratchpad_run, granting capabilities again"}""")
+        }
+
+        server.addTool(
+            name = "scratchpad_list",
+            description = "List running scratchpads and previously promoted ones.",
+            inputSchema = ToolSchema(properties = buildJsonObject {}),
+        ) { _ ->
+            text(
+                json.encodeToString(
+                    ScratchpadListing.serializer(),
+                    ScratchpadListing(
+                        running = scratchpads.list().map {
+                            RunningPad(
+                                it.id, it.program.name,
+                                it.state.finishedAtEpochMs == 0L,
+                                it.ui?.url, it.error,
+                            )
+                        },
+                        saved = scratchpads.saved().map {
+                            SavedPad(it.file, it.name, it.purpose, it.capabilities)
+                        },
+                    ),
+                ),
+            )
+        }
+    }
+
     // ------------------------------------------------------------------ helpers
 
     private fun text(body: String, isError: Boolean = false) =
@@ -647,6 +987,12 @@ internal fun io.modelcontextprotocol.kotlin.sdk.types.CallToolRequest.boolOr(key
 
 internal fun io.modelcontextprotocol.kotlin.sdk.types.CallToolRequest.stringOr(key: String, default: String): String =
     runCatching { params.arguments?.get(key)?.jsonPrimitive?.content }.getOrNull() ?: default
+
+internal fun io.modelcontextprotocol.kotlin.sdk.types.CallToolRequest.intList(key: String): List<Int> =
+    runCatching {
+        (params.arguments?.get(key) as? kotlinx.serialization.json.JsonArray)
+            ?.map { it.jsonPrimitive.int }
+    }.getOrNull() ?: emptyList()
 
 internal fun io.modelcontextprotocol.kotlin.sdk.types.CallToolRequest.stringList(key: String): List<String> =
     runCatching {

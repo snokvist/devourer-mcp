@@ -8,6 +8,8 @@ dependencies {
     implementation(project(":radio"))
     implementation(project(":capture"))
     implementation(project(":experiment"))
+    implementation(project(":characterize"))
+    implementation(project(":scratchpad"))
     implementation(libs.mcp.sdk)
     implementation(libs.coroutines.core)
     testImplementation(kotlin("test"))

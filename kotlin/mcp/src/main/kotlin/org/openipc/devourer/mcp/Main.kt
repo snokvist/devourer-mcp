@@ -18,8 +18,10 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.io.asSink
 import kotlinx.io.asSource
 import kotlinx.io.buffered
+import org.openipc.devourer.characterize.EvidenceStore
 import org.openipc.devourer.radio.BridgeClient
 import org.openipc.devourer.radio.RadioManager
+import org.openipc.devourer.scratchpad.ScratchpadService
 
 /**
  * The MCP server process.
@@ -79,6 +81,12 @@ public fun main(args: Array<String>): Unit = runBlocking {
     val scope = CoroutineScope(SupervisorJob())
     val radios = RadioManager(bridge)
     val captures = CaptureService(radios, scope)
+    val evidenceDir = argValue(args, "--evidence-dir")
+        ?.let { Path.of(it) }
+        ?: Path.of(System.getProperty("user.dir"), "var", "characterization")
+    val evidence = EvidenceStore(evidenceDir)
+    val varDir = evidenceDir.parent ?: Path.of(System.getProperty("user.dir"), "var")
+    val scratchpads = ScratchpadService(McpScratchpadHost(radios, captures), scope, varDir)
 
     val server = Server(
         serverInfo = Implementation(
@@ -91,11 +99,12 @@ public fun main(args: Array<String>): Unit = runBlocking {
         ),
         instructions = INSTRUCTIONS,
     )
-    Tools(radios, captures, exportDir, scope).registerAll(server)
+    Tools(radios, captures, exportDir, scope, evidence, scratchpads).registerAll(server)
 
     Runtime.getRuntime().addShutdownHook(
         Thread {
             runBlocking {
+                runCatching { scratchpads.stopAll() }
                 runCatching { captures.stopAll() }
                 runCatching { bridge.close() }
             }

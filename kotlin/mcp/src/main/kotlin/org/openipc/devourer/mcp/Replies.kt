@@ -144,3 +144,175 @@ internal data class FrameDetail(
     @SerialName("raw_bytes_shown") val rawBytesShown: Int,
     @SerialName("raw_bytes_total") val rawBytesTotal: Int,
 )
+
+/**
+ * One line per characterized adapter, for the listing view.
+ *
+ * [unverified] is carried at the top level on purpose: a record showing
+ * TX_VERIFIED with fourteen unexercised capabilities is a very different object
+ * from one with none, and a summary that hid that would invite the reader to
+ * treat the strongest claim as the whole story.
+ */
+@Serializable
+internal data class CharacterizationSummary(
+    val key: String,
+    val identity: String,
+    val chip: String,
+    val backend: String,
+    val state: VerificationState,
+    val runs: Int,
+    val unverified: Int,
+    val summary: String,
+)
+
+// ----------------------------------------------------------------- scratchpad
+
+/**
+ * The scratchpad primitive catalogue, handed to the model before it writes one.
+ *
+ * Generated from the enums and metric lists rather than written out, so a
+ * primitive added in code appears here automatically. A hand-maintained copy
+ * would drift, and a model building against a stale catalogue produces programs
+ * that fail validation for no visible reason.
+ */
+@Serializable
+internal data class ScratchpadDoc(
+    val model: String,
+    val capabilities: List<CapabilityDoc>,
+    @SerialName("source_kinds") val sourceKinds: List<SourceKindDoc>,
+    @SerialName("widget_kinds") val widgetKinds: List<String>,
+    @SerialName("expression_functions") val expressionFunctions: List<String>,
+    val example: kotlinx.serialization.json.JsonObject,
+) {
+    companion object {
+        fun build(): ScratchpadDoc = ScratchpadDoc(
+            model = "A program is SOURCES sampled on a schedule, COMPUTED values derived from " +
+                "them by arithmetic expressions, and a UI over the result. There is no control " +
+                "flow and no way to reach anything a declared capability does not name. " +
+                "Anything needing branching or iteration belongs in the experiment engine.",
+            capabilities = org.openipc.devourer.scratchpad.Capability.entries.map {
+                CapabilityDoc(it.id, it.description, it.privileged)
+            },
+            sourceKinds = listOf(
+                SourceKindDoc(
+                    kind = "capture.metric",
+                    description = "a scalar from a live capture's trailing window",
+                    fields = listOf(
+                        "id", "capture_id", "metric", "every_ms", "window_ms", "kind", "transmitter",
+                    ),
+                    values = org.openipc.devourer.scratchpad.CaptureMetricSource.METRICS,
+                ),
+                SourceKindDoc(
+                    kind = "http.poll",
+                    description = "an HTTP GET on a timer; always records <id>.latency_ms and " +
+                        "<id>.status, plus any numbers named in `extract`",
+                    fields = listOf("id", "url", "every_ms", "timeout_ms", "extract"),
+                    values = emptyList(),
+                ),
+                SourceKindDoc(
+                    kind = "radio.metric",
+                    description = "a scalar from a granted radio's live state",
+                    fields = listOf("id", "session", "metric", "every_ms"),
+                    values = org.openipc.devourer.scratchpad.RadioMetricSource.METRICS,
+                ),
+            ),
+            widgetKinds = listOf("chart", "stat", "gauge", "table", "log"),
+            expressionFunctions = listOf(
+                "min", "max", "abs", "sqrt", "ln", "log10", "round", "floor", "ceil",
+                "clamp(v,lo,hi)", "avg", "ratio(a,b) — guarded divide, 0 when b is 0",
+            ),
+            example = kotlinx.serialization.json.Json.parseToJsonElement(
+                """
+                {
+                  "name": "camera-link-watch",
+                  "purpose": "watch a camera's HTTP latency against its Wi-Fi link quality",
+                  "capabilities": ["timer","metrics","capture.read","http.get","ui"],
+                  "duration_ms": 60000,
+                  "sources": [
+                    {"kind":"capture.metric","id":"rssi","capture_id":"cap-1",
+                     "metric":"rssi_mean","every_ms":500,"window_ms":2000},
+                    {"kind":"capture.metric","id":"retries","capture_id":"cap-1",
+                     "metric":"retry_rate","every_ms":500,"window_ms":2000},
+                    {"kind":"http.poll","id":"cam","url":"http://192.168.2.181/status",
+                     "every_ms":500,"timeout_ms":400,"extract":{"fps":"video.fps"}}
+                  ],
+                  "computed": [
+                    {"id":"retry_pct","expr":"retries * 100","unit":"%"}
+                  ],
+                  "ui": {
+                    "title": "Camera link",
+                    "widgets": [
+                      {"kind":"chart","title":"RSSI vs HTTP latency","series":["rssi","cam.latency_ms"]},
+                      {"kind":"stat","title":"Retry rate","series":["retry_pct"],"unit":"%"},
+                      {"kind":"table","title":"All series","series":[]},
+                      {"kind":"log","title":"Run log"}
+                    ]
+                  }
+                }
+                """.trimIndent(),
+            ).let { it as kotlinx.serialization.json.JsonObject },
+        )
+    }
+}
+
+@Serializable
+internal data class CapabilityDoc(val id: String, val description: String, val privileged: Boolean)
+
+@Serializable
+internal data class SourceKindDoc(
+    val kind: String,
+    val description: String,
+    val fields: List<String>,
+    /** Legal values for the kind's `metric` field, where it has one. */
+    val values: List<String>,
+)
+
+@Serializable
+internal data class ScratchpadStarted(
+    val run: org.openipc.devourer.scratchpad.ScratchpadService.RunHandle,
+    val inspection: org.openipc.devourer.scratchpad.ScratchpadService.InspectionResult,
+)
+
+@Serializable
+internal data class SeriesStats(
+    val count: Int,
+    val min: Double,
+    val mean: Double,
+    val max: Double,
+    val last: Double,
+)
+
+@Serializable
+internal data class ScratchpadResult(
+    @SerialName("run_id") val runId: String,
+    val name: String,
+    val running: Boolean,
+    @SerialName("elapsed_ms") val elapsedMs: Long,
+    @SerialName("ui_url") val uiUrl: String? = null,
+    val error: String? = null,
+    val series: Map<String, SeriesStats>,
+    val log: List<String>,
+)
+
+@Serializable
+internal data class RunningPad(
+    val id: String,
+    val name: String,
+    val running: Boolean,
+    @SerialName("ui_url") val uiUrl: String? = null,
+    val error: String? = null,
+)
+
+@Serializable
+internal data class SavedPad(
+    val file: String,
+    val name: String,
+    val purpose: String,
+    val capabilities: List<String>,
+)
+
+@Serializable
+internal data class ScratchpadListing(
+    val running: List<RunningPad>,
+    val saved: List<SavedPad>,
+)
