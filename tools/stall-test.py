@@ -388,11 +388,14 @@ def main():
         if not args.no_flood:
             others = [o for o in all_devices
                       if (o["bus"], o["address"]) != (d["bus"], d["address"])]
-            # Prefer a MediaTek: on this bench the RTL8812AU's EDCCA defers
-            # 90% of what it is asked to transmit, so it makes a poor load
-            # generator and a weak test.
+            # Never the RTL8812AU if anything else is available. Its EDCCA
+            # defers essentially everything it is asked to transmit with
+            # carrier sense at the default (measured: 0-8% delivered on an
+            # idle channel), so it cannot generate load and the run fails on
+            # the "buffer never filled" guard rather than on the thing under
+            # test. Everything else here transmits at ~100%.
             args.flood_from = next(
-                (o for o in others if not o["usb_id"].startswith("0bda")),
+                (o for o in others if o["usb_id"] != "0bda:8812"),
                 others[0] if others else None,
             )
         exercise(d, args)
