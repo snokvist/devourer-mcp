@@ -357,6 +357,12 @@ public data class TxPower(
     val valid: Boolean = false,
     @SerialName("flat_index") val flatIndex: Int? = null,
     @SerialName("offset_qdb") val offsetQdb: Int? = null,
+    /**
+     * The qdB the backend reported APPLYING, when its state getter is not
+     * wired (the MT7612U's dBm model). Present only after an offset was set
+     * this session; on a family with a real state readback, use [offsetQdb].
+     */
+    @SerialName("applied_offset_qdb") val appliedOffsetQdb: Int? = null,
     @SerialName("offset_steps") val offsetSteps: Int? = null,
     @SerialName("saturated_low") val saturatedLow: Boolean? = null,
     @SerialName("saturated_high") val saturatedHigh: Boolean? = null,
@@ -389,6 +395,11 @@ public data class TxRateDiffs(
 ) {
     init {
         require(mcs.size == 8) { "mcs must be exactly 8 entries (MCS0..7), got ${mcs.size}" }
+        // The hardware field is 7-bit two's-complement; reject out of range
+        // rather than let it wrap sign downstream.
+        (listOf(cck, legacy) + mcs).forEach {
+            require(it in -64..63) { "rate diffs must be -64..63 qdB, got $it" }
+        }
     }
 }
 

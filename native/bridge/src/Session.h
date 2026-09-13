@@ -195,12 +195,13 @@ public:
    * RSSI/SNR/EVM aggregate, a passive noise-floor estimate, the frame-free
    * FA/CCA/IGI energy, and the LinkHealth verdict, in one draining read.
    *
-   * Realtek-only in practice — only the IRtlRadio backends override
-   * GetRxQuality — so a non-Realtek reports `supported:false` rather than the
-   * default's all-invalid snapshot, which would read as a real NO_SIGNAL.
-   * DRAINS: read once to clear, dwell, read again for the window. Do not poll
-   * this and rx_energy on the same cadence; on Realtek they consume the same
-   * FA/CCA/IGI delta. */
+   * A backend that does not wire GetRxQuality reports `supported:false` rather
+   * than the default's all-invalid snapshot, which would read as a real
+   * NO_SIGNAL. The capability signal is the verdict text the classifier
+   * fills, NOT an IRtlRadio downcast — Rtl8733bDevice is an IRtlRadio and does
+   * not override this. DRAINS: read once to clear, dwell, read again for the
+   * window. Do not poll this and rx_energy on the same cadence; on Realtek
+   * they consume the same FA/CCA/IGI delta. */
   Json rx_quality_json();
 
   /* The chip's thermal meter (IRadio::GetThermalStatus): raw RF 0x42 thermal
@@ -318,6 +319,10 @@ private:
   uint8_t _rx_chains = 0;
   bool _cca_primary_disabled = false;
   bool _cca_edcca_disabled = false;
+  /* The qdB SetTxPowerOffsetQdb reported APPLYING, for backends whose
+   * GetTxPowerState is not overridden (the MT7612U's dBm model), where the
+   * state readback is otherwise empty. Guarded by _life_mu. */
+  std::optional<int> _last_applied_offset_qdb;
 };
 
 } // namespace bridge

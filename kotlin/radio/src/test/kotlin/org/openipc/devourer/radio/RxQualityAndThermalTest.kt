@@ -29,6 +29,19 @@ class RxQualityAndThermalTest {
     }
 
     @Test
+    fun `an rtl8733b is an IRtlRadio but still reports no fused feed or meter`() = runTest {
+        // The bug an IRtlRadio downcast hid: the 8733B derives from IRtlRadio
+        // and overrides neither GetRxQuality nor GetThermalStatus.
+        val base = FakeRadios.realtek(1)
+        val rtl8733b = base.copy(capabilities = base.capabilities.copy(generation = "rtl8733b"))
+        val radios = FakeRadios(listOf(rtl8733b))
+
+        assertFalse(radios.rxQuality(1).supported)
+        assertNotNull(radios.rxQuality(1).why)
+        assertFalse(radios.thermal(1).supported)
+    }
+
+    @Test
     fun `a realtek reports the fused verdict and its sensor fields`() = runTest {
         val q = realtek().rxQuality(1)
         assertTrue(q.supported)

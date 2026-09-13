@@ -754,7 +754,7 @@ class as the `radio.rx_gain` fix, one layer up.
   "cool".
 
 **A parser anomaly the sensor exposed.** On ch6 the 8822C window reported
-`rssi_max_dbm` of 133–136 (raw PWDB 236–246) and, on that peak, the fused
+`rssi_max_dbm` of 133–136 (raw PWDB 243–246) and, on that peak, the fused
 verdict `SATURATED`. The documented PWDB convention is raw 0..127 →
 −110..17 dBm, so at least one frame carried a value the parser should not
 produce; `smoke-test.py`'s per-chain RSSI shows the same class (raw up to 247).

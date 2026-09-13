@@ -110,6 +110,11 @@ def main():
             else:
                 print("       every adapter here wires TX power; the unsupported "
                       "path is not exercisable on this bench")
+            # dBm-model capable backends (index_max 0) take an offset but have
+            # no flat index and no readable state; exercise both.
+            for o in capable:
+                if o["session"] != txo["session"] and o["power"].get("index_max") == 0:
+                    failures += check_dbm_model(c, o)
             failures += sweep(c, txo, rxo, args)
         finally:
             # Restore the baseline and leave nothing transmitting.
@@ -168,6 +173,19 @@ def check_knobs(c, txo):
     if caps.get("index_max", 0) == 0:
         print("       (no flat index on this dBm-model family; override skipped)")
         return failures
+
+    # Out-of-range diffs must be refused before narrowing: the field is 7-bit
+    # signed, so +200 would wrap to a large cut if it reached the hardware.
+    if caps.get("rate_diffs"):
+        oob = c.tool(
+            "radio_tx_power",
+            {"session": tx, "rate_diffs": {"cck": 0, "legacy": 0, "mcs": [200, 0, 0, 0, 0, 0, 0, 0]}},
+        )
+        if errored(oob):
+            ok("an out-of-range rate diff was refused, not sign-wrapped")
+        else:
+            bad(f"out-of-range rate diff accepted: {json.dumps(oob)}")
+            failures.append("txpower: rate diff range")
     idx = min(caps["index_max"], 20)
     flat = c.tool("radio_tx_power", {"session": tx, "index_override": idx})
     if flat.get("flat_index") == idx:
@@ -256,6 +274,52 @@ def check_rate_diffs(c, txo, rxo, args):
     else:
         bad(f"clear did not take: {json.dumps(cleared)}")
         failures.append("txpower: rate-diff clear")
+    return failures
+
+
+def check_dbm_model(c, dev):
+    """A backend with an offset knob but no TXAGC index and no state readback.
+
+    The MT7612U's dBm model: setting works and returns the applied qdB, there
+    is no flat index to override, and caps.rate_diffs is false. Each of those
+    must be surfaced rather than reported as a success that did nothing.
+    """
+    s = dev["session"]
+    caps = dev["power"]
+    print(f"\n  dBm model: {dev['chip']} session {s}")
+    failures = []
+    before = c.tool("radio_tx_power", {"session": s})
+    pre = before.get("offset_qdb") or before.get("applied_offset_qdb") or 0
+
+    target = max(caps.get("offset_min_qdb", -16), -8)
+    set_result = c.tool("radio_tx_power", {"session": s, "offset_qdb": target})
+    applied = set_result.get("applied_offset_qdb")
+    if applied == target:
+        ok(f"offset {target} qdB applied and reported as applied_offset_qdb")
+    elif applied is not None:
+        ok(f"offset {target} qdB applied as {applied} (quantized to the step)")
+    else:
+        bad(f"set did not report an applied offset: {json.dumps(set_result)}")
+        failures.append("txpower: dbm applied offset")
+
+    over = c.tool("radio_tx_power", {"session": s, "index_override": 0})
+    if errored(over):
+        ok("a flat index override was refused (no TXAGC index exists)")
+    else:
+        bad(f"flat index override accepted it: {json.dumps(over)}")
+        failures.append("txpower: dbm index override")
+
+    diffs = c.tool(
+        "radio_tx_power",
+        {"session": s, "rate_diffs": {"cck": 0, "legacy": 0, "mcs": [0] * 8}},
+    )
+    if errored(diffs):
+        ok("per-rate diffs were refused (caps.rate_diffs is false)")
+    else:
+        bad(f"per-rate diffs accepted it: {json.dumps(diffs)}")
+        failures.append("txpower: dbm rate diffs")
+
+    c.tool("radio_tx_power", {"session": s, "offset_qdb": pre})
     return failures
 
 

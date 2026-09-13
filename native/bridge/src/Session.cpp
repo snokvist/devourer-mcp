@@ -1089,9 +1089,17 @@ Json Session::tx_power_json() {
   const auto st = _radio->GetTxPowerState();
   j.set("valid", st.valid);
   if (!st.valid) {
+    /* The last offset the backend reported APPLYING, when we have one. This
+     * is what carries an MT7612U sweep: its dBm-model GetTxPowerState is the
+     * all-invalid default, so offset_qdb never appears above. */
+    if (_last_applied_offset_qdb)
+      j.set("applied_offset_qdb", *_last_applied_offset_qdb);
     j.set("why",
-          "the chip is not brought up yet — bring the radio up (retune or "
-          "start a monitor) before reading the applied state");
+          "the backend reported no applied state. On a family that does not "
+          "override GetTxPowerState (the MT7612U's dBm model) this is normal — "
+          "the caps are valid and setting works, only the state readback is "
+          "missing, so read applied_offset_qdb. Otherwise the chip is not "
+          "brought up yet: retune or start a monitor first.");
     return j;
   }
   j.set("flat_index", st.flat_index)
@@ -1148,7 +1156,15 @@ bool Session::set_tx_power(std::optional<int> offset_qdb,
     }
   }
   if (index_override) {
-    if (*index_override >= 0 && *index_override > caps.index_max) {
+    /* index_max == 0 is the dBm-model marker: no flat index exists, and the
+     * backend's SetTxPowerIndexOverride silently logs-and-returns, so a
+     * granted-looking request would be a no-op reported as success. */
+    if (caps.index_max == 0) {
+      err = "this backend has no flat TXAGC index (the dBm model); "
+            "index_override is not a knob here";
+      return false;
+    }
+    if (*index_override < -1 || *index_override > caps.index_max) {
       err = "index_override must be -1 (clear) or 0.." +
             std::to_string(caps.index_max);
       return false;
@@ -1161,7 +1177,10 @@ bool Session::set_tx_power(std::optional<int> offset_qdb,
             std::to_string(caps.offset_max_qdb);
       return false;
     }
-    _radio->SetTxPowerOffsetQdb(*offset_qdb);
+    /* The return is the APPLIED qdB after quantization/rail clamp — the only
+     * applied value a family without a GetTxPowerState override (MT7612U) can
+     * report. */
+    _last_applied_offset_qdb = _radio->SetTxPowerOffsetQdb(*offset_qdb);
   }
   if (reapply && !_radio->ReApplyTxPower()) {
     err = "the backend refused to re-apply TX power — is the chip brought up?";
@@ -1192,21 +1211,24 @@ Json Session::rx_quality_json() {
     j.set("supported", false).set("why", "session has no radio");
     return j;
   }
-  /* Only the IRtlRadio backends override GetRxQuality; the IRadio default is
-   * an all-invalid snapshot that would read as a genuine NO_SIGNAL. */
-  if (dynamic_cast<IRtlRadio *>(_radio) == nullptr) {
+  const auto q = _radio->GetRxQuality();
+  /* The IRadio default is an all-invalid snapshot whose verdict text is empty
+   * ("NO_SIGNAL" with no cause); a wired backend with no frames still fills
+   * cause/fix from the classifier. So the presence of verdict text is the
+   * capability signal — an IRtlRadio downcast is NOT one, because
+   * Rtl8733bDevice derives from IRtlRadio and does not override this. */
+  const bool wired = q.valid || (q.cause != nullptr && q.cause[0] != '\0');
+  if (!wired) {
     j.set("supported", false)
         .set("why",
-             "the fused windowed link-quality feed is a Realtek phy facility "
-             "(GetRxQuality is only overridden on IRtlRadio backends); this "
-             "backend is not a Realtek radio")
+             "this backend returned the all-invalid GetRxQuality default (no "
+             "window and no verdict text), so it does not wire the fused feed")
         .set("fallback",
              "capture_summary and antenna_check read the decoded frames "
              "instead — a different quantity, but honest about what this "
              "silicon can report");
     return j;
   }
-  const auto q = _radio->GetRxQuality();
   j.set("supported", true)
       .set("valid", q.valid)
       .set("frames", q.frames)
