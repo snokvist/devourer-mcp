@@ -461,9 +461,11 @@ different interferer moves the flooded number (78.0% with the MT7612U) and
 leaves the conclusion where it was — keeping primary CCA on costs single-digit
 percent and stops the collapse.
 
-## Two patches, and an A/B that had to be done at the registers
+## The historical two-patch A/B had to be done at the registers
 
-The vendor patches must not change any default. The RF proof of that is weak
+This A/B predates the upstream merge of the CCA-gates patch; only the RX-gain
+patch remains locally. Vendor patches must not change any default. The RF proof
+is weak
 on this bench — the 8812AU's default-path delivery is dominated by ambient
 occupancy, and a first A/B over n=4 showed baseline 1.0–3.7% against patched
 7.0–11.0%, which looks like an effect. It is not. Re-run with the build order

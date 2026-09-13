@@ -11,6 +11,15 @@
  *
  *   sudo build/CcaGatesProbe --pid 0xc812 --channel 36
  *   sudo build/CcaGatesProbe --pid 0x8812 --channel 36 --hold 12
+ *   sudo build/CcaGatesProbe --pid 0x0120 --vid 0x2357 --phydm-watchdog
+ *
+ * --phydm-watchdog builds Jaguar1's optional phydm thread. Its EDCCA
+ * tracker is what SetCcaGates has to stop, and it does not exist without
+ * it, so the tracker cell needs this on Jaguar1 (Jaguar3 ignores it).
+ * A test lever, not a hint at a better default: that thread is opt-in
+ * because its periodic BB traffic shares the libusb queue with the TX bulk
+ * path and costs throughput (see HalModule). This probe never transmits,
+ * so it pays none of that.
  *
  * --hold N keeps each state applied for N seconds so an external peek can
  * sample it. Exit 0 = every step behaved; 4 = not a Realtek radio; 5 = the
@@ -30,6 +39,7 @@
 #include <libusb-1.0/libusb.h>
 #endif
 
+#include "AdapterCaps.h"
 #include "DeviceSession.h"
 #include "IRtlRadio.h"
 #include "WiFiDriver.h"
@@ -55,7 +65,7 @@ void report(const char *tag, bool ret, bool primary, bool edcca) {
 
 int main(int argc, char **argv) {
   uint16_t vid = 0x0bda, pid = 0xc812;
-  int channel = 36, retune = 0, fast_retune = 0, hold = 0;
+  int channel = 36, retune = 0, fast_retune = 0, hold = 0, phydm_wd = 0;
   for (int i = 1; i < argc; i++) {
     if (!std::strcmp(argv[i], "--vid") && i + 1 < argc)
       vid = (uint16_t)std::strtoul(argv[++i], nullptr, 0);
@@ -69,6 +79,8 @@ int main(int argc, char **argv) {
       fast_retune = std::atoi(argv[++i]);
     else if (!std::strcmp(argv[i], "--hold") && i + 1 < argc)
       hold = std::atoi(argv[++i]);
+    else if (!std::strcmp(argv[i], "--phydm-watchdog"))
+      phydm_wd = 1;
   }
 
   auto logger = std::make_shared<Logger>();
@@ -94,6 +106,13 @@ int main(int argc, char **argv) {
   session.adopt_lock(lock);
 
   devourer::DeviceConfig cfg;
+  /* Jaguar1's EDCCA tracker only EXISTS when the phydm watchdog is built —
+   * HalModule constructs it solely under tuning.phydm_watchdog, which is off
+   * by default. Without this the tracker cell has nothing to catch tracking,
+   * and reports "no tracker running" on a backend whose tracking path is
+   * simply not instantiated. Jaguar3 ignores the field (its phydm runtime
+   * rides the RX/coex thread), so passing it there costs nothing. */
+  cfg.tuning.phydm_watchdog = phydm_wd != 0;
   WiFiDriver driver(logger);
   std::unique_ptr<IRadio> owned = driver.CreateRadio(handle, ctx, lock, cfg);
   if (!owned) {
@@ -107,6 +126,16 @@ int main(int argc, char **argv) {
     std::printf("SKIP not a Realtek radio (IRtlRadio cast failed)\n");
     return 4;
   }
+
+  /* Name the family for the harness. The BB EDCCA threshold register is
+   * per-generation (Jaguar1 0x8a4, Jaguar3 0x84c) and a tracker cell that
+   * pokes the wrong one reports "no tracker running" instead of failing —
+   * a false negative on exactly the arm the split exists to serve. Caps are
+   * resolved at construction, so this is readable before bring-up. */
+  std::printf("GATES-GEN %s phydm_watchdog=%d\n",
+              devourer::generation_name(dev->GetAdapterCaps().generation),
+              phydm_wd);
+  std::fflush(stdout);
 
   /* Pre-bring-up: both calls must refuse, and the refusal must not write the
    * caller's variables. Poisoned true so an assignment is visible. */
@@ -174,6 +203,10 @@ int main(int argc, char **argv) {
     bool p = false, e = false;
     const bool got = rtl->GetCcaGates(p, e);
     report("after-retune", got, p, e);
+    /* GetCcaGates reads 0x520 only, so the API cannot speak for the rest of
+     * the gate state. Hold so the harness can peek 0x524[11] out of band. */
+    if (hold)
+      std::this_thread::sleep_for(std::chrono::seconds(hold));
   }
 
   /* FastRetune is the other channel path, and on Jaguar3 its fallback does
@@ -185,6 +218,8 @@ int main(int argc, char **argv) {
     bool p = false, e = false;
     const bool got = rtl->GetCcaGates(p, e);
     report("after-fast-retune", got, p, e);
+    if (hold)
+      std::this_thread::sleep_for(std::chrono::seconds(hold));
   }
 
   /* Legacy path: SetCcaMode must still be exactly SetCcaGates(d, d). */

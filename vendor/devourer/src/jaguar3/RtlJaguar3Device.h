@@ -193,8 +193,8 @@ public:
 
   /* Consolidated windowed RX link-quality snapshot (see RxQuality.h) — subsumes
    * GetRxEnergy. Fed per decoded frame in the RX loop via _rxq. On Jaguar3 the
-   * noise-floor is the passive rssi-snr estimate (this generation has no
-   * background DIG, so IGI is static and can't track the floor). */
+   * noise-floor is the passive rssi-snr estimate; DIG runs on the RX/coex tick
+   * but there is no absolute idle-noise measurement on this generation. */
   devourer::RxQuality GetRxQuality() override {
     return devourer::build_rx_quality(_rxq.snapshot(), GetRxEnergy(true));
   }
@@ -207,8 +207,7 @@ public:
    * downlink residual from ~472 µs to 0.39 µs on a crowded channel (the TBTT
    * beacon airs on schedule instead of after a CSMA backoff). */
   void SetCcaMode(bool disabled) override;
-  /* The two gates independently — see IRtlRadio. SetCcaMode is
-   * SetCcaGates(d, d), and writes exactly the same bytes it always did. */
+  /* The two gates independently — see IRtlRadio. */
   bool SetCcaGates(bool primary_disabled, bool edcca_disabled) override;
   bool GetCcaGates(bool &primary_disabled, bool &edcca_disabled) override;
 

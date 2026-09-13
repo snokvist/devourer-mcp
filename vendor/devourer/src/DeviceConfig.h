@@ -179,8 +179,9 @@ struct DeviceConfig {
      * Jaguar1 8812A/8821A measure it RX-idle (a CAL bracket); Jaguar3 and others
      * leave it invalid (no vendor path). */
     bool abs_noise_floor = false;
-    /* env: DEVOURER_IGI — Jaguar2 fixed initial-gain index override, 7 bits
-     * (unset = 0x40, the FA-rate-validated default). */
+    /* env: DEVOURER_IGI — fixed initial-gain index override. Jaguar2 accepts
+     * its native 7-bit range (unset = 0x40); Jaguar1 accepts its published
+     * RxGainCaps envelope and logs/refuses values outside it. */
     std::optional<uint8_t> igi;
     /* env: DEVOURER_ACK_RESPONDER=<unicast mac> — arm the hardware ACK
      * responder at the end of bring-up (src/AckResponder.h): the MAC

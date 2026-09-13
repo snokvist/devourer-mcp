@@ -127,21 +127,7 @@ void RtlJaguarDevice::InitWrite(SelectedChannel channel) {
    * the BB EDCCA thresholds off their parked never-trigger table value. */
   SetCcaMode(_cfg.tuning.disable_cca);
 
-  /* DEVOURER_IGI — pin the receive-gain index. Documented as a fixed
-   * initial-gain override and until now honoured only by Jaguar2, which
-   * meant it silently did nothing on the family whose gain is pinned at the
-   * DIG floor by phydm_SetIgiFloor_Jaguar just above. Applied as the
-   * degenerate clamp so there is one code path. */
-  if (_cfg.rx.igi) {
-    const uint8_t igi = *_cfg.rx.igi & 0x7f;
-    _rx_gain_min = igi;
-    _rx_gain_max = igi;
-    _rx_gain_clamped = true;
-  }
-  /* A clamp asked for before bring-up (config, or SetRxGainRange on a closed
-   * radio) lands here, once there is a BB to write it to. */
-  if (_rx_gain_clamped)
-    SetRxGainRange(_rx_gain_min, _rx_gain_max);
+  ApplyConfiguredRxGain();
   /* ACK window (DEVOURER_ACK_TIMEOUT_US): one library default on every
    * generation — see the DeviceConfig field doc. */
   _device.rtw_write8(0x0640, static_cast<uint8_t>(
@@ -1013,8 +999,6 @@ bool RtlJaguarDevice::SetCcaGates(bool primary_disabled, bool edcca_disabled) {
   apply_cca(primary_disabled, edcca_disabled);
   _cca_primary_disabled = primary_disabled;
   _cca_edcca_disabled = edcca_disabled;
-  /* "disabled" is both gates off, the only state SetCcaMode can express. */
-  _cca_disabled = primary_disabled && edcca_disabled;
   _logger->info("Jaguar1: CCA gates primary={} edcca={}",
                 primary_disabled ? "OFF" : "on",
                 edcca_disabled ? "OFF" : "on");
@@ -1022,10 +1006,6 @@ bool RtlJaguarDevice::SetCcaGates(bool primary_disabled, bool edcca_disabled) {
 }
 
 void RtlJaguarDevice::SetCcaMode(bool disabled) {
-  /* Remembered so a later gain change can re-apply the same mode: the EDCCA
-   * thresholds this path programs are derived from IGI, so they are stale
-   * the moment the gain moves. */
-  _cca_disabled = disabled;
   _cca_primary_disabled = disabled;
   _cca_edcca_disabled = disabled;
   apply_cca(disabled, disabled);
@@ -1037,8 +1017,7 @@ void RtlJaguarDevice::SetCcaMode(bool disabled) {
 void RtlJaguarDevice::apply_cca(bool primary_disabled, bool edcca_disabled) {
   /* MAC carrier-sense gate: the same REG_TX_PTCL_CTRL bits as the HalMAC
    * generations — the vendor's phydm_mac_edcca_state drives 0x520[15] on
-   * this family too; [14] is the primary-CCA defer. A set bit DISABLES its
-   * gate. */
+   * this family too; [14] is the primary-CCA defer. A set bit disables. */
   uint32_t v520 = _device.rtw_read<uint32_t>(0x0520);
   if (primary_disabled)
     v520 |= (1u << 14);
@@ -1049,6 +1028,19 @@ void RtlJaguarDevice::apply_cca(bool primary_disabled, bool edcca_disabled) {
   else
     v520 &= ~(1u << 15);
   _device.rtw_write<uint32_t>(0x0520, v520);
+
+  /* Stop the EDCCA tracker BEFORE touching 0x8a4, not after. The phydm
+   * watchdog owns that register while tracking, and it runs on its own
+   * thread from rtw_hal_init — i.e. already before bring-up's SetCcaMode.
+   * Clearing the flag last left a window in which a tick could re-derive
+   * L2H from IGI and overwrite the park, leaving live thresholds behind a
+   * disable the caller had asked for. SetEdccaTrack is synchronous, so once
+   * it returns the writes below are ours. The enable direction hands the
+   * register over only after it is programmed, at the end of this function.
+   * Harmless when no watchdog was built (the default config). */
+  if (edcca_disabled)
+    if (auto *wd = _halModule.phydm_watchdog())
+      wd->SetEdccaTrack(false);
 
   /* BB EDCCA thresholds (rEDCCA_Jaguar 0x8a4: L2H byte0 / H2L byte1). The
    * BB init table parks them at 0x7f/0x7f = never-trigger — the vendor's
@@ -1076,9 +1068,11 @@ void RtlJaguarDevice::apply_cca(bool primary_disabled, bool edcca_disabled) {
                   l2h, l2h - 7, igi);
   }
   /* With the watchdog running, DIG walks IGI — hand it the re-track so the
-   * threshold follows (vendor couples them per adaptivity cycle). */
-  if (auto *wd = _halModule.phydm_watchdog())
-    wd->SetEdccaTrack(!edcca_disabled);
+   * threshold follows (vendor couples them per adaptivity cycle). Only the
+   * enable direction is done here; the disable ran above, before the park. */
+  if (!edcca_disabled)
+    if (auto *wd = _halModule.phydm_watchdog())
+      wd->SetEdccaTrack(true);
 }
 
 bool RtlJaguarDevice::SetAmpduMode(const devourer::AmpduMode &mode) {
@@ -1638,6 +1632,7 @@ void RtlJaguarDevice::Init(Action_ParsedRadioPacket packetProcessor,
    * DEVOURER_DIS_CCA. Always applied — the enable path is what programs
    * the BB EDCCA thresholds off their parked never-trigger table value. */
   SetCcaMode(_cfg.tuning.disable_cca);
+  ApplyConfiguredRxGain();
   /* ACK window (DEVOURER_ACK_TIMEOUT_US): one library default on every
    * generation — see the DeviceConfig field doc. */
   _device.rtw_write8(0x0640, static_cast<uint8_t>(
@@ -2278,6 +2273,27 @@ uint32_t RtlJaguarDevice::ReadBBReg(uint16_t addr, uint32_t mask) {
   return _radioManagement->phy_query_bb_reg_public(addr, mask);
 }
 
+void RtlJaguarDevice::ApplyConfiguredRxGain() {
+  /* A programmatic pre-bring-up clamp wins over the constructor config: it is
+   * the later, more specific host decision. */
+  if (!_rx_gain_clamped && _cfg.rx.igi) {
+    const uint8_t igi = *_cfg.rx.igi & 0x7f;
+    if (igi < kRxGainIndexMin || igi > kRxGainIndexMax) {
+      _logger->warn("Jaguar1: configured IGI 0x{:02x} is outside the supported "
+                    "range [0x{:02x},0x{:02x}] — leaving the default",
+                    unsigned(igi), unsigned(kRxGainIndexMin),
+                    unsigned(kRxGainIndexMax));
+      return;
+    }
+    _rx_gain_min = igi;
+    _rx_gain_max = igi;
+    _rx_gain_clamped = true;
+  }
+  if (_rx_gain_clamped && !SetRxGainRange(_rx_gain_min, _rx_gain_max))
+    _logger->error("Jaguar1: stored RX-gain range [{},{}] was refused",
+                   unsigned(_rx_gain_min), unsigned(_rx_gain_max));
+}
+
 devourer::RxGainCaps RtlJaguarDevice::GetRxGainCaps() {
   devourer::RxGainCaps c;
   c.supported = true;
@@ -2306,9 +2322,15 @@ devourer::RxGainState RtlJaguarDevice::GetRxGainState() {
   s.valid = true;
   s.index = static_cast<uint8_t>(
       _radioManagement->phy_query_bb_reg_public(rA_IGI_Jaguar, 0x7f));
-  s.range_min = _rx_gain_min;
-  s.range_max = _rx_gain_max;
   s.automatic = _halModule.phydm_watchdog() != nullptr;
+  if (!s.automatic && !_rx_gain_clamped) {
+    /* With no watchdog and no host clamp, bring-up pins this value. */
+    s.range_min = s.index;
+    s.range_max = s.index;
+  } else {
+    s.range_min = _rx_gain_min;
+    s.range_max = _rx_gain_max;
+  }
   return s;
 }
 
@@ -2332,15 +2354,13 @@ bool RtlJaguarDevice::SetRxGainRange(uint8_t min, uint8_t max) {
 
   /* Steer DIG where it is running, so it keeps reacting to false alarms
    * inside the new bounds instead of being overridden behind its back. */
-  if (auto *wd = _halModule.phydm_watchdog())
-    wd->PinGainRange(min, max);
-
-  /* And move the index now. Without the watchdog nothing else ever will,
-   * which is the default and the case this exists for. */
   const uint8_t cur = static_cast<uint8_t>(
       _radioManagement->phy_query_bb_reg_public(rA_IGI_Jaguar, 0x7f));
-  const uint8_t want = cur < min ? min : (cur > max ? max : cur);
-  if (want != cur) {
+  uint8_t want = cur < min ? min : (cur > max ? max : cur);
+  if (auto *wd = _halModule.phydm_watchdog()) {
+    /* Synchronously serialises with DIG and updates its cached IGI. */
+    want = wd->PinGainRange(min, max);
+  } else if (want != cur) {
     /* All populated path-IGI registers, as phydm_write_dig_reg_c50 does.
      * C/D are 8814-only; the writes are ignored elsewhere. */
     _device.phy_set_bb_reg(rA_IGI_Jaguar, bMaskByte0, want);
@@ -2349,16 +2369,16 @@ bool RtlJaguarDevice::SetRxGainRange(uint8_t min, uint8_t max) {
       _device.phy_set_bb_reg(0x1850, bMaskByte0, want);
       _device.phy_set_bb_reg(0x1A50, bMaskByte0, want);
     }
+  }
+  if (want != cur) {
     _logger->info("Jaguar1: rx gain clamped to [0x{:02x},0x{:02x}], igi 0x{:02x}->0x{:02x}",
                   unsigned(min), unsigned(max), unsigned(cur), unsigned(want));
   } else {
     _logger->info("Jaguar1: rx gain clamped to [0x{:02x},0x{:02x}], igi already 0x{:02x}",
                   unsigned(min), unsigned(max), unsigned(cur));
   }
-  /* The EDCCA threshold is derived from IGI, so re-apply carrier sense to
-   * pick the new value up rather than leaving the gate on the old one.
-   * Re-apply the GATES, not SetCcaMode: a caller who disabled one of them
-   * would otherwise have it switched back on by an unrelated gain change. */
+  /* The EDCCA threshold is derived from IGI, so re-apply the independent
+   * gates to pick the new value up without collapsing a split state. */
   apply_cca(_cca_primary_disabled, _cca_edcca_disabled);
   return true;
 }
@@ -2404,6 +2424,7 @@ bool RtlJaguarDevice::NetDevOpen(SelectedChannel selectedChannel) {
  * Best-effort: a chip that already dropped off the bus makes the writes fail,
  * which is fine on a teardown path. */
 void RtlJaguarDevice::Stop() {
+  _brought_up = false;
   _device.quiesce_tx();
   if (!_cfg.tuning.teardown_power_down) {
     _logger->info("Jaguar1: Stop() leaving the chip powered "

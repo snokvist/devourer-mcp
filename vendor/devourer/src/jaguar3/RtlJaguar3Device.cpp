@@ -714,6 +714,7 @@ void RtlJaguar3Device::apply_replay_wseq() {
 /* Clean shutdown — see IRadio::Stop. Best-effort: a chip that already
  * dropped off the bus will make the de-init writes fail, which is fine. */
 void RtlJaguar3Device::Stop() {
+  _brought_up = false;
   _coex_stop = true;
   if (_coex_thread.joinable())
     _coex_thread.join();
@@ -1132,6 +1133,7 @@ devourer::RxGainCaps RtlJaguar3Device::GetRxGainCaps() {
 }
 
 devourer::RxGainState RtlJaguar3Device::GetRxGainState() {
+  std::lock_guard<std::mutex> lk(_reg_mu);
   devourer::RxGainState s;
   /* Reading 0x1d70 before the BB is up returns whatever the bus gives back —
    * measured as 0x6a on a freshly opened 8822C, which is outside DIG's window
@@ -1141,8 +1143,15 @@ devourer::RxGainState RtlJaguar3Device::GetRxGainState() {
     return s;
   s.valid = true;
   s.index = _phydm.CurrentIgi();
-  s.range_min = _phydm.GainRangeMin();
-  s.range_max = _phydm.GainRangeMax();
+  /* DFS policy overrides the host window in dig(); report the effective
+   * range rather than a stored range that is not currently in force. */
+  if (_channel.Channel >= 52 && _channel.Channel <= 144) {
+    s.range_min = 0x20;
+    s.range_max = 0x20;
+  } else {
+    s.range_min = _phydm.GainRangeMin();
+    s.range_max = _phydm.GainRangeMax();
+  }
   s.automatic = true;
   return s;
 }
@@ -1151,6 +1160,7 @@ bool RtlJaguar3Device::SetRxGainRange(uint8_t min, uint8_t max) {
   const auto caps = GetRxGainCaps();
   if (min > max || min < caps.index_min || max > caps.index_max)
     return false;
+  std::lock_guard<std::mutex> lk(_reg_mu);
   _phydm.PinGainRange(min, max);
   /* The window is remembered either way; the register write needs a BB. */
   if (!_brought_up)
@@ -1284,7 +1294,7 @@ bool RtlJaguar3Device::SetCcaGates(bool primary_disabled, bool edcca_disabled) {
   if (!_brought_up)
     return false;
   /* Sticky the same way dis_cca is: a channel set rewrites the BB CCA
-   * registers, and SetMonitorChannel re-asserts from these. */
+   * registers and SetMonitorChannel re-asserts from these. */
   _cca_primary_disabled = primary_disabled;
   _cca_edcca_disabled = edcca_disabled;
   apply_cca_gates_locked(primary_disabled, edcca_disabled);

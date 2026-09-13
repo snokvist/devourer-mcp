@@ -9,8 +9,6 @@ namespace {
  * the Jaguar3 parts need one: at IGI 0x1c the 8822CU's MCS4+ RX decodes
  * NOTHING (0 of 65k kernel-injected MCS7 frames) while 0x1e is transparent
  * (65.9k of 65k) — hardware-bisected, value-specific. Floor at 0x1e. */
-constexpr uint8_t DIG_MIN_COVERAGE = 0x1e;
-constexpr uint8_t DIG_MAX_OF_MIN_COVERAGE = 0x22;
 constexpr uint8_t DIG_MIN_DFS = 0x20;
 /* phydm_adaptivity.h normal-mode EDCCA constants. */
 constexpr int TH_L2H_DIFF_IGI = 8;

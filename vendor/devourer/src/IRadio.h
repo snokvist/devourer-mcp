@@ -563,9 +563,10 @@ public:
    * A range rather than a value because that is the one operation correct on
    * every generation: where an adaptive loop exists this steers it rather
    * than defeating it, and where none exists min == max sets the gain. Both
-   * ends are clamped to GetRxGainCaps()'s limits. Returns false where the
-   * backend cannot do it; pass the caps' own index_min/index_max to restore
-   * the default. */
+   * ends must lie within GetRxGainCaps()'s limits; invalid ranges are refused.
+   * The caps bounds are the supported envelope, not the backend's default
+   * window, so callers that need restoration must remember the initial
+   * GetRxGainState range before changing it. */
   virtual bool SetRxGainRange(uint8_t min, uint8_t max) {
     (void)min;
     (void)max;

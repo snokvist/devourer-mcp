@@ -156,9 +156,10 @@ public:
    * sensitivity as much as the receive sensitivity. */
   Json rx_gain_json();
 
-  /* Clamp the receive-gain index. min == max pins it; passing the caps' own
-   * limits restores the default. Steers an adaptive loop where one runs
-   * rather than overriding it behind its back. */
+  /* Clamp the receive-gain index. min == max pins it. Steers an adaptive loop
+   * where one runs rather than overriding it behind its back. Caps describe
+   * the supported envelope, not the initial window; callers that need to
+   * restore state must remember the initial rx_gain_json() range. */
   bool set_rx_gain(int min, int max, std::string &err);
 
   /* Frame-free RX energy: what the chip's own PHY thinks is on the channel,

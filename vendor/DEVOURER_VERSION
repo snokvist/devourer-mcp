@@ -2,7 +2,7 @@
 # see tools/host/vendor-devourer.sh and vendor/patches/.
 repository = https://github.com/OpenIPC/devourer.git
 ref        = master
-commit     = 30d248e021f35be0a8fe85c84939a57a45756901
-committed  = 2026-09-11T15:52:37+03:00
-subject    = mt7612u: access-point support — hardware beacon behind IRadio, open and WPA2-PSK verified on air (#424)
-vendored   = 2026-09-12T08:55:20+02:00
+commit     = 45f40220bf2d5a6a3ed61ab52b5a7d9ef6efea54
+committed  = 2026-09-13T09:32:55+03:00
+subject    = cca gates: make the Jaguar1 arm of the regcheck actually runnable (#429)
+vendored   = 2026-09-13T09:29:51+02:00

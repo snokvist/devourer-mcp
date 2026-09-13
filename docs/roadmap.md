@@ -31,8 +31,8 @@ page down with it.
 
 | Subsystem | State | Notes |
 |---|---|---|
-| Vendored Devourer | done | pinned at `30d248e`, sync script, patch dir (empty) |
-| `devourer-bridge` | done | separate process, protocol v1.1, session ownership |
+| Vendored Devourer | done | pinned at `45f4022`, one local RX-gain patch |
+| `devourer-bridge` | done | separate process, protocol v1.2, session ownership |
 | Radio discovery + capabilities | done | derived from source, never a hand-kept table |
 | Monitor capture | done | ~1500–3300 frames/s, zero drops |
 | Capture store, query, PCAP | done | radiotap synthesized; raw bytes always reachable |
@@ -139,20 +139,11 @@ threshold from it — so the threshold is the most sensitive value the adaptive
 loop can produce, on every channel, and no channel choice moves it. See
 `hardware-evidence.md`.
 
-What is left is the lever, and it is a two-line change in devourer rather than
-a missing capability. `DeviceConfig.rx.igi` is documented as a fixed
-initial-gain override and has exactly one consumer in the tree
-(`HalJaguar2.cpp:2597`); Jaguar1 ignores it and
-`HalModule::phydm_SetIgiFloor_Jaguar()` hard-writes `0x1c`. Making that
-`_cfg.rx.igi.value_or(0x1c)` costs nothing by default and makes IGI a
-sweepable axis here, because this bridge already passes DeviceConfig at open.
-
-It is not reachable without that change: `RtlJaguarDevice` publishes
-`ReadBBReg` and no write. This is an upstream contribution, not a local patch
-— `vendor/patches/` is empty and should stay that way.
-
-Surveying the other five backends first changed the shape of the fix, so the
-two-liner is no longer the proposal:
+The lever is now implemented by the remaining local vendor patch:
+`IRadio::SetRxGainRange`, with state/capability reporting on Jaguar1 and
+Jaguar3. It is reachable in the native bridge as `radio.rx_gain`, but is not
+yet surfaced through `RadioManager` or MCP. Closing that vertical slice is the
+next integration step; the full design and remaining backend gaps are in
 [`proposals/rx-gain-range.md`](proposals/rx-gain-range.md). Every family has a
 receive-gain index and on five of six nothing moves it — jaguar2 is the only
 one whose gain genuinely adapts. The MT7612U is not winning because its 1 Hz
@@ -193,7 +184,7 @@ separate pin operation.
 - **`radio_list` before open.** Realtek 11ac parts report `probe_required` and
   cannot be identified without opening them. Correct and honest, but a caller
   wanting an inventory must open every candidate.
-- **Bridge protocol versioning.** v1.1 with a major-version gate. No
+- **Bridge protocol versioning.** v1.2 with a major-version gate. No
   negotiation, no capability discovery beyond `hello`.
 
 ---

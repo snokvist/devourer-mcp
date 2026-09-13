@@ -57,6 +57,9 @@ int main() {
   check(!r->GetRxQuality().valid, "GetRxQuality default is invalid");
   check(!r->GetFwBootStatus().supported, "GetFwBootStatus default is unsupported");
   check(!r->GetTxPowerCaps().supported, "GetTxPowerCaps default is unsupported");
+  check(!r->GetRxGainCaps().supported, "GetRxGainCaps default is unsupported");
+  check(!r->GetRxGainState().valid, "GetRxGainState default is invalid");
+  check(!r->SetRxGainRange(1, 2), "SetRxGainRange default refuses");
   check(!r->SetAckResponder(devourer::MacAddr{}), "SetAckResponder default refuses");
   check(r->ReadTsf() == 0, "ReadTsf default is 0");
 

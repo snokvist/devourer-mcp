@@ -107,8 +107,9 @@ virtual devourer::RxGainState GetRxGainState() { return {}; }
  *   - where none exists it simply sets the gain, with min == max;
  *   - and "pin it" needs no second entry point: min == max is the pin.
  *
- * Returns false where the backend cannot do it. Defaults are restored by
- * passing the caps' own index_min/index_max. */
+ * Returns false where the backend cannot do it. Caps describe the supported
+ * envelope, not the backend's initial window; callers that need restoration
+ * remember the initial GetRxGainState() range before changing it. */
 virtual bool SetRxGainRange(uint8_t min, uint8_t max) {
   (void)min; (void)max;
   return false;
@@ -206,8 +207,8 @@ the three virtuals on the device. Caps `[0x1e, 0x3e]`, `automatic = true`.
 `[0x1c, 0x3e]`; making those bounds members and honouring `rx.igi` would be
 the same change again.
 
-**jaguar3, kestrel, rtl8733b** — `supported`/`settable` false via the
-not-ported default, or read-only caps where the index is readable but static.
+**kestrel, rtl8733b** — `supported`/`settable` false via the not-ported
+default, or read-only caps where the index is readable but static.
 Saying "static, nothing adapts it" is itself worth publishing.
 
 ## What it would let a caller finally do

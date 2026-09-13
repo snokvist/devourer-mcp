@@ -1,7 +1,8 @@
 # Upstream proposal: address the two CCA gates separately, and stop enabling EDCCA by default on Jaguar1
 
-For OpenIPC/devourer. Built and measured on this bench first; the patch is
-`vendor/patches/0002-cca-gates.patch`.
+For OpenIPC/devourer. Built and measured on this bench first; the gate split
+and its runnable Jaguar1 verification are now in upstream `master` through
+#427 and #429, so the local vendor patch has been retired.
 
 **Item 1 (the gate split) is upstream as
 [OpenIPC/devourer#427](https://github.com/OpenIPC/devourer/pull/427)**,

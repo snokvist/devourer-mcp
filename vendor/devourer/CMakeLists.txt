@@ -213,6 +213,7 @@ add_library(devourer
     src/LinkHealth.cpp
     src/LinkHealth.h
     src/RxQuality.h
+    src/RxGain.h
     src/chanmig/ChannelScore.cpp
     src/chanmig/ChannelScore.h
     src/chanmig/MigGate.cpp
