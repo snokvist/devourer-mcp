@@ -71,6 +71,45 @@ class SensorWireTest {
     }
 
     @Test
+    fun `a tx-receipts reply decodes every field`() {
+        val json = """
+            {"session":3,"enabled":true,"sampling":1,"total":2,"dropped":0,"buffered":1,
+             "receipts":[{"t_ms":10,"state":0,"ok":true,"retries":2,"final_rate":11,
+                          "queue_time_raw":5,"bmc":false,"macid":1,"fmt":"halmac",
+                          "tag":7,"rts_retries":0}]}
+        """.trimIndent()
+
+        val r = BridgeJson.format.decodeFromString(TxReceipts.serializer(), json)
+
+        assertTrue(r.enabled)
+        assertEquals(1, r.sampling)
+        assertEquals(2, r.total)
+        assertEquals(1, r.receipts.size)
+        val receipt = r.receipts.single()
+        assertEquals(10, receipt.tMs)
+        assertEquals(0, receipt.state)
+        assertTrue(receipt.ok)
+        assertEquals(2, receipt.retries)
+        assertEquals(11, receipt.finalRate)
+        assertEquals(5, receipt.queueTimeRaw)
+        assertEquals(1, receipt.macid)
+        assertEquals("halmac", receipt.fmt)
+        assertEquals(7, receipt.tag)
+        assertEquals(0, receipt.rtsRetries)
+    }
+
+    @Test
+    fun `a disabled tx-receipts reply keeps the absence honest`() {
+        val json = """{"session":3,"enabled":false,"sampling":0,"why":"not enabled at open"}"""
+
+        val r = BridgeJson.format.decodeFromString(TxReceipts.serializer(), json)
+
+        assertFalse(r.enabled)
+        assertEquals("not enabled at open", r.why)
+        assertTrue(r.receipts.isEmpty())
+    }
+
+    @Test
     fun `a thermal reply decodes every field`() {
         val json = """
             {"session":3,"supported":true,"raw":20,"baseline":18,"delta":2,

@@ -22,6 +22,8 @@
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
+#include <cstdio>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -38,6 +40,7 @@ namespace devourer {
 class DeviceSession;
 }
 class IRadio;
+class Logger;
 struct Packet;
 
 namespace bridge {
@@ -81,6 +84,16 @@ struct OpenOptions {
    * Jaguar1 only. It writes BB registers from a background thread, which is
    * why it is opt-in per session rather than always on. */
   bool adaptive_gain = false;
+
+  /* Per-frame TX-status reports (`DeviceConfig tx.report`): 0 = off, N > 1 =
+   * a CCX report on every Nth data frame (1 = every frame, 1..255). Sets
+   * SPE_RPT in the TX descriptor, which changes every frame on the air, so
+   * off is the default and a session only pays for it if it asks.
+   *
+   * Reports arrive on the C2H RX path, so a session needs an RX loop to
+   * receive them (a monitor, or a family whose coex thread drains C2H).
+   * RTL8733B has no such path and emits none. Read them with tx_receipts. */
+  int tx_report = 0;
 };
 
 struct SessionStats {
@@ -253,6 +266,18 @@ public:
    * frame that never left the host shows up. */
   Json tx_stats_json();
 
+  /* Per-frame TX receipts (`tx.report`): what the hardware said about each
+   * reported transmission — delivery state, hardware retry count, final rate,
+   * queue time, and (HalMAC) the frame's SW_DEFINE echo. These are the
+   * TX-side sensor `tx_stats` is not: tx_stats is what the host submitted, a
+   * receipt is what the radio did with it.
+   *
+   * Only populated when the session was opened with `tx_report` > 0. The
+   * events are drained into a bounded ring; `clear` empties it after the
+   * reply is built. Not available on RTL8733B (no C2H report path), and on
+   * Jaguar1/2 a session needs an RX loop to deliver them. */
+  Json tx_receipts_json(bool clear);
+
   /* The MAC carrier-sense gate that defers TX while the channel looks busy.
    *
    * EXPERIMENTAL by nature: disabling it makes the radio transmit without
@@ -288,6 +313,10 @@ private:
   void on_packet(const Packet &pkt);
   void detach_sink_locked();
   void _logger_error(const std::string &msg);
+  /* Read new bytes from the tx.report capture file and fold complete JSON
+   * lines into the ring. CALLER MUST HOLD _life_mu. */
+  void drain_tx_receipts();
+  void handle_tx_event_line(const std::string &line);
   void writer_loop();
   void stop_writer();
 
@@ -336,6 +365,27 @@ private:
    * GetTxPowerState is not overridden (the MT7612U's dBm model), where the
    * state readback is otherwise empty. Guarded by _life_mu. */
   std::optional<int> _last_applied_offset_qdb;
+
+  /* Per-session logger. Per-session rather than shared so a session's
+   * `tx.report` events can be captured without other sessions interleaving
+   * into the same stream; diagnostics still all go to stderr. Guarded by
+   * _life_mu. */
+  std::shared_ptr<Logger> _logger;
+
+  /* TX receipts: the library emits `tx.report` events to the logger's
+   * EventSink (a FILE*). We point that at a per-session temp file, flush-on-
+   * line, and drain new bytes on demand, keeping a bounded ring. No reader
+   * thread: events are appended complete and a scan only advances past the
+   * last newline, so a read racing a write re-reads the partial tail. */
+  FILE *_txr_file = nullptr;
+  long long _txr_read_off = 0;   /* bytes already parsed */
+  std::string _txr_tail;         /* partial line carried across reads */
+  bool _txr_enabled = false;
+  int _txr_sampling = 0;
+  uint64_t _txr_total = 0;     /* events parsed since open */
+  uint64_t _txr_dropped = 0;   /* evicted from the ring */
+  std::deque<Json> _txr;       /* bounded ring, guarded by _txr_mu */
+  mutable std::mutex _txr_mu;
 };
 
 } // namespace bridge

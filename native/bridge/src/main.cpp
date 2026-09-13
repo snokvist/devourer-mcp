@@ -301,6 +301,12 @@ Json op_radio_open(const Json &req) {
   o.reset = req.at("reset").boolean(true);
   o.noise_floor = req.at("noise_floor").boolean(false);
   o.adaptive_gain = req.at("adaptive_gain").boolean(false);
+  if (!req.at("tx_report").is_null()) {
+    int64_t v = 0;
+    if (!ranged(req, "tx_report", 0, 255, v, err))
+      return fail("bad_request", err);
+    o.tx_report = static_cast<int>(v);
+  }
   if (req.at("buffer_bytes").is_number()) {
     int64_t v = 0;
     if (!ranged(req, "buffer_bytes", 1 << 20, 256LL << 20, v, err))
@@ -644,6 +650,21 @@ Json op_radio_rx_energy(const Json &req) {
   return ok(s->rx_energy_json(req.at("with_nhm").boolean(false)));
 }
 
+Json op_radio_tx_receipts(const Json &req) {
+  std::string err;
+  auto s = find_session(req, err);
+  if (!s)
+    return fail("no_session", err);
+  if (Json bad = unknown_field(req, {"clear"}); !bad.is_null())
+    return bad;
+  if (!req.at("clear").is_null() && req.at("clear").type() != Json::Type::Bool)
+    return fail("bad_request", "clear must be a boolean");
+  /* Drained by default: these are events, and a poller wants what arrived
+   * since the last call. `clear:false` peeks without emptying the ring. */
+  const bool clear = req.at("clear").boolean(true);
+  return ok(s->tx_receipts_json(clear));
+}
+
 Json op_radio_tx_stats(const Json &req) {
   std::string err;
   auto s = find_session(req, err);
@@ -950,6 +971,8 @@ Json dispatch(const Json &req) {
     return op_radio_rx_paths(req);
   if (op == "radio.tx_stats")
     return op_radio_tx_stats(req);
+  if (op == "radio.tx_receipts")
+    return op_radio_tx_receipts(req);
   if (op == "radio.rx_energy")
     return op_radio_rx_energy(req);
   if (op == "radio.rx_gain")

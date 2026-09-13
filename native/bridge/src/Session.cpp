@@ -34,6 +34,11 @@ uint64_t now_ns() {
          static_cast<uint64_t>(ts.tv_nsec);
 }
 
+/* How many parsed tx.report entries a session keeps before evicting the
+ * oldest. Enough to see the last burst; the cumulative total and a dropped
+ * count are reported beside it, so eviction is visible rather than silent. */
+constexpr size_t kTxReceiptRing = 256;
+
 /* Who holds the devourer USB lock for this adapter, as "name (pid N)".
  *
  * devourer's UsbDeviceLock writes the owner's pid into /tmp/devourer-usb-<bus>-<port>.lock
@@ -109,12 +114,12 @@ std::string lock_holder(uint8_t bus, const std::string &port_path) {
 }
 
 Logger_t make_logger() {
-  /* One logger for every session. Devourer's Logger writes to stderr, which is
-   * what we want: stdout belongs to whoever launched the bridge, and mixing
-   * library chatter into a protocol stream is how a control plane becomes
-   * unparseable. */
-  static Logger_t shared = std::make_shared<Logger>();
-  return shared;
+  /* One logger per session, not shared. Diagnostics still go to stderr, so
+   * this changes nothing a reader sees; the reason is the EventSink: it is a
+   * single FILE*, and `tx.report` capture has to point each session's sink at
+   * its own stream rather than have every session's events interleave into
+   * one. */
+  return std::make_shared<Logger>();
 }
 
 Json band_range(const devourer::BandRange &r) {
@@ -208,6 +213,111 @@ void Session::_logger_error(const std::string &msg) {
   std::fprintf(stderr, "devourer-bridge session %u: %s\n", _id, msg.c_str());
 }
 
+void Session::handle_tx_event_line(const std::string &line) {
+  if (line.empty() || line[0] != '{')
+    return;
+  Json ev;
+  std::string err;
+  if (!Json::parse(line, ev, err))
+    return;
+  if (ev.at("ev").str() != "tx.report")
+    return;
+  Json r;
+  r.set("t_ms", ev.at("t").integer(0))
+      .set("state", ev.at("state").integer(0))
+      .set("ok", ev.at("ok").boolean(false))
+      .set("retries", ev.at("retries").integer(0))
+      .set("final_rate", ev.at("final_rate").integer(0))
+      .set("queue_time_raw", ev.at("queue_time_raw").integer(0))
+      .set("bmc", ev.at("bmc").boolean(false))
+      .set("macid", ev.at("macid").integer(0))
+      .set("fmt", ev.at("fmt").str());
+  /* HalMAC-only fields; absent on the 8812 (Jaguar1) format. */
+  if (ev.has("tag"))
+    r.set("tag", ev.at("tag").integer(0));
+  if (ev.has("rts_retries"))
+    r.set("rts_retries", ev.at("rts_retries").integer(0));
+
+  std::lock_guard<std::mutex> lk(_txr_mu);
+  ++_txr_total;
+  _txr.push_back(std::move(r));
+  while (_txr.size() > kTxReceiptRing) {
+    _txr.pop_front();
+    ++_txr_dropped;
+  }
+}
+
+void Session::drain_tx_receipts() {
+  if (_txr_file == nullptr)
+    return;
+  /* EveryLine flush means each event is a complete line already in the file;
+   * flush once more for any fixed-policy build and to order against writers. */
+  std::fflush(_txr_file);
+  const int fd = fileno(_txr_file);
+  if (fd < 0)
+    return;
+  std::string chunk;
+  char tmp[4096];
+  for (;;) {
+    const ssize_t n = pread(fd, tmp, sizeof(tmp), _txr_read_off);
+    if (n <= 0)
+      break;
+    chunk.append(tmp, static_cast<size_t>(n));
+    _txr_read_off += n;
+    if (static_cast<size_t>(n) < sizeof(tmp))
+      break;
+  }
+  if (chunk.empty() && _txr_tail.empty())
+    return;
+  std::string buf = _txr_tail;
+  buf += chunk;
+  size_t start = 0;
+  for (;;) {
+    const size_t nl = buf.find('\n', start);
+    if (nl == std::string::npos)
+      break;
+    handle_tx_event_line(buf.substr(start, nl - start));
+    start = nl + 1;
+  }
+  _txr_tail = buf.substr(start);
+}
+
+Json Session::tx_receipts_json(bool clear) {
+  std::lock_guard<std::recursive_mutex> life(_life_mu);
+  Json j;
+  j.set("session", _id).set("enabled", _txr_enabled).set("sampling", _txr_sampling);
+  if (_txr_enabled)
+    drain_tx_receipts();
+  {
+    std::lock_guard<std::mutex> lk(_txr_mu);
+    Json arr = Json::array();
+    for (const auto &r : _txr)
+      arr.push(r);
+    j.set("total", _txr_total)
+        .set("dropped", _txr_dropped)
+        .set("buffered", static_cast<uint64_t>(_txr.size()))
+        .set("receipts", arr);
+    if (clear)
+      _txr.clear();
+  }
+  if (!_txr_enabled)
+    j.set("why",
+          "tx.report was not enabled at open. Reopen with tx_report=N (1 = "
+          "every frame, N>1 = every Nth) and keep an RX loop running so the "
+          "C2H reports are delivered.");
+  else
+    j.set("note",
+          "one entry per REPORTED frame, not per frame sent: with sampling N "
+          "only every Nth frame is reported, and the report stream itself can "
+          "drop under load. tx_stats is the host-side submission count and "
+          "cannot see retries or the final rate the way these do. On Jaguar3 "
+          "the MISSED_RPT field is a constant, so gauge emission drops from "
+          "tag gaps, not from it. Not every family emits these: the CCX report "
+          "is a HalMAC/Jaguar facility, so an adapter without it (MT7612U, "
+          "RTL8733B) accepts tx_report and then reports nothing.");
+  return j;
+}
+
 std::unique_ptr<Session> Session::open(uint32_t id, const OpenOptions &opts,
                                        std::string &code, std::string &msg) {
   auto logger = make_logger();
@@ -233,6 +343,23 @@ std::unique_ptr<Session> Session::open(uint32_t id, const OpenOptions &opts,
   auto s = std::unique_ptr<Session>(new Session(id, info));
   s->_max_frame_bytes = opts.max_frame_bytes;
   s->_buf_cap = opts.buffer_bytes;
+  s->_logger = logger;
+
+  /* tx.report capture: point this session's EventSink at a temp file before
+   * any radio thread exists, so no event is written to stdout or to a stream
+   * another session shares. */
+  if (opts.tx_report > 0) {
+    FILE *f = std::tmpfile();
+    if (f == nullptr) {
+      code = "tx_report_unavailable";
+      msg = "could not open a temp file to capture tx.report events";
+      return nullptr;
+    }
+    logger->events().configure(f, devourer::EventSink::FlushPolicy::EveryLine);
+    s->_txr_file = f;
+    s->_txr_enabled = true;
+    s->_txr_sampling = opts.tx_report;
+  }
 
   auto dev_session = std::make_unique<devourer::DeviceSession>(logger);
 
@@ -314,13 +441,14 @@ std::unique_ptr<Session> Session::open(uint32_t id, const OpenOptions &opts,
    * inside Init, before the RX loop starts — there is no later. */
   cfg.rx.abs_noise_floor = opts.noise_floor;
   cfg.tuning.phydm_watchdog = opts.adaptive_gain;
+  cfg.tx.report = opts.tx_report;
   s->_noise_floor_requested = opts.noise_floor;
   /* Say when a session is brought up on anything but the default tuning. A
    * run whose behaviour depends on an option nobody can see afterwards is
-   * not reproducible, and both of these change what the radio does. */
-  if (opts.noise_floor || opts.adaptive_gain) {
-    logger->info("bridge: open with noise_floor={} adaptive_gain={}",
-                 opts.noise_floor, opts.adaptive_gain);
+   * not reproducible, and all of these change what the radio does. */
+  if (opts.noise_floor || opts.adaptive_gain || opts.tx_report > 0) {
+    logger->info("bridge: open with noise_floor={} adaptive_gain={} tx_report={}",
+                 opts.noise_floor, opts.adaptive_gain, opts.tx_report);
   }
   auto radio = driver.CreateRadio(handle, ctx, lock, cfg);
   if (!radio) {
@@ -1533,6 +1661,15 @@ void Session::close() {
   }
   _radio = nullptr;
   _dev.reset(); /* device -> interface -> handle -> context, in that order */
+  /* Stop the tx.report capture: disable the sink before closing the file, so
+   * a late event write is skipped rather than touching a closed FILE. */
+  if (_logger)
+    _logger->events().disable();
+  if (_txr_file != nullptr) {
+    std::fclose(_txr_file);
+    _txr_file = nullptr;
+  }
+  _logger.reset();
 }
 
 } // namespace bridge

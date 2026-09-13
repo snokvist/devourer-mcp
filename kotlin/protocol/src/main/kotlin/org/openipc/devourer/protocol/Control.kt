@@ -403,6 +403,60 @@ public data class TxRateDiffs(
     }
 }
 
+/**
+ * One per-frame TX report (`tx.report`, the vendor CCX report): what the radio
+ * did with a frame the host submitted.
+ *
+ * [state] 0 is delivered (ACKed, or complete for a broadcast/no-ack frame);
+ * other values are retry-drop and firmware-specific states. [retries] is the
+ * hardware retransmission count — the number `tx_stats` cannot see, because
+ * tx_stats is the host's submission count and a retried frame counts once
+ * there. [finalRate] is a hardware rate index, not a rate name.
+ *
+ * Entries exist only for REPORTED frames: with sampling N only every Nth is
+ * reported, and the report stream itself can drop under load. On HalMAC
+ * [tag] is the descriptor's SW_DEFINE echo, so consecutive reports should
+ * differ by exactly N and a larger gap is a dropped report; [rtsRetries] is
+ * HalMAC-only.
+ */
+@Serializable
+public data class TxReceipt(
+    /** Host monotonic milliseconds at report time — the report-rate timebase. */
+    @SerialName("t_ms") val tMs: Long = 0,
+    val state: Int = 0,
+    val ok: Boolean = false,
+    val retries: Int = 0,
+    @SerialName("final_rate") val finalRate: Int = 0,
+    @SerialName("queue_time_raw") val queueTimeRaw: Int = 0,
+    val bmc: Boolean = false,
+    val macid: Int = 0,
+    val fmt: String = "",
+    val tag: Int? = null,
+    @SerialName("rts_retries") val rtsRetries: Int? = null,
+)
+
+/**
+ * The buffered per-frame TX reports for one session.
+ *
+ * [enabled] false means the session was not opened with `tx_report`; the
+ * reports do not exist to be read. [receipts] are the retained ring (bounded),
+ * [total] is cumulative since open, and [dropped] counts evictions from the
+ * ring — so eviction is visible rather than silent. The list is drained by
+ * default on read.
+ */
+@Serializable
+public data class TxReceipts(
+    val session: Int = 0,
+    val enabled: Boolean = false,
+    val sampling: Int = 0,
+    val total: Long = 0,
+    val dropped: Long = 0,
+    val buffered: Long = 0,
+    val receipts: List<TxReceipt> = emptyList(),
+    val why: String? = null,
+    val note: String? = null,
+)
+
 /** Channel width in MHz. The bridge takes MHz; the enum keeps callers honest. */
 public enum class ChannelWidth(public val mhz: Int) {
     W5(5), W10(10), W20(20), W40(40), W80(80), W160(160),

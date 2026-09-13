@@ -50,6 +50,7 @@ import org.openipc.devourer.protocol.RxQuality
 import org.openipc.devourer.protocol.Thermal
 import org.openipc.devourer.protocol.TxPower
 import org.openipc.devourer.protocol.TxRateDiffs
+import org.openipc.devourer.protocol.TxReceipts
 import org.openipc.devourer.radio.CapabilityException
 import org.openipc.devourer.radio.ChannelInfo
 import org.openipc.devourer.radio.OpenRadio
@@ -210,6 +211,18 @@ internal class Tools(
                                 "background thread.",
                         ),
                     )
+                    put(
+                        "tx_report",
+                        schema(
+                            "integer",
+                            "Per-frame TX reports (tx.report): 0 = off (default), N>1 = a report " +
+                                "on every Nth data frame, 1 = every frame. Sets SPE_RPT in every " +
+                                "TX descriptor, so it is off unless asked for. Read them with " +
+                                "radio_tx_receipts; they arrive on the C2H RX path, so keep an RX " +
+                                "loop running (a monitor, or a family whose coex thread drains " +
+                                "C2H). RTL8733B emits none.",
+                        ),
+                    )
                 },
                 required = listOf("bus", "address"),
             ),
@@ -220,6 +233,7 @@ internal class Tools(
                 reset = request.boolOr("reset", true),
                 noiseFloor = request.boolOr("noise_floor", false),
                 adaptiveGain = request.boolOr("adaptive_gain", false),
+                txReport = request.intOr("tx_report", 0),
             )
             text(json.encodeToString(OpenRadio.serializer(), radio))
         }
@@ -1050,6 +1064,42 @@ internal class Tools(
                 )
             }
             text(json.encodeToString(TxPower.serializer(), result))
+        }
+
+        register(
+            server,
+            name = "radio_tx_receipts",
+            description = """
+                Per-frame TX reports (`tx.report`) — what the RADIO did with each frame, as
+                opposed to tx_stats, which is what the host submitted. Each receipt carries the
+                delivery `state` (0 = delivered; other values retry-drop or firmware-specific),
+                the hardware `retries` count, the `final_rate` the frame ended at, and the queue
+                time. That is the TX-side link sensor, and retries in particular are invisible to
+                any host-side counter.
+
+                Only populated when the radio was opened with `tx_report` > 0; otherwise
+                `enabled:false` says the reports do not exist rather than returning an empty list.
+                Reports arrive on the C2H RX path, so a session needs an RX loop (a monitor, or a
+                family whose coex thread drains C2H). RTL8733B emits none.
+
+                Drained by default — these are events — so pass `clear:false` to peek. With
+                sampling N only every Nth frame is reported, and the report stream can drop under
+                load; on HalMAC, consecutive `tag` values should differ by exactly N and a larger
+                gap is a dropped report.
+            """.trimIndent(),
+            inputSchema = ToolSchema(
+                properties = buildJsonObject {
+                    put("session", schema("integer", "Session id from radio_open."))
+                    put("clear", schema("boolean", "Drain the buffered receipts. Default true; pass false to peek."))
+                },
+                required = listOf("session"),
+            ),
+        ) { request ->
+            val result = radios.txReceipts(
+                request.intOr("session", -1),
+                clear = request.boolOr("clear", true),
+            )
+            text(json.encodeToString(TxReceipts.serializer(), result))
         }
 
         register(

@@ -17,6 +17,7 @@ import org.openipc.devourer.protocol.RxGain
 import org.openipc.devourer.protocol.RxQuality
 import org.openipc.devourer.protocol.Thermal
 import org.openipc.devourer.protocol.TxPower
+import org.openipc.devourer.protocol.TxReceipts
 import org.openipc.devourer.protocol.TxRateDiffs
 
 /**
@@ -48,7 +49,9 @@ public class RadioManager(private val bridge: BridgeClient) : Radios {
         reset: Boolean,
         noiseFloor: Boolean,
         adaptiveGain: Boolean,
+        txReport: Int,
     ): OpenRadio {
+        require(txReport in 0..255) { "txReport must be 0..255 (the report divisor)" }
         val result = bridge.call(
             "radio.open",
             buildJsonObject {
@@ -57,6 +60,7 @@ public class RadioManager(private val bridge: BridgeClient) : Radios {
                 put("reset", JsonPrimitive(reset))
                 put("noise_floor", JsonPrimitive(noiseFloor))
                 put("adaptive_gain", JsonPrimitive(adaptiveGain))
+                put("tx_report", JsonPrimitive(txReport))
             },
         )
         return BridgeJson.format.decodeFromJsonElement(OpenRadio.serializer(), result)
@@ -291,6 +295,17 @@ public class RadioManager(private val bridge: BridgeClient) : Radios {
 
     override suspend fun txStats(session: Int): JsonObject =
         bridge.call("radio.tx_stats", buildJsonObject { put("session", JsonPrimitive(session)) })
+
+    override suspend fun txReceipts(session: Int, clear: Boolean): TxReceipts {
+        val result = bridge.call(
+            "radio.tx_receipts",
+            buildJsonObject {
+                put("session", JsonPrimitive(session))
+                put("clear", JsonPrimitive(clear))
+            },
+        )
+        return BridgeJson.format.decodeFromJsonElement(TxReceipts.serializer(), result)
+    }
 
     override suspend fun activeRxPaths(session: Int): JsonObject =
         bridge.call("radio.rx_paths", buildJsonObject { put("session", JsonPrimitive(session)) })
