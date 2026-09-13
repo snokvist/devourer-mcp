@@ -229,7 +229,7 @@ Android fd-import path we ignore.
 ## Continuation
 
 This list is closed. What comes next is in [`roadmap.md`](roadmap.md); the
-largest single item there is still `IRadio` coverage, at 22 of 55 methods.
+largest single item there is still `IRadio` coverage, at 24 of 55 methods.
 
 Three things worth keeping from how this went:
 

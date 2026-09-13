@@ -149,6 +149,29 @@ int width_mhz_of(ChannelWidth_t w) {
   }
 }
 
+/* Does this adapter's capability report include a channel width? The width
+ * changes are capability-gated everywhere else (monitor_start, radio.channel);
+ * FastSetBandwidth must be too, or a family with no narrowband path reports a
+ * width it silently kept its old one at. */
+bool width_in_caps(const devourer::AdapterCaps &caps, ChannelWidth_t w) {
+  switch (w) {
+  case CHANNEL_WIDTH_5:
+    return caps.bw_mask & devourer::kBw5;
+  case CHANNEL_WIDTH_10:
+    return caps.bw_mask & devourer::kBw10;
+  case CHANNEL_WIDTH_20:
+    return caps.bw_mask & devourer::kBw20;
+  case CHANNEL_WIDTH_40:
+    return caps.bw_mask & devourer::kBw40;
+  case CHANNEL_WIDTH_80:
+    return caps.bw_mask & devourer::kBw80;
+  case CHANNEL_WIDTH_160:
+    return caps.bw_mask & devourer::kBw160;
+  default:
+    return false;
+  }
+}
+
 Json bw_list(uint8_t mask) {
   Json a = Json::array();
   if (mask & devourer::kBw5)
@@ -502,6 +525,70 @@ bool Session::set_channel(SelectedChannel ch, std::string &err) {
   }
   _channel = ch;
   return true;
+}
+
+bool Session::fast_retune(int channel, std::string &err) {
+  std::lock_guard<std::recursive_mutex> life(_life_mu);
+  if (_radio == nullptr) {
+    err = "session has no radio";
+    return false;
+  }
+  if (!_up) {
+    err = "radio is not brought up — use radio.channel first; a fast retune "
+          "assumes a live channel to move from";
+    return false;
+  }
+  if (channel < 0 || channel > 255) {
+    err = "channel must be 0..255";
+    return false;
+  }
+  try {
+    _radio->FastRetune(static_cast<uint8_t>(channel));
+  } catch (const std::exception &e) {
+    err = std::string("FastRetune threw: ") + e.what();
+    return false;
+  }
+  _channel.Channel = static_cast<uint8_t>(channel);
+  return true;
+}
+
+bool Session::fast_bandwidth(ChannelWidth_t width, std::string &err) {
+  std::lock_guard<std::recursive_mutex> life(_life_mu);
+  if (_radio == nullptr) {
+    err = "session has no radio";
+    return false;
+  }
+  if (!_up) {
+    err = "radio is not brought up — use radio.channel first";
+    return false;
+  }
+  if (!width_in_caps(_radio->GetAdapterCaps(), width)) {
+    err = std::to_string(width_mhz_of(width)) +
+          " MHz is not a width this adapter supports";
+    return false;
+  }
+  try {
+    _radio->FastSetBandwidth(width);
+  } catch (const std::exception &e) {
+    err = std::string("FastSetBandwidth threw: ") + e.what();
+    return false;
+  }
+  _channel.ChannelWidth = width;
+  return true;
+}
+
+Json Session::channel_json() {
+  std::lock_guard<std::recursive_mutex> life(_life_mu);
+  Json j;
+  j.set("channel", _channel.Channel)
+      .set("width", width_mhz_of(_channel.ChannelWidth))
+      .set("offset", _channel.ChannelOffset)
+      .set("band", _channel.Band);
+  bool fast = false;
+  if (_radio != nullptr)
+    fast = _radio->GetAdapterCaps().fastretune_ok;
+  j.set("fast_retune", fast);
+  return j;
 }
 
 bool Session::start_monitor(std::string &err) {

@@ -371,6 +371,39 @@ public class FakeRadios(radios: List<OpenRadio> = emptyList()) : Radios {
         return buildJsonObject { put("ok", JsonPrimitive(true)) }
     }
 
+    override suspend fun fastRetune(session: Int, channel: Int): ChannelInfo {
+        record("fastRetune", "$session,ch=$channel")
+        val radio = radio(session)
+        check(radio.state.broughtUp) { "radio is not brought up" }
+        val info = ChannelInfo(
+            channel = channel,
+            width = radio.channel?.width ?: 20,
+            offset = radio.channel?.offset ?: 0,
+            band = radio.channel?.band ?: 0,
+            fastRetune = true,
+        )
+        update(session) { it.copy(channel = info) }
+        return info
+    }
+
+    override suspend fun fastBandwidth(session: Int, widthMhz: Int): ChannelInfo {
+        record("fastBandwidth", "$session,$widthMhz")
+        val radio = radio(session)
+        check(radio.state.broughtUp) { "radio is not brought up" }
+        require(widthMhz in radio.capabilities.widths) {
+            "width ${widthMhz}MHz is not supported by ${radio.label}"
+        }
+        val info = ChannelInfo(
+            channel = radio.channel?.channel ?: 0,
+            width = widthMhz,
+            offset = radio.channel?.offset ?: 0,
+            band = radio.channel?.band ?: 0,
+            fastRetune = true,
+        )
+        update(session) { it.copy(channel = info) }
+        return info
+    }
+
     override fun frames(session: Int): Flow<FrameRecord> =
         stream(session)
 

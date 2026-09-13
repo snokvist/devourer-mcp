@@ -8,6 +8,7 @@ import kotlinx.serialization.json.buildJsonObject
 import org.openipc.devourer.protocol.BridgeJson
 import org.openipc.devourer.protocol.CcaGates
 import org.openipc.devourer.protocol.ChannelSpec
+import org.openipc.devourer.protocol.ChannelWidth
 import org.openipc.devourer.protocol.FrameRecord
 import org.openipc.devourer.protocol.MonitorStats
 import org.openipc.devourer.protocol.RadioListResult
@@ -100,6 +101,29 @@ public class RadioManager(private val bridge: BridgeClient) : Radios {
     override suspend fun retune(session: Int, channel: ChannelSpec): JsonObject {
         requireChannelSupported(describe(session), channel)
         return bridge.call("radio.channel", channel.toJson(session))
+    }
+
+    override suspend fun fastRetune(session: Int, channel: Int): ChannelInfo {
+        val result = bridge.call(
+            "radio.fast_retune",
+            buildJsonObject {
+                put("session", JsonPrimitive(session))
+                put("channel", JsonPrimitive(channel))
+            },
+        )
+        return BridgeJson.format.decodeFromJsonElement(ChannelInfo.serializer(), result)
+    }
+
+    override suspend fun fastBandwidth(session: Int, widthMhz: Int): ChannelInfo {
+        ChannelWidth.ofMhz(widthMhz) // reject an impossible width before the round trip
+        val result = bridge.call(
+            "radio.fast_bandwidth",
+            buildJsonObject {
+                put("session", JsonPrimitive(session))
+                put("width_mhz", JsonPrimitive(widthMhz))
+            },
+        )
+        return BridgeJson.format.decodeFromJsonElement(ChannelInfo.serializer(), result)
     }
 
     override fun frames(session: Int): Flow<FrameRecord> = bridge.frames(session)

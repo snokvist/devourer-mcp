@@ -764,6 +764,24 @@ an out-of-range window and does not present the derived verdict as clean. The
 parser is vendored devourer code and a fix belongs upstream; recorded here as
 an open finding rather than silently corrected in the bridge.
 
+## Lean retune: a hop, and which families have one
+
+`radio_fast_retune` and `radio_fast_bandwidth` (`IRadio::FastRetune` /
+`FastSetBandwidth`) are exposed and verified with `tools/fast-retune-test.py`.
+Both fall back to a full `SetMonitorChannel` where a family has no lean path,
+so the test also times the move and reports which path ran:
+
+| Adapter | same-band hop | lean path |
+|---|---|---|
+| RTL8812CU (jaguar3) | **21 ms** | yes |
+| MT7612U ×2 | 435 / 568 ms | no (full retune) |
+
+The bandwidth toggle is capability-gated on the adapter's width set: the
+RTL8822C switched to 5 MHz narrowband, the MT7612U (`20/40/80`) refused it.
+That gate was missing in the first draft — the op reported a 5 MHz width the
+MT had not taken, because the width change was the one path not checked
+against the capability report.
+
 ## Reproducing
 
 ```sh
@@ -773,6 +791,7 @@ tools/smoke-test.py              # RX path, all adapters
 tools/rx-gain-cca-test.py        # receive-gain clamp + split CCA gates, needs a Realtek
 tools/tx-power-test.py           # TX-power knobs + a sweep measured on a witness
 tools/rx-quality-thermal-test.py # fused RX sensor + thermal meter
+tools/fast-retune-test.py        # lean same-band hop + narrowband toggle
 tools/stall-test.py              # a sink that stops reading, all adapters
 tools/backpressure-test.py       # sustained overload through a real capture
 tools/host/devourer-mcp          # MCP on stdio; dashboard on 127.0.0.1:8910

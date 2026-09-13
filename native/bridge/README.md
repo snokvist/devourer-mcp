@@ -49,6 +49,8 @@ header.
 | `radio.describe` | AdapterCaps / TxCaps / TxPowerCaps + permanent MAC |
 | `radio.close` | |
 | `radio.channel` | retunes; brings up if needed |
+| `radio.fast_retune` | lean same-band hop (`IRadio::FastRetune`); width/offset/band kept, requires an already-up radio, falls back to a full retune on a band change or where the family has no lean path. The reply's `fast_retune` says whether the lean path exists. |
+| `radio.fast_bandwidth` | bandwidth analogue (`IRadio::FastSetBandwidth`), 20<->5/10 narrowband; capability-gated on the adapter's width set, falls back to a full retune otherwise. |
 | `monitor.start` | `channel`, `width_mhz`, optional `offset`, `band` |
 | `monitor.stop` / `monitor.stats` | |
 | `tx.send` | structured `mode` + `body_hex`, or raw `frame_hex`/`frame_b64`; bounded `count` ≤ 100000 and a 30 s wall-clock budget |

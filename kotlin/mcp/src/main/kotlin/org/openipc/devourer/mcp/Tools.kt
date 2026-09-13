@@ -51,6 +51,7 @@ import org.openipc.devourer.protocol.Thermal
 import org.openipc.devourer.protocol.TxPower
 import org.openipc.devourer.protocol.TxRateDiffs
 import org.openipc.devourer.radio.CapabilityException
+import org.openipc.devourer.radio.ChannelInfo
 import org.openipc.devourer.radio.OpenRadio
 import org.openipc.devourer.radio.Radios
 import org.openipc.devourer.radio.centerFrequencyMhz
@@ -360,6 +361,65 @@ internal class Tools(
                 )
             }
             text(json.encodeToString(kotlinx.serialization.builtins.ListSerializer(CaptureStatus.serializer()), rows))
+        }
+
+        register(
+            server,
+            name = "radio_fast_retune",
+            description = """
+                Move a brought-up radio to another channel on the SAME band without the full
+                retune. The width, offset and band are kept; only the RF channel changes.
+
+                This is the lean path a dwell or scan loop uses — a full SetMonitorChannel
+                costs ~130 ms on a Realtek, which dominates a per-dwell sweep. It requires the
+                radio already brought up; use monitor_start for the first tune.
+
+                On a band change, or where the adapter has no lean path, devourer falls back
+                to a full retune. That is not an error: the reply's `fast_retune` says whether
+                this adapter has the lean path at all, so a timing conclusion can tell a hop
+                from a full tune. The reply carries the resulting channel/width/offset/band.
+            """.trimIndent(),
+            inputSchema = ToolSchema(
+                properties = buildJsonObject {
+                    put("session", schema("integer", "Session id of a brought-up radio."))
+                    put("channel", schema("integer", "Target channel on the current band."))
+                },
+                required = listOf("session", "channel"),
+            ),
+        ) { request ->
+            val channel = request.intOr("channel", -1)
+            if (channel < 0) {
+                return@register text(errorReply("channel is required"), isError = true)
+            }
+            val result = radios.fastRetune(request.intOr("session", -1), channel)
+            text(json.encodeToString(ChannelInfo.serializer(), result))
+        }
+
+        register(
+            server,
+            name = "radio_fast_bandwidth",
+            description = """
+                Toggle a brought-up radio between 20 MHz and 5/10 MHz narrowband without the
+                full retune (the bandwidth analogue of radio_fast_retune).
+
+                On chips with the fast path the switch is a single baseband re-clock; any
+                other endpoint falls back to a full SetMonitorChannel. The reply carries the
+                resulting width (and the channel it stayed on).
+            """.trimIndent(),
+            inputSchema = ToolSchema(
+                properties = buildJsonObject {
+                    put("session", schema("integer", "Session id of a brought-up radio."))
+                    put("width_mhz", schema("integer", "5, 10, 20, 40, 80 or 160."))
+                },
+                required = listOf("session", "width_mhz"),
+            ),
+        ) { request ->
+            val width = request.intOr("width_mhz", -1)
+            if (width < 0) {
+                return@register text(errorReply("width_mhz is required"), isError = true)
+            }
+            val result = radios.fastBandwidth(request.intOr("session", -1), width)
+            text(json.encodeToString(ChannelInfo.serializer(), result))
         }
 
         register(

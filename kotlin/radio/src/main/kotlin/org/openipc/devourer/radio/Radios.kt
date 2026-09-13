@@ -26,6 +26,12 @@ public data class ChannelInfo(
     val width: Int = 0,
     val offset: Int = 0,
     val band: Int = 0,
+    /**
+     * Whether this adapter has the lean `FastRetune` path
+     * (`AdapterCaps.fastretune_ok`). Only meaningful on a fast-retune reply;
+     * `describe` omits it and the default false should be ignored there.
+     */
+    @SerialName("fast_retune") val fastRetune: Boolean = false,
 )
 
 @Serializable
@@ -114,6 +120,23 @@ public interface Radios {
     public suspend fun stats(session: Int): MonitorStats
 
     public suspend fun retune(session: Int, channel: ChannelSpec): JsonObject
+
+    /**
+     * Lean same-band retune: the width/offset/band stay and only the RF channel
+     * moves. Requires a brought-up radio — use [retune] for the first tune.
+     *
+     * Falls back to a full retune on a band change or where the family has no
+     * lean path, so this is safe to call unconditionally; the reply's
+     * [ChannelInfo.fastRetune] says whether the lean path exists, so a timing
+     * claim can distinguish a hop from a full tune.
+     */
+    public suspend fun fastRetune(session: Int, channel: Int): ChannelInfo
+
+    /**
+     * The bandwidth analogue of [fastRetune]: a 20<->5/10 narrowband toggle,
+     * falling back to a full retune for any other endpoint.
+     */
+    public suspend fun fastBandwidth(session: Int, widthMhz: Int): ChannelInfo
 
     public fun frames(session: Int): Flow<FrameRecord>
 
