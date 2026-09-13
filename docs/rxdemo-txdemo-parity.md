@@ -28,7 +28,7 @@ the acceptance test.
 
 ## Where it is now (2026-09-13)
 
-- 29 MCP tools, 19 bridge ops, 19 of 55 `IRadio` methods called.
+- 29 MCP tools, 19 bridge ops, 20 of 55 `IRadio` methods called.
 - **Proven end to end on the current bench**: discover/open/describe; monitor
   RX with per-frame telemetry and raw bytes; capture store/query/PCAP; frame
   inspection; TX structured and raw; split carrier-sense gates; receive-gain

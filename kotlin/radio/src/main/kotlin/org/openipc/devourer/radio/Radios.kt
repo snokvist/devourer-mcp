@@ -13,6 +13,7 @@ import org.openipc.devourer.protocol.RadioListResult
 import org.openipc.devourer.protocol.RxEnergy
 import org.openipc.devourer.protocol.RxGain
 import org.openipc.devourer.protocol.TxPower
+import org.openipc.devourer.protocol.TxRateDiffs
 import org.openipc.devourer.protocol.UsbDevice
 
 /** The channel a radio is currently tuned to, as the bridge reports it. */
@@ -223,6 +224,12 @@ public interface Radios {
      * per-rate table. [reapply] re-programs at the current channel without
      * moving a knob, and needs the chip brought up.
      *
+     * [rateDiffs] REPLACES the chip's calibrated per-rate shape (MCS0..7 plus
+     * CCK/legacy rows) and is refused where the caps report `rate_diffs: false`.
+     * Pass [clearRateDiffs] to restore the chip's own shape; an absent
+     * [rateDiffs] with `clearRateDiffs = false` leaves the configured shape
+     * alone, which is a different request.
+     *
      * None of this is regulatory-clamped — compliance is the operator's, exactly
      * as the README says — and on Realtek the receive gain interacts with the
      * EDCCA threshold, so changing power and carrier-sense sensitivity are not
@@ -232,6 +239,8 @@ public interface Radios {
         session: Int,
         offsetQdb: Int? = null,
         indexOverride: Int? = null,
+        rateDiffs: TxRateDiffs? = null,
+        clearRateDiffs: Boolean = false,
         reapply: Boolean = false,
     ): TxPower
 

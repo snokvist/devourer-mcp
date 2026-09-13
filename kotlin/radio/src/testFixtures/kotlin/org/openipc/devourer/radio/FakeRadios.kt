@@ -18,6 +18,7 @@ import org.openipc.devourer.protocol.RxEnergy
 import org.openipc.devourer.protocol.RxGain
 import org.openipc.devourer.protocol.SyntheticFrames
 import org.openipc.devourer.protocol.TxPower
+import org.openipc.devourer.protocol.TxRateDiffs
 import org.openipc.devourer.protocol.UsbDevice
 
 /**
@@ -519,11 +520,14 @@ public class FakeRadios(radios: List<OpenRadio> = emptyList()) : Radios {
         session: Int,
         offsetQdb: Int?,
         indexOverride: Int?,
+        rateDiffs: TxRateDiffs?,
+        clearRateDiffs: Boolean,
         reapply: Boolean,
     ): TxPower {
         record(
             "setTxPower",
-            "$session,offset=$offsetQdb,index=$indexOverride,reapply=$reapply",
+            "$session,offset=$offsetQdb,index=$indexOverride,diffs=${rateDiffs != null}," +
+                "clear=$clearRateDiffs,reapply=$reapply",
         )
         val radio = radio(session)
         val caps = radio.capabilities.txPower
@@ -532,8 +536,15 @@ public class FakeRadios(radios: List<OpenRadio> = emptyList()) : Radios {
                 "set TX power", radio.label, "the backend does not wire the knobs",
             )
         }
-        require(offsetQdb != null || indexOverride != null || reapply) {
-            "name at least one knob or reapply"
+        require(
+            offsetQdb != null || indexOverride != null || rateDiffs != null ||
+                clearRateDiffs || reapply,
+        ) { "name at least one knob, rate diffs, or reapply" }
+        if ((rateDiffs != null || clearRateDiffs) && !caps.rateDiffs) {
+            throw CapabilityException(
+                "set per-rate TX-power diffs", radio.label,
+                "the backend does not honour them (caps.rate_diffs is false)",
+            )
         }
         if (indexOverride != null) {
             require(indexOverride == -1 || indexOverride in 0..caps.indexMax) {
@@ -565,11 +576,17 @@ public class FakeRadios(radios: List<OpenRadio> = emptyList()) : Radios {
         } else {
             0
         }
+        val custom = when {
+            rateDiffs != null -> true
+            clearRateDiffs -> false
+            else -> cur.rateDiffsCustom ?: false
+        }
         val next = cur.copy(
             valid = radio.state.broughtUp,
             flatIndex = flat,
             offsetQdb = steps * caps.stepQdb,
             offsetSteps = steps,
+            rateDiffsCustom = custom,
         )
         txPowerState[session] = next
         return next

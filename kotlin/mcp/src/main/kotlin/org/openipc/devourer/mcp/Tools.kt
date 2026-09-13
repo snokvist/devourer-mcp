@@ -6,6 +6,7 @@ import io.modelcontextprotocol.kotlin.sdk.types.TextContent
 import io.modelcontextprotocol.kotlin.sdk.types.ToolSchema
 import java.nio.file.Path
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.boolean
@@ -45,6 +46,7 @@ import org.openipc.devourer.protocol.FrameAddresses
 import org.openipc.devourer.protocol.RxEnergy
 import org.openipc.devourer.protocol.RxGain
 import org.openipc.devourer.protocol.TxPower
+import org.openipc.devourer.protocol.TxRateDiffs
 import org.openipc.devourer.radio.CapabilityException
 import org.openipc.devourer.radio.OpenRadio
 import org.openipc.devourer.radio.Radios
@@ -798,6 +800,12 @@ internal class Tools(
                 say the last apply hit a rail, i.e. the knob is out of travel in that direction.
                 `hw_readback` false means the indices are the driver's shadow, not a register read.
 
+                `rate_diffs` REPLACES the calibrated per-rate shape — an object with `cck`,
+                `legacy` and exactly 8 `mcs` entries, each a signed quarter-dB diff against the
+                HT-MCS7 reference. Every rate the table does not describe sits at the anchor.
+                `clear_rate_diffs:true` restores the chip's own shape. Only a backend whose caps
+                report `rate_diffs:true` accepts either.
+
                 Nothing here is regulatory-clamped — compliance is the operator's. On Realtek the
                 receive gain and the EDCCA threshold are coupled, so transmit power and
                 carrier-sense sensitivity are not fully independent.
@@ -807,6 +815,8 @@ internal class Tools(
                     put("session", schema("integer", "Session id from radio_open."))
                     put("offset_qdb", schema("integer", "Relative power offset in quarter-dB. Omit to leave unchanged."))
                     put("index_override", schema("integer", "Flat absolute TXAGC index (>= 0), or -1 to clear. Omit to leave unchanged."))
+                    put("rate_diffs", schema("object", "Replace the per-rate shape: {cck, legacy, mcs:[8 signed qdB diffs vs the MCS7 anchor]}. Omit to leave unchanged."))
+                    put("clear_rate_diffs", schema("boolean", "Restore the chip's calibrated per-rate shape."))
                     put("reapply", schema("boolean", "Re-program TX power at the current channel. Needs the chip brought up."))
                 },
                 required = listOf("session"),
@@ -815,14 +825,27 @@ internal class Tools(
             val session = request.intOr("session", -1)
             val offset = request.optionalInt("offset_qdb")
             val index = request.optionalInt("index_override")
+            val clearRateDiffs = request.boolOr("clear_rate_diffs", false)
+            // Absent and JSON-null both mean "leave the configured shape alone";
+            // only clear_rate_diffs restores the chip's own.
+            val diffsElement = request.params.arguments?.get("rate_diffs")
+            val rateDiffs = if (diffsElement == null || diffsElement is JsonNull) {
+                null
+            } else {
+                json.decodeFromJsonElement(TxRateDiffs.serializer(), diffsElement)
+            }
             val reapply = request.boolOr("reapply", false)
-            val result = if (offset == null && index == null && !reapply) {
+            val isRead = offset == null && index == null && rateDiffs == null &&
+                !clearRateDiffs && !reapply
+            val result = if (isRead) {
                 radios.txPower(session)
             } else {
                 radios.setTxPower(
                     session,
                     offsetQdb = offset,
                     indexOverride = index,
+                    rateDiffs = rateDiffs,
+                    clearRateDiffs = clearRateDiffs,
                     reapply = reapply,
                 )
             }

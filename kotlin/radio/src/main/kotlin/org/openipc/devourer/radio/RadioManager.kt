@@ -1,6 +1,7 @@
 package org.openipc.devourer.radio
 
 import kotlinx.coroutines.flow.Flow
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -13,6 +14,7 @@ import org.openipc.devourer.protocol.RadioListResult
 import org.openipc.devourer.protocol.RxEnergy
 import org.openipc.devourer.protocol.RxGain
 import org.openipc.devourer.protocol.TxPower
+import org.openipc.devourer.protocol.TxRateDiffs
 
 /**
  * [Radios] over the real bridge.
@@ -203,10 +205,13 @@ public class RadioManager(private val bridge: BridgeClient) : Radios {
         session: Int,
         offsetQdb: Int?,
         indexOverride: Int?,
+        rateDiffs: TxRateDiffs?,
+        clearRateDiffs: Boolean,
         reapply: Boolean,
     ): TxPower {
-        require(offsetQdb != null || indexOverride != null || reapply) {
-            "name at least one of offsetQdb, indexOverride or reapply; use txPower() to read"
+        require(offsetQdb != null || indexOverride != null || rateDiffs != null ||
+            clearRateDiffs || reapply) {
+            "name at least one knob, rate diffs, or reapply; use txPower() to read"
         }
         val result = bridge.call(
             "radio.tx_power",
@@ -214,6 +219,17 @@ public class RadioManager(private val bridge: BridgeClient) : Radios {
                 put("session", JsonPrimitive(session))
                 offsetQdb?.let { put("offset_qdb", JsonPrimitive(it)) }
                 indexOverride?.let { put("index_override", JsonPrimitive(it)) }
+                rateDiffs?.let {
+                    put(
+                        "rate_diffs",
+                        buildJsonObject {
+                            put("cck", JsonPrimitive(it.cck))
+                            put("legacy", JsonPrimitive(it.legacy))
+                            put("mcs", JsonArray(it.mcs.map { d -> JsonPrimitive(d) }))
+                        },
+                    )
+                }
+                if (clearRateDiffs) put("clear_rate_diffs", JsonPrimitive(true))
                 if (reapply) put("reapply", JsonPrimitive(true))
             },
         )

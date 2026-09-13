@@ -9,6 +9,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.test.runTest
 import org.openipc.devourer.protocol.ChannelSpec
+import org.openipc.devourer.protocol.TxRateDiffs
 
 /**
  * The runtime TX-power vertical slice: offset, flat-index override and reapply.
@@ -104,5 +105,35 @@ class TxPowerTest {
         radios.startMonitor(1, ChannelSpec(6))
 
         assertFailsWith<IllegalArgumentException> { radios.setTxPower(1) }
+    }
+
+    @Test
+    fun `a per-rate table is recorded and clear restores the calibrated shape`() = runTest {
+        val radios = realtek()
+        radios.startMonitor(1, ChannelSpec(6))
+        assertFalse(radios.txPower(1).rateDiffsCustom ?: false)
+
+        val set = radios.setTxPower(
+            1,
+            rateDiffs = TxRateDiffs(cck = -8, legacy = 0, mcs = listOf(-32, 0, 0, 0, 0, 0, 0, 0)),
+        )
+        assertTrue(set.rateDiffsCustom == true)
+
+        val cleared = radios.setTxPower(1, clearRateDiffs = true)
+        assertFalse(cleared.rateDiffsCustom == true)
+    }
+
+    @Test
+    fun `per-rate diffs are refused where the caps do not allow them`() = runTest {
+        assertFailsWith<CapabilityException> {
+            mediatek().setTxPower(2, rateDiffs = TxRateDiffs(mcs = List(8) { 0 }))
+        }
+    }
+
+    @Test
+    fun `a per-rate table with the wrong number of MCS entries is rejected`() {
+        assertFailsWith<IllegalArgumentException> {
+            TxRateDiffs(mcs = listOf(0, 0, 0))
+        }
     }
 }

@@ -52,8 +52,11 @@ inline constexpr int kProtocolVersionMajor = 1;
  * radio with EDCCA off read `cca_disabled:false` without it.
  * 4: new op radio.tx_power — read the caps and applied state, and set the
  * offset/index knobs or force a re-apply. Additive; an older client simply
- * never asks for it. */
-inline constexpr int kProtocolVersionMinor = 4;
+ * never asks for it.
+ * 5: radio.tx_power also accepts a structured `rate_diffs` table (or
+ * `clear_rate_diffs`) for the per-rate TXAGC shape. Additive request fields;
+ * the reply already carried the rate_diffs* caps. */
+inline constexpr int kProtocolVersionMinor = 5;
 
 /* 'D','V','R','F' — present on every frame record so a desynchronized reader
  * fails loudly at the next record instead of interpreting payload as a

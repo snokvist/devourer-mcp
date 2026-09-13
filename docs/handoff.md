@@ -120,7 +120,7 @@ adapter is brought up. Realtek has it from construction.
 ## Testing
 
 ```sh
-./gradlew test                                   # 169 Kotlin tests, no hardware
+./gradlew test                                   # 172 Kotlin tests, no hardware
 ctest --test-dir build/native-bridge             # 63 vendored selftests
 tools/smoke-test.py                              # needs adapters; never passes vacuously
 tools/rx-gain-cca-test.py                        # receive-gain clamp + split CCA gates; needs a Realtek
@@ -202,16 +202,17 @@ in the bridge, matching `Radios` methods, and the `radio_rx_gain` /
 `radio_cca_gates` / `radio_tx_power` MCP tools. Disabling either carrier-sense
 gate is gated on `SafetyLevel.EXPERIMENTAL` through the same `RadioSafety` the
 rest of the tree uses. The gain and gate ops already existed (no protocol
-change); `radio.tx_power` is new and took the minor from 1.3 to 1.4.
+change); `radio.tx_power` is new and, with the per-rate diff table, took the minor from 1.3 to 1.5.
 
 The highest-value next step is still closing `IRadio` coverage — the bridge
-calls 19 of 55 methods. The two halves of TX power that remain are per-rate
-`SetTxPowerRateDiffs` and a `link_probe` power-sweep axis; the axis is what
-turns the knob into delivery-vs-power evidence with an independent witness.
+calls 20 of 55 methods. The remaining TX-power work is a `link_probe`
+power-sweep axis, which turns the knob into delivery-vs-power evidence with an
+independent witness; the staged plan for TX-power and everything else on the
+demo-parity path is [`rxdemo-txdemo-parity.md`](rxdemo-txdemo-parity.md).
 `radio.tx_stats` and `radio.cca` are the pattern to copy for a new op: a bridge
 op, a `RadioManager` method, an MCP tool with a description that says what the
 result does *not* prove. A new bridge op bumps the additive protocol minor from
-1.4 to 1.5.
+1.5 to 1.6.
 
 After that, multi-witness experiments. The two-witness run that settled the
 carrier-sense question was done by hand against the bridge; making it a first-

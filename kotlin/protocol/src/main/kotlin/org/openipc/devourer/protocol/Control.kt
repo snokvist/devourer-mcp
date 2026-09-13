@@ -296,6 +296,30 @@ public data class TxPower(
     val note: String? = null,
 )
 
+/**
+ * Caller-supplied per-rate TX-power diffs in quarter-dB, relative to the
+ * reference anchor (HT MCS7, 1SS). REPLACES the chip's calibrated per-rate
+ * shape: rates this struct does not describe — HT MCS8+, VHT/HE, 2SS+ — sit at
+ * the anchor. Refused on a backend whose caps report `rate_diffs: false`.
+ *
+ * Resolution is the family step (one qdB on Jaguar3/Kestrel, 0.5 dB on
+ * Jaguar1/2), so an odd qdB rounds. Diffs are **not** clamped to the regulatory
+ * tables — the operator owns compliance, as with every TX-power knob.
+ */
+@Serializable
+public data class TxRateDiffs(
+    /** CCK 1..11M rows. */
+    val cck: Int = 0,
+    /** OFDM 6..54M control frames. */
+    val legacy: Int = 0,
+    /** HT MCS0..7, exactly 8 entries. */
+    val mcs: List<Int> = listOf(0, 0, 0, 0, 0, 0, 0, 0),
+) {
+    init {
+        require(mcs.size == 8) { "mcs must be exactly 8 entries (MCS0..7), got ${mcs.size}" }
+    }
+}
+
 /** Channel width in MHz. The bridge takes MHz; the enum keeps callers honest. */
 public enum class ChannelWidth(public val mhz: Int) {
     W5(5), W10(10), W20(20), W40(40), W80(80), W160(160),
