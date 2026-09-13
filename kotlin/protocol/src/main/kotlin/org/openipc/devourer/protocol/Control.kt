@@ -541,6 +541,11 @@ public data class Tsf(
     @SerialName("tsf_us") val tsfUs: Long = 0,
     val why: String? = null,
     val note: String? = null,
+    /** Present on a write reply: what was requested, and whether it took. */
+    val wrote: Boolean? = null,
+    @SerialName("requested_us") val requestedUs: Long? = null,
+    val took: Boolean? = null,
+    @SerialName("delta_us") val deltaUs: Long? = null,
 )
 
 /** Channel width in MHz. The bridge takes MHz; the enum keeps callers honest. */

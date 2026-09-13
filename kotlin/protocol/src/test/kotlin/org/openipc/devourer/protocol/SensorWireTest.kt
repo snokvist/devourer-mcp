@@ -150,6 +150,21 @@ class SensorWireTest {
     }
 
     @Test
+    fun `a tsf write reply decodes the write fields`() {
+        val json = """
+            {"session":3,"supported":true,"readable":true,"tsf_us":12345680,
+             "wrote":true,"requested_us":12345678,"took":true,"delta_us":2}
+        """.trimIndent()
+
+        val t = BridgeJson.format.decodeFromString(Tsf.serializer(), json)
+
+        assertTrue(t.wrote == true)
+        assertEquals(12_345_678L, t.requestedUs)
+        assertTrue(t.took == true)
+        assertEquals(2L, t.deltaUs)
+    }
+
+    @Test
     fun `a not-running tsf reply keeps the absence honest`() {
         val json = """{"session":3,"supported":true,"readable":false,"tsf_us":0,"why":"not up"}"""
 

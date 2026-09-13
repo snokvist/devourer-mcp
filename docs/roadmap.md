@@ -17,7 +17,7 @@ LLM ──MCP(stdio)──▶ Kotlin runtime ──UDS──▶ devourer-bridge 
 ```
 
 38 MCP tools across DISCOVER / OBSERVE / INSPECT / TRANSMIT / EXPERIMENT /
-CHARACTERIZE / BUILD TOOL. 217 offline tests plus 63 vendored Devourer
+CHARACTERIZE / BUILD TOOL. 220 offline tests plus 63 vendored Devourer
 selftests, none of which need hardware. Three hardware tests that refuse to
 pass vacuously: the end-to-end smoke test, a stalled-sink test, and a
 sustained-overload test.
@@ -61,7 +61,7 @@ Full evidence, including the findings below, is in
 
 ## The big one: `IRadio` coverage
 
-**The bridge calls 30 of `IRadio`'s 55 virtual methods.** That single number is
+**The bridge calls 31 of `IRadio`'s 55 virtual methods.** That single number is
 the most useful measure of what is left, and it is why this does not yet fully
 replace Devourer's own `rxdemo`/`txdemo` as research instruments. Those two are
 thin loops over the same API: 76 bring-up knobs in `DeviceConfig` (77 `env:`

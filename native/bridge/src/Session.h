@@ -291,6 +291,10 @@ public:
    * flag, so `readable` is derived from a non-zero read on a brought-up radio
    * rather than asserted. */
   Json tsf_json();
+  /* Set the MAC TSF (`IRadio::WriteTsf`) — TSF adoption, a slave slewing onto
+   * a master's clock. The counter keeps running, so this is a shift, not a
+   * freeze; and it moves the reported TSF, NOT the beacon TBTT air-time. */
+  bool write_tsf(uint64_t tsf_us, std::string &err);
 
   /* Per-frame TX receipts (`tx.report`): what the hardware said about each
    * reported transmission — delivery state, hardware retry count, final rate,

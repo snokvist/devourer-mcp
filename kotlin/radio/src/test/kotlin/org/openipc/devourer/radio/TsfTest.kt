@@ -2,6 +2,7 @@ package org.openipc.devourer.radio
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlinx.coroutines.test.runTest
@@ -34,5 +35,23 @@ class TsfTest {
 
         assertTrue(t.readable)
         assertEquals(12_345_678L, t.tsfUs)
+    }
+
+    @Test
+    fun `a write shifts the clock and reads back`() = runTest {
+        val radios = realtek()
+        radios.startMonitor(1, ChannelSpec(6))
+
+        val w = radios.writeTsf(1, 9_000_000L)
+
+        assertTrue(w.wrote == true)
+        assertTrue(w.took == true)
+        assertEquals(9_000_000L, w.tsfUs)
+        assertEquals(9_000_000L, radios.tsf(1).tsfUs)
+    }
+
+    @Test
+    fun `a write needs a brought-up radio`() = runTest {
+        assertFailsWith<IllegalStateException> { realtek().writeTsf(1, 1_000L) }
     }
 }

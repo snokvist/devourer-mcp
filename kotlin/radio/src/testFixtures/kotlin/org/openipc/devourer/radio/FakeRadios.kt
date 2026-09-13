@@ -893,6 +893,17 @@ public class FakeRadios(radios: List<OpenRadio> = emptyList()) : Radios {
         )
     }
 
+    override suspend fun writeTsf(session: Int, tsfUs: Long): Tsf {
+        record("writeTsf", "$session,$tsfUs")
+        val radio = radio(session)
+        check(radio.state.broughtUp) { "the radio is not brought up" }
+        tsfBySession[session] = tsfUs
+        return Tsf(
+            session = session, supported = true, readable = true, tsfUs = tsfUs,
+            wrote = true, requestedUs = tsfUs, took = true, deltaUs = 0,
+        )
+    }
+
     override suspend fun activeRxPaths(session: Int): JsonObject {
         record("activeRxPaths", "$session")
         // Not implemented on MediaTek. Reporting "unsupported" rather than
