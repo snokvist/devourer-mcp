@@ -279,7 +279,7 @@ public data class TxPower(
     @SerialName("step_measured") val stepMeasured: Boolean = false,
     @SerialName("offset_min_qdb") val offsetMinQdb: Int = 0,
     @SerialName("offset_max_qdb") val offsetMaxQdb: Int = 0,
-    val rateDiffs: Boolean = false,
+    @SerialName("rate_diffs") val rateDiffs: Boolean = false,
     @SerialName("rate_diffs_hw_table") val rateDiffsHwTable: Boolean = false,
     @SerialName("rate_diffs_measured") val rateDiffsMeasured: Boolean = false,
     val valid: Boolean = false,

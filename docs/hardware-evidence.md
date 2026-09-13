@@ -682,10 +682,17 @@ by changing the knob and reading a *different* adapter's RSSI.
 
 **Caps first, because they are not uniform.** On the 2026-09-13 bench:
 
-| Adapter | `index_max` | `step_qdb` | `step_measured` | offset range | model |
-|---|---|---|---|---|---|
-| RTL8812CU (jaguar3) | 127 | 1 (0.25 dB) | **true** | ±127 qdB | TXAGC index |
-| MT7612U | 0 | 4 (1 dB) | false | −80..+40 qdB | absolute dBm limit |
+| Adapter | `index_max` | `step_qdb` | `step_measured` | offset range | `rate_diffs` | model |
+|---|---|---|---|---|---|---|
+| RTL8812CU (jaguar3) | 127 | 1 (0.25 dB) | **true** | ±127 qdB | **true** (hw table, measured) | TXAGC index |
+| MT7612U | 0 | 4 (1 dB) | false | −80..+40 qdB | false | absolute dBm limit |
+
+The RTL8812CU's `rate_diffs: true` matters: the per-rate diff table (`0x3a00`)
+is a **Jaguar3 8822C capability too**, not 8822E-only as `IRadio.h`'s comment
+still claims and as a first — buggy — read of this caps reply suggested. An
+8812EU is not needed to develop or verify per-rate diffs; only the on-air
+*measured* flags differ (C measured, E sign-only). The `IRadio.h` comment is an
+upstream doc bug worth correcting there.
 
 The MT7612U result is the surprise: it **does** wire runtime TX power, as an
 absolute whole-dBm actuator with no TXAGC index (`index_max == 0`), not as
