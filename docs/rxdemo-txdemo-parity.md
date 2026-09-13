@@ -46,8 +46,8 @@ what later milestones build on.
 
 | Capability | Demo knobs | Now | Where | Verify |
 |---|---|---|---|---|
-| Per-rate power diffs | `TX_RATE_DIFFS` | Gap | bridge `radio.tx_power` gains a structured `rate_diffs` body; 8822C/E + J1/J2/Kestrel report `rate_diffs` | Clamp a rate, watch that rate's RSSI move on a witness; other rates stay put |
-| Power sweep axis | `TX_PWR_START/STEP/STOP/STEP_MS`, `TX_PWR_OFFSET_QDB` | **Done**: `sweep_power_qdb` in `experiment_link_probe` | Axes bounded by the adapter caps, checked up front; per-point requested/applied qdB recorded; pre-run offset restored | Delivery/RSSI vs power curve on the 8812CU, witnessed by an MT7612U (52.0 / 62.0 / 80.1 dBm at −64/0/+64 qdB) |
+| Per-rate power diffs | `TX_RATE_DIFFS` | **Done**: structured `rate_diffs` on `radio.tx_power` | — | Clamp MCS0, watch that rate's witness RSSI move while MCS7 holds (7.8 dB drop / 0.0 dB anchor) |
+| Power sweep axis | `TX_PWR_START/STEP/STOP/STEP_MS`, `TX_PWR_OFFSET_QDB` | **Done**: `sweep_power_qdb` in `experiment_link_probe` | Axes bounded by the adapter caps, checked up front; per-point requested/applied qdB recorded; pre-run offset restored | Delivery/RSSI vs power curve on the 8812CU, witnessed by an MT7612U (52.7 / 63.0 / 81.1 dBm at −64/0/+64 qdB) |
 | RX link health | `RXQUALITY`, `LINKHEALTH`, `RX_ENERGY_MS` | **Done**: `radio_rx_quality` (fused verdict) | — | Verdict/cause/fix beside frame telemetry; drains, so read-dwell-read |
 | TX receipts | `TX_RECEIPTS`, `TX_REPORT` | Host-side `tx_stats` only | bridge event capture of `tx.report` (shared JSONL `FILE*` sink -> pipe+parser) + a `cfg.tx.report` opt-in that sets SPE_RPT in every descriptor. Its own slice | Compare host `submitted` to witness count; per-frame retries/rate/queue time |
 | Thermal status | `THERMAL_POLL_MS`, `THERMAL_WARN_DELTA` | **Done**: `radio_thermal` (`GetThermalStatus`) | — | Read the meter; telemetry, not a degradation predictor |

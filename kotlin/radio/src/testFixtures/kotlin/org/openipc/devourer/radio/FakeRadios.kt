@@ -555,6 +555,9 @@ public class FakeRadios(radios: List<OpenRadio> = emptyList()) : Radios {
             )
         }
         if (indexOverride != null) {
+            require(caps.indexMax != 0) {
+                "this backend has no flat TXAGC index (the dBm model); indexOverride is not a knob"
+            }
             require(indexOverride == -1 || indexOverride in 0..caps.indexMax) {
                 "indexOverride must be -1 (clear) or 0..${caps.indexMax}"
             }
@@ -631,7 +634,7 @@ public class FakeRadios(radios: List<OpenRadio> = emptyList()) : Radios {
     override suspend fun rxQuality(session: Int): RxQuality {
         record("rxQuality", "$session")
         val radio = radio(session)
-        if (radio.capabilities.generation !in REALTEK_GENERATIONS) {
+        if (radio.capabilities.generation !in RX_QUALITY_GENERATIONS) {
             return RxQuality(
                 session = session,
                 supported = false,
@@ -663,7 +666,7 @@ public class FakeRadios(radios: List<OpenRadio> = emptyList()) : Radios {
     override suspend fun thermal(session: Int): Thermal {
         record("thermal", "$session")
         val radio = radio(session)
-        if (radio.capabilities.generation !in REALTEK_GENERATIONS) {
+        if (radio.capabilities.generation !in THERMAL_GENERATIONS) {
             return Thermal(
                 session = session,
                 supported = false,
@@ -727,6 +730,19 @@ public class FakeRadios(radios: List<OpenRadio> = emptyList()) : Radios {
         private val REALTEK_GENERATIONS = setOf(
             "jaguar1", "jaguar2", "jaguar3", "rtl8733b", "kestrel",
         )
+
+        /**
+         * Generations that override `IRadio::GetRxQuality`. Note this is NOT
+         * the IRtlRadio set: rtl8733b derives from IRtlRadio and does not
+         * override it, which is exactly the distinction the bridge has to
+         * draw too.
+         */
+        private val RX_QUALITY_GENERATIONS = setOf(
+            "jaguar1", "jaguar2", "jaguar3", "kestrel",
+        )
+
+        /** Generations that override `IRadio::GetThermalStatus`. */
+        private val THERMAL_GENERATIONS = setOf("jaguar1", "jaguar2", "jaguar3")
 
         /**
          * A 2T2R Realtek, modelled on the bench RTL8812AU.

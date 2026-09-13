@@ -62,6 +62,25 @@ class TxPowerWireTest {
     }
 
     @Test
+    fun `a state-less backend's applied offset decodes`() {
+        // The MT7612U's dBm model: no GetTxPowerState override, so the reply
+        // carries `applied_offset_qdb` instead of a flat/offset state triple.
+        val json = """
+            {"session":1,"supported":true,"index_max":0,"step_qdb":4,
+             "offset_min_qdb":-80,"offset_max_qdb":40,"rate_diffs":false,
+             "valid":false,"applied_offset_qdb":-16,
+             "why":"the backend reported no applied state"}
+        """.trimIndent()
+
+        val p = BridgeJson.format.decodeFromString(TxPower.serializer(), json)
+
+        assertTrue(p.supported)
+        assertFalse(p.valid)
+        assertEquals(-16, p.appliedOffsetQdb)
+        assertEquals(null, p.offsetQdb)
+    }
+
+    @Test
     fun `an unsupported reply keeps the absence honest`() {
         val json = """{"session":1,"supported":false,"why":"not ported here"}"""
 

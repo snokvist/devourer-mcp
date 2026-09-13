@@ -17,7 +17,7 @@ LLM ──MCP(stdio)──▶ Kotlin runtime ──UDS──▶ devourer-bridge 
 ```
 
 31 MCP tools across DISCOVER / OBSERVE / INSPECT / TRANSMIT / EXPERIMENT /
-CHARACTERIZE / BUILD TOOL. 184 offline tests plus 63 vendored Devourer
+CHARACTERIZE / BUILD TOOL. 188 offline tests plus 63 vendored Devourer
 selftests, none of which need hardware. Three hardware tests that refuse to
 pass vacuously: the end-to-end smoke test, a stalled-sink test, and a
 sustained-overload test.
@@ -32,7 +32,7 @@ page down with it.
 | Subsystem | State | Notes |
 |---|---|---|
 | Vendored Devourer | done | pinned at `45f4022`, one local RX-gain patch |
-| `devourer-bridge` | done | separate process, protocol v1.5, session ownership |
+| `devourer-bridge` | done | separate process, protocol v1.6, session ownership |
 | Radio discovery + capabilities | done | derived from source, never a hand-kept table |
 | Monitor capture | done | ~1500–3300 frames/s, zero drops |
 | Capture store, query, PCAP | done | radiotap synthesized; raw bytes always reachable |
@@ -115,7 +115,7 @@ scratchpad programs promoted to saved tools, not in a wall of MCP arguments.
 
 ## Experiment engine
 
-`link_probe` is the primitive the rest build on. It now sweeps four axes — TX
+`link_probe` is the primitive the rest build on. It now sweeps five axes — TX
 mode, channel, frame size and frame spacing — expanded as a bounded cartesian
 product with the channel outermost, because retuning costs ~130ms on a Realtek
 and a sweep that interleaved channels would pay it on every point.
@@ -139,8 +139,13 @@ What it still does not do:
 - **Persisted results.** Experiments are returned and retained in memory for
   the session, not stored. They should land next to characterizations so a
   sweep can be re-read later.
-- **Anything but delivery.** Every axis is swept against the same measurement.
-  A power sweep needs `SetTxPower` first; see the coverage table above.
+- **A power axis, but not a per-rate power *measurement*.** `sweep_power_qdb`
+  sweeps the offset and records requested vs applied qdB; what is still missing
+  is the reverse direction — asking whether the ratio between two rates' RSSI
+  matches the table, i.e. using rate diffs as a sweep axis rather than a manual
+  set-then-measure.
+- **Anything but delivery.** Every axis is still swept against the same
+  measurement; the axes multiply but the metric does not change.
 
 ---
 
@@ -213,7 +218,7 @@ separate pin operation.
 - **`radio_list` before open.** Realtek 11ac parts report `probe_required` and
   cannot be identified without opening them. Correct and honest, but a caller
   wanting an inventory must open every candidate.
-- **Bridge protocol versioning.** v1.5 with a major-version gate. No
+- **Bridge protocol versioning.** v1.6 with a major-version gate. No
   negotiation, no capability discovery beyond `hello`.
 
 ---

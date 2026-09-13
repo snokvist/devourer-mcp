@@ -143,10 +143,14 @@ public class LinkProbe(
                 // transmitter's power.
                 var appliedPower: Int? = null
                 if (point.powerOffsetQdb != null) {
-                    appliedPower = radios.setTxPower(
+                    val resulting = radios.setTxPower(
                         spec.transmitter,
                         offsetQdb = point.powerOffsetQdb,
-                    ).offsetQdb
+                    )
+                    // offsetQdb is the state readback; appliedOffsetQdb is the
+                    // SetTxPowerOffsetQdb return, the only one a state-less
+                    // backend (MT7612U) gives.
+                    appliedPower = resulting.offsetQdb ?: resulting.appliedOffsetQdb
                 }
 
                 val measured = try {

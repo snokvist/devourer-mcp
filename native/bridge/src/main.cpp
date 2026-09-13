@@ -563,15 +563,26 @@ Json op_radio_tx_power(const Json &req) {
     const Json &rd = req.at("rate_diffs");
     if (Json bad = unknown_field(rd, {"cck", "legacy", "mcs"}); !bad.is_null())
       return bad;
+    /* Range-check BEFORE narrowing. The hardware diff field is 7-bit
+     * two's-complement [-64, 63], and `static_cast<int8_t>` on an over-range
+     * value wraps sign — +200 becomes -56, a large CUT that then "clamps"
+     * to -56. Reject rather than wrap. */
+    const auto in_diff_range = [](int64_t v) { return v >= -64 && v <= 63; };
     for (const char *k : {"cck", "legacy"}) {
       const Json &v = rd.at(k);
       if (!v.is_null() && !v.is_number())
         return fail("bad_request", std::string("rate_diffs.") + k +
                                      " must be an integer");
     }
+    const int64_t cck = rd.at("cck").integer(0);
+    const int64_t legacy = rd.at("legacy").integer(0);
+    if (!in_diff_range(cck) || !in_diff_range(legacy))
+      return fail("bad_request",
+                  "rate_diffs entries must be in -64..63 qdB (a 7-bit signed "
+                  "field); an out-of-range value would wrap sign");
     devourer::TxRateDiffsQdb d;
-    d.cck = static_cast<int8_t>(rd.at("cck").integer(0));
-    d.legacy = static_cast<int8_t>(rd.at("legacy").integer(0));
+    d.cck = static_cast<int8_t>(cck);
+    d.legacy = static_cast<int8_t>(legacy);
     if (!rd.at("mcs").is_null()) {
       if (!rd.at("mcs").is_array() || rd.at("mcs").items().size() != 8)
         return fail("bad_request", "rate_diffs.mcs must be 8 integers (MCS0..7)");
@@ -579,7 +590,12 @@ Json op_radio_tx_power(const Json &req) {
         const Json &v = rd.at("mcs").items()[i];
         if (!v.is_number())
           return fail("bad_request", "rate_diffs.mcs must be 8 integers (MCS0..7)");
-        d.mcs[i] = static_cast<int8_t>(v.integer(0));
+        const int64_t q = v.integer(0);
+        if (!in_diff_range(q))
+          return fail("bad_request",
+                      "rate_diffs entries must be in -64..63 qdB (a 7-bit "
+                      "signed field); an out-of-range value would wrap sign");
+        d.mcs[i] = static_cast<int8_t>(q);
       }
     }
     rate_diffs = d;

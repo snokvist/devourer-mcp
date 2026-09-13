@@ -10,6 +10,7 @@ import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.boolean
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.int
 import kotlinx.serialization.json.intOrNull
@@ -907,7 +908,7 @@ internal class Tools(
             val session = request.intOr("session", -1)
             val offset = request.optionalInt("offset_qdb")
             val index = request.optionalInt("index_override")
-            val clearRateDiffs = request.boolOr("clear_rate_diffs", false)
+            val clearRateDiffs = request.optionalBoolean("clear_rate_diffs") ?: false
             // Absent and JSON-null both mean "leave the configured shape alone";
             // only clear_rate_diffs restores the chip's own.
             val diffsElement = request.params.arguments?.get("rate_diffs")
@@ -916,7 +917,7 @@ internal class Tools(
             } else {
                 json.decodeFromJsonElement(TxRateDiffs.serializer(), diffsElement)
             }
-            val reapply = request.boolOr("reapply", false)
+            val reapply = request.optionalBoolean("reapply") ?: false
             val isRead = offset == null && index == null && rateDiffs == null &&
                 !clearRateDiffs && !reapply
             val result = if (isRead) {
@@ -1079,6 +1080,9 @@ internal class Tools(
                     framesPerPoint = request.intOr("frames_per_point", 200),
                     intervalUs = intervalUs,
                 )
+                // Strict: a malformed power axis must fail, not silently vanish
+                // and leave a "power sweep" that swept nothing.
+                val sweepPower = request.strictIntList("sweep_power_qdb") ?: emptyList()
                 val witnessRoles = listOf(RadioRole.MONITOR, RadioRole.MONITOR_2)
                 val extra = request.intList("witness_sessions")
                 if (extra.size > witnessRoles.size) {
@@ -1098,7 +1102,7 @@ internal class Tools(
                         channels = sweepChannels,
                         frameBytes = request.intList("sweep_frame_bytes"),
                         intervalUs = request.intList("sweep_interval_us"),
-                        powerOffsetQdb = request.intList("sweep_power_qdb"),
+                        powerOffsetQdb = sweepPower,
                     ),
                     bounds = bounds,
                     basePoint = SweepPoint(
@@ -1107,7 +1111,7 @@ internal class Tools(
                             ?: ChannelLabel.of(baseChannel),
                         frameBytes = request.intOr("frame_bytes", 200),
                         intervalUs = intervalUs,
-                        powerOffsetQdb = request.intList("sweep_power_qdb").firstOrNull(),
+                        powerOffsetQdb = sweepPower.firstOrNull(),
                     ),
                     carrierSense = request.boolOr("carrier_sense", true),
                     safety = SafetyLevel.parse(request.stringOr("safety_level", "")),
@@ -1741,11 +1745,51 @@ internal fun io.modelcontextprotocol.kotlin.sdk.types.CallToolRequest.stringOr(k
  */
 internal fun io.modelcontextprotocol.kotlin.sdk.types.CallToolRequest.optionalInt(key: String): Int? {
     val element = params.arguments?.get(key) ?: return null
+    if (element is JsonNull) return null
     val primitive = element as? JsonPrimitive
     if (primitive == null || primitive.isString || primitive.intOrNull == null) {
         throw IllegalArgumentException("$key must be an integer")
     }
     return primitive.intOrNull
+}
+
+/**
+ * A present argument as a Boolean, or null when it is absent or JSON null.
+ *
+ * Throws on a wrong-typed value, for the same reason [optionalInt] does: a
+ * field whose presence means "do the write" must not silently fall back to
+ * `false` and turn the write into a read that reports success.
+ */
+internal fun io.modelcontextprotocol.kotlin.sdk.types.CallToolRequest.optionalBoolean(key: String): Boolean? {
+    val element = params.arguments?.get(key) ?: return null
+    if (element is JsonNull) return null
+    val primitive = element as? JsonPrimitive
+    if (primitive == null || primitive.isString) {
+        throw IllegalArgumentException("$key must be a boolean")
+    }
+    return primitive.booleanOrNull ?: throw IllegalArgumentException("$key must be a boolean")
+}
+
+/**
+ * A present array-of-integers argument, or null when absent.
+ *
+ * Strict, unlike [intList]: a non-array, or ANY non-integer element, throws
+ * instead of quietly becoming an empty list. For the power axis that matters —
+ * a silently-dropped `sweep_power_qdb` would run the experiment with no power
+ * axis and still report TX_VERIFIED, which is worse than an error.
+ */
+internal fun io.modelcontextprotocol.kotlin.sdk.types.CallToolRequest.strictIntList(key: String): List<Int>? {
+    val element = params.arguments?.get(key) ?: return null
+    if (element is JsonNull) return null
+    val array = element as? kotlinx.serialization.json.JsonArray
+        ?: throw IllegalArgumentException("$key must be an array of integers")
+    return array.map {
+        val p = it as? JsonPrimitive
+        if (p == null || p.isString || p.intOrNull == null) {
+            throw IllegalArgumentException("$key must be an array of integers")
+        }
+        p.intOrNull!!
+    }
 }
 
 internal fun io.modelcontextprotocol.kotlin.sdk.types.CallToolRequest.intList(key: String): List<Int> =

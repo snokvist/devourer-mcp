@@ -136,4 +136,36 @@ class TxPowerTest {
             TxRateDiffs(mcs = listOf(0, 0, 0))
         }
     }
+
+    @Test
+    fun `a per-rate diff outside the 7-bit field is rejected, not wrapped`() {
+        // +200 narrows to -56 and would become a large cut if it reached the
+        // hardware clamp.
+        assertFailsWith<IllegalArgumentException> {
+            TxRateDiffs(mcs = listOf(200, 0, 0, 0, 0, 0, 0, 0))
+        }
+        assertFailsWith<IllegalArgumentException> { TxRateDiffs(cck = -65) }
+    }
+
+    @Test
+    fun `a flat index override is refused on a dBm-model backend`() = runTest {
+        // index_max == 0 is the "no index" marker; SetTxPowerIndexOverride
+        // silently logs-and-returns there, so a granted-looking request would
+        // be a no-op reported as success.
+        val base = FakeRadios.realtek(1)
+        val dbmModel = base.copy(
+            capabilities = base.capabilities.copy(
+                txPower = org.openipc.devourer.radio.TxPowerCapabilities(
+                    supported = true, indexMax = 0, stepQdb = 4,
+                    offsetMinQdb = -80, offsetMaxQdb = 40,
+                ),
+            ),
+        )
+        val radios = FakeRadios(listOf(dbmModel))
+        radios.startMonitor(1, ChannelSpec(6))
+
+        assertFailsWith<IllegalArgumentException> { radios.setTxPower(1, indexOverride = 0) }
+        // An offset still works: that is the dBm model's actual knob.
+        assertEquals(4, radios.setTxPower(1, offsetQdb = 4).offsetQdb)
+    }
 }
