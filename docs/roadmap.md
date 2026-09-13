@@ -16,8 +16,8 @@ The architecture is proven end to end on real hardware:
 LLM ──MCP(stdio)──▶ Kotlin runtime ──UDS──▶ devourer-bridge ──libusb──▶ adapter
 ```
 
-26 MCP tools across DISCOVER / OBSERVE / INSPECT / TRANSMIT / EXPERIMENT /
-CHARACTERIZE / BUILD TOOL. 150 offline tests plus 63 vendored Devourer
+28 MCP tools across DISCOVER / OBSERVE / INSPECT / TRANSMIT / EXPERIMENT /
+CHARACTERIZE / BUILD TOOL. 159 offline tests plus 63 vendored Devourer
 selftests, none of which need hardware. Three hardware tests that refuse to
 pass vacuously: the end-to-end smoke test, a stalled-sink test, and a
 sustained-overload test.
@@ -139,11 +139,12 @@ threshold from it — so the threshold is the most sensitive value the adaptive
 loop can produce, on every channel, and no channel choice moves it. See
 `hardware-evidence.md`.
 
-The lever is now implemented by the remaining local vendor patch:
+The lever is now implemented end to end by the remaining local vendor patch:
 `IRadio::SetRxGainRange`, with state/capability reporting on Jaguar1 and
-Jaguar3. It is reachable in the native bridge as `radio.rx_gain`, but is not
-yet surfaced through `RadioManager` or MCP. Closing that vertical slice is the
-next integration step; the full design and remaining backend gaps are in
+Jaguar3; the bridge ops `radio.rx_gain` and `radio.cca_gates`; and the MCP
+tools `radio_rx_gain` and `radio_cca_gates`. `radio.cca` stays as the portable
+all-or-nothing carrier-sense control. The full design and remaining backend
+gaps are in
 [`proposals/rx-gain-range.md`](proposals/rx-gain-range.md). Every family has a
 receive-gain index and on five of six nothing moves it — jaguar2 is the only
 one whose gain genuinely adapts. The MT7612U is not winning because its 1 Hz

@@ -4,12 +4,14 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonObject
+import org.openipc.devourer.protocol.CcaGates
 import org.openipc.devourer.protocol.ChannelSpec
 import org.openipc.devourer.protocol.ChannelWidth
 import org.openipc.devourer.protocol.FrameRecord
 import org.openipc.devourer.protocol.MonitorStats
 import org.openipc.devourer.protocol.RadioListResult
 import org.openipc.devourer.protocol.RxEnergy
+import org.openipc.devourer.protocol.RxGain
 import org.openipc.devourer.protocol.UsbDevice
 
 /** The channel a radio is currently tuned to, as the bridge reports it. */
@@ -152,6 +154,56 @@ public interface Radios {
     ): JsonObject
 
     /**
+     * The receive-gain index, the envelope it may be clamped to, and whether an
+     * adaptive loop is driving it — plus what that loop keys on, or why it is
+     * inert. Read-only and ungated: seeing the gain changes nothing.
+     *
+     * The index is a relative register value, not a dBm figure, so it is only
+     * meaningful alongside [RxGain.indexStepDb] and the [RxGain.indexName]
+     * that says what the family calls it. `supported = false` names the
+     * backend that has no such index; `valid = false` means the baseband is
+     * not up yet, which a caller can fix by bringing the radio up.
+     */
+    public suspend fun rxGain(session: Int): RxGain
+
+    /**
+     * Clamp the receive-gain index to `[minIndex, maxIndex]`; `min == max`
+     * pins it. Bounds are checked against the adapter's reported envelope, not
+     * guessed, and an out-of-range or inverted request is refused rather than
+     * coerced.
+     *
+     * This steers an adaptive loop rather than replacing it: within the clamp
+     * the loop keeps running. It cannot manufacture sensitivity the hardware
+     * does not have, and on Realtek it moves the EDCCA threshold too — the two
+     * are coupled — so a gain change is a carrier-sense change as well.
+     */
+    public suspend fun clampRxGain(session: Int, minIndex: Int, maxIndex: Int): RxGain
+
+    /**
+     * The two carrier-sense gates reported separately. Read-only and ungated.
+     *
+     * `supported = false` means the backend has no split to report; a caller
+     * then has only [setCarrierSense], which moves both gates together.
+     */
+    public suspend fun ccaGates(session: Int): CcaGates
+
+    /**
+     * Set the carrier-sense gates one bit at a time. A null argument leaves
+     * that gate untouched; at least one must be supplied.
+     *
+     * EXPERIMENTAL when disabling either gate, for the same reason as
+     * [setCarrierSense]: a radio with a gate off transmits without fully
+     * listening. Turning a gate back ON is always allowed, so a failure path
+     * can restore good behaviour without re-asking.
+     */
+    public suspend fun setCcaGates(
+        session: Int,
+        primaryCcaDisabled: Boolean? = null,
+        edccaDisabled: Boolean? = null,
+        safety: SafetyLevel = SafetyLevel.NORMAL,
+    ): CcaGates
+
+    /**
      * What this radio's own PHY sees on the channel, without decoding a frame.
      *
      * The measurement that separates "the channel is busy" from "a receiver
@@ -216,6 +268,24 @@ public object RadioSafety {
         SafetyLevelException.require(
             "transmitting a raw pre-assembled frame", SafetyLevel.DEVELOPER, safety,
         )
+    }
+
+    /**
+     * Disabling a split carrier-sense gate is the same antisocial act as
+     * [gateCarrierSense], and requires the same level. A `null` argument means
+     * "leave this gate alone" and must not trip the gate; enabling one (false)
+     * is always allowed.
+     */
+    public fun gateCcaGates(
+        primaryCcaDisabled: Boolean?,
+        edccaDisabled: Boolean?,
+        safety: SafetyLevel,
+    ) {
+        if (primaryCcaDisabled == true || edccaDisabled == true) {
+            SafetyLevelException.require(
+                "disabling a carrier-sense gate", SafetyLevel.EXPERIMENTAL, safety,
+            )
+        }
     }
 }
 

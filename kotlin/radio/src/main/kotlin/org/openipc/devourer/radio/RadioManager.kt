@@ -5,11 +5,13 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import org.openipc.devourer.protocol.BridgeJson
+import org.openipc.devourer.protocol.CcaGates
 import org.openipc.devourer.protocol.ChannelSpec
 import org.openipc.devourer.protocol.FrameRecord
 import org.openipc.devourer.protocol.MonitorStats
 import org.openipc.devourer.protocol.RadioListResult
 import org.openipc.devourer.protocol.RxEnergy
+import org.openipc.devourer.protocol.RxGain
 
 /**
  * [Radios] over the real bridge.
@@ -132,6 +134,60 @@ public class RadioManager(private val bridge: BridgeClient) : Radios {
                 put("disabled", JsonPrimitive(!enabled))
             },
         )
+    }
+
+    override suspend fun rxGain(session: Int): RxGain {
+        val result = bridge.call(
+            "radio.rx_gain",
+            buildJsonObject { put("session", JsonPrimitive(session)) },
+        )
+        return BridgeJson.format.decodeFromJsonElement(RxGain.serializer(), result)
+    }
+
+    override suspend fun clampRxGain(session: Int, minIndex: Int, maxIndex: Int): RxGain {
+        // Checked before the round trip so an obviously bad request does not
+        // depend on the backend to refuse it. The bridge validates against the
+        // adapter's real envelope; this only catches inverted or negative.
+        require(minIndex <= maxIndex) { "minIndex must be <= maxIndex" }
+        require(minIndex >= 0 && maxIndex >= 0) { "gain indices cannot be negative" }
+        val result = bridge.call(
+            "radio.rx_gain",
+            buildJsonObject {
+                put("session", JsonPrimitive(session))
+                put("min_index", JsonPrimitive(minIndex))
+                put("max_index", JsonPrimitive(maxIndex))
+            },
+        )
+        return BridgeJson.format.decodeFromJsonElement(RxGain.serializer(), result)
+    }
+
+    override suspend fun ccaGates(session: Int): CcaGates {
+        val result = bridge.call(
+            "radio.cca_gates",
+            buildJsonObject { put("session", JsonPrimitive(session)) },
+        )
+        return BridgeJson.format.decodeFromJsonElement(CcaGates.serializer(), result)
+    }
+
+    override suspend fun setCcaGates(
+        session: Int,
+        primaryCcaDisabled: Boolean?,
+        edccaDisabled: Boolean?,
+        safety: SafetyLevel,
+    ): CcaGates {
+        RadioSafety.gateCcaGates(primaryCcaDisabled, edccaDisabled, safety)
+        require(primaryCcaDisabled != null || edccaDisabled != null) {
+            "name at least one gate to change; use ccaGates() to read both"
+        }
+        val result = bridge.call(
+            "radio.cca_gates",
+            buildJsonObject {
+                put("session", JsonPrimitive(session))
+                primaryCcaDisabled?.let { put("primary_cca_disabled", JsonPrimitive(it)) }
+                edccaDisabled?.let { put("edcca_disabled", JsonPrimitive(it)) }
+            },
+        )
+        return BridgeJson.format.decodeFromJsonElement(CcaGates.serializer(), result)
     }
 
     override suspend fun rxEnergy(session: Int, withNhm: Boolean): RxEnergy {
