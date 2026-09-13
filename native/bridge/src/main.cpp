@@ -720,9 +720,41 @@ Json op_radio_tsf(const Json &req) {
   auto s = find_session(req, err);
   if (!s)
     return fail("no_session", err);
-  if (Json bad = unknown_field(req, {}); !bad.is_null())
+  if (Json bad = unknown_field(req, {"set_tsf_us"}); !bad.is_null())
     return bad;
-  return ok(s->tsf_json());
+  if (req.at("set_tsf_us").is_null())
+    return ok(s->tsf_json());
+  if (!req.at("set_tsf_us").is_number())
+    return fail("bad_request", "set_tsf_us must be an integer (microseconds)");
+  const int64_t requested = req.at("set_tsf_us").integer(0);
+  if (requested < 0)
+    return fail("bad_request", "set_tsf_us must be >= 0");
+  if (!s->write_tsf(static_cast<uint64_t>(requested), err))
+    return fail("unsupported", err);
+
+  Json r = s->tsf_json();
+  const bool readable = r.at("readable").boolean(false);
+  const int64_t readback = r.at("tsf_us").integer(0);
+  const int64_t delta = readable ? readback - requested : 0;
+  /* The counter keeps running, so a successful write reads back slightly
+   * ahead. A readback far from the request (or an unreadable clock) means the
+   * write did not take — a void method, so this comparison is the only signal
+   * a backend does not wire it. */
+  const bool took = readable && delta >= 0 && delta < 5'000'000;
+  r.set("wrote", true).set("requested_us", requested).set("took", took).set("delta_us", delta);
+  if (!took)
+    r.set("note",
+          "the readback does not match the value written: the MAC clock was "
+          "NOT set. This does not say whether the backend wires WriteTsf — a "
+          "backend may override it and still not take the write — only that the "
+          "TSF is where it was.");
+  else
+    r.set("note",
+          "the counter keeps running, so the readback is the written value plus "
+          "the control round trip. This moves the REPORTED TSF and the beacon "
+          "timestamp, but NOT the beacon TBTT air-time — that is a separate "
+          "timer (see IRadio::WriteTsf).");
+  return ok(r);
 }
 
 Json op_radio_rx_energy(const Json &req) {

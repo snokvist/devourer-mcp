@@ -120,7 +120,7 @@ adapter is brought up. Realtek has it from construction.
 ## Testing
 
 ```sh
-./gradlew test                                   # 217 Kotlin tests, no hardware
+./gradlew test                                   # 220 Kotlin tests, no hardware
 ctest --test-dir build/native-bridge             # 63 vendored selftests
 tools/mcp-verify.py                              # every MCP tool, real requests, artifacts + dashboard
 tools/smoke-test.py                              # needs adapters; never passes vacuously
@@ -224,8 +224,10 @@ measurement (needs a deep TX feeder, which the structured send path does not
 have), TX retry-limit/fallback bring-up knobs, and per-packet TX power
 (radiotap `DBM_TX_POWER` — `build_stream_radiotap` cannot carry it and
 appending it flips `send_packet`'s length heuristic, so it stays raw-path
-only). M6 has started: `radio_tsf` reads the MAC clock. Next: `WriteTsf`
-adoption, then beacons/AP mode. The staged plan is
+only). M6 is under way: `radio_tsf` reads the MAC clock and `set_tsf_us` writes
+it (adoption). The 8822C takes the write; the MT7612U's `WriteTsf` override is
+a silent no-op, so adoption is Jaguar-only here — recorded as a vendored
+finding. Next: beacons/AP mode. The staged plan is
 [`rxdemo-txdemo-parity.md`](rxdemo-txdemo-parity.md). `radio.tx_stats` and
 `radio.cca` are the pattern to copy for a new op: a bridge op, a `RadioManager`
 method, an MCP tool with a description that says what the result does *not*

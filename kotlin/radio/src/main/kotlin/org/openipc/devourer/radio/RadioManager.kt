@@ -396,6 +396,18 @@ public class RadioManager(private val bridge: BridgeClient) : Radios {
         return BridgeJson.format.decodeFromJsonElement(Tsf.serializer(), result)
     }
 
+    override suspend fun writeTsf(session: Int, tsfUs: Long): Tsf {
+        require(tsfUs >= 0) { "tsfUs must be >= 0" }
+        val result = bridge.call(
+            "radio.tsf",
+            buildJsonObject {
+                put("session", JsonPrimitive(session))
+                put("set_tsf_us", JsonPrimitive(tsfUs))
+            },
+        )
+        return BridgeJson.format.decodeFromJsonElement(Tsf.serializer(), result)
+    }
+
     override suspend fun activeRxPaths(session: Int): JsonObject =
         bridge.call("radio.rx_paths", buildJsonObject { put("session", JsonPrimitive(session)) })
 

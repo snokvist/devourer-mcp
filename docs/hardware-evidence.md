@@ -875,9 +875,23 @@ MAC-latched into every received frame's `tsfl`, the timebase a beacon stamps.
 - After bring-up the TSF advanced **303 ms over a 300 ms sleep** on every
   adapter — the clock runs at wall-clock rate.
 
+`radio_tsf` also accepts `set_tsf_us` (`WriteTsf` adoption). The 8822C took the
+write — readback +1014 µs, the control round trip — and the counter kept
+running. **The MT7612U did not.** It overrides `WriteTsf`, and the override is
+a silent no-op: with the clock at ~8.52 s a +10 s write read back still ~8.52 s
+(advanced only the ~3.6 ms of the round trip). Because the method is `void`,
+nothing in the library reports this; the bridge's readback comparison is the
+only signal, and it reports `took:false` rather than success.
+
+That is a vendored finding, recorded rather than patched: `Mt7612uRadio::
+WriteTsf` calls `mt7612u_write_tsf()`, which writes `MT_TSF_TIMER_DW0`/`DW1`
+exactly as the read path reads them, yet the value does not stick. A fix
+belongs upstream. Until then, TSF *adoption* is Jaguar-only on this bench;
+TSF *reads* work everywhere.
+
 A read is not synchronization: two radios have two unrelated TSFs until a
-timing protocol aligns them (`WriteTsf` adoption is the primitive, not yet
-exposed).
+timing protocol aligns them, and the alignment primitive does not work on
+MediaTek here.
 
 ## Reproducing
 

@@ -378,6 +378,15 @@ public interface Radios {
      */
     public suspend fun tsf(session: Int): Tsf
 
+    /**
+     * Set the MAC TSF (TSF adoption): shift the clock onto a master's, so this
+     * radio's frame timestamps read in the master's timebase. The counter keeps
+     * running, so the readback is the written value plus the round trip; the
+     * returned [Tsf.took] says whether the readback matched. It moves the
+     * reported TSF, not the beacon TBTT air-time.
+     */
+    public suspend fun writeTsf(session: Int, tsfUs: Long): Tsf
+
     public suspend fun activeRxPaths(session: Int): JsonObject
 
     /**

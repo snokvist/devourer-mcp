@@ -1609,6 +1609,25 @@ bool Session::clear_ack_responder(std::string &err) {
   return true;
 }
 
+bool Session::write_tsf(uint64_t tsf_us, std::string &err) {
+  std::lock_guard<std::recursive_mutex> life(_life_mu);
+  if (_radio == nullptr) {
+    err = "session has no radio";
+    return false;
+  }
+  if (!_up) {
+    err = "bring the radio up before writing the TSF";
+    return false;
+  }
+  try {
+    _radio->WriteTsf(tsf_us);
+  } catch (const std::exception &e) {
+    err = std::string("WriteTsf threw: ") + e.what();
+    return false;
+  }
+  return true;
+}
+
 Json Session::ampdu_json() {
   std::lock_guard<std::recursive_mutex> life(_life_mu);
   Json j;

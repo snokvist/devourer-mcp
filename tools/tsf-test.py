@@ -38,6 +38,7 @@ def main():
 
     failures = []
     readable_seen = False
+    adopted_seen = False
 
     with McpClient([f"{ROOT}/tools/host/devourer-mcp"], cwd=ROOT) as c:
         c.initialize()
@@ -90,6 +91,20 @@ def main():
                 else:
                     bad(f"TSF delta {delta_us}us for a {expected_us:.0f}us sleep")
                     failures.append(f"{label}: tsf rate")
+
+                # Adoption: shift the clock forward and check the readback.
+                target = second["tsf_us"] + 10_000_000  # +10 s
+                wrote = c.tool("radio_tsf", {"session": session, "set_tsf_us": target})
+                if wrote.get("took") is True:
+                    adopted_seen = True
+                    ok(f"{chip}: WriteTsf adoption took (readback +{wrote.get('delta_us')}us)")
+                elif wrote.get("took") is False and wrote.get("note"):
+                    # A backend that does not wire WriteTsf — honest, not a pass
+                    # of adoption, but not a failure of this adapter alone.
+                    print(f"  {chip}: WriteTsf did not take, reported honestly")
+                else:
+                    bad(f"tsf write not honest: {json.dumps(wrote)[:200]}")
+                    failures.append(f"{label}: tsf write")
             else:
                 print(f"  {chip}: TSF not readable after bring-up: {json.dumps(first)[:160]}")
 
@@ -101,6 +116,9 @@ def main():
     if not readable_seen:
         bad("no adapter returned a readable TSF — nothing was verified")
         failures.append("no readable TSF on the bench")
+    if not adopted_seen:
+        bad("no adapter accepted a TSF write — adoption was not verified")
+        failures.append("no TSF adoption on the bench")
     if failures:
         print(f"FAILED ({len(failures)}): " + "; ".join(failures))
         return 1

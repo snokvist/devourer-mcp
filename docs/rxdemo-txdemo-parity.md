@@ -28,7 +28,7 @@ the acceptance test.
 
 ## Where it is now (2026-09-13)
 
-- 38 MCP tools, 27 bridge ops, 30 of 55 `IRadio` methods called.
+- 38 MCP tools, 27 bridge ops, 31 of 55 `IRadio` methods called.
 - **Proven end to end on the current bench**: discover/open/describe; monitor
   RX with per-frame telemetry and raw bytes; capture store/query/PCAP; frame
   inspection; TX structured and raw; split carrier-sense gates; receive-gain
@@ -83,7 +83,7 @@ what later milestones build on.
 
 | Capability | Demo knobs | Now | Where | Verify |
 |---|---|---|---|---|
-| TSF read | (rx telemetry `tsfl`) | **Done**: `radio_tsf` | Aligning two radios needs `WriteTsf`/a timing protocol, still open | Advances at wall-clock rate (303 ms / 300 ms measured) |
+| TSF read + adoption | (rx telemetry `tsfl`) | **Read done**, **adoption done** (`radio_tsf`, `set_tsf_us`) | Adoption verified on the 8822C; the MT7612U's `WriteTsf` override is a silent no-op (recorded, upstream fix) | Read advances at wall-clock rate; 8822C write took (+1014us readback) |
 | Beacons | — | Gap | `StartBeacon`/`StopBeacon`/`UpdateBeaconPayload` | A station associates, or a witness decodes the beacon |
 | TDMA / timesync | separate binaries | Gap | experiment engine (`tdma`/`timesync` are not rxdemo/txdemo) | Out of this plan's scope; listed so it is not mistaken for done |
 

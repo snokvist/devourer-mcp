@@ -15,6 +15,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.int
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import org.openipc.devourer.capture.CaptureSummary
 import org.openipc.devourer.capture.analyseChainBalance
@@ -567,15 +568,25 @@ internal class Tools(
                 yet or the backend does not wire it — distinct from a bare `tsf_us:0`, which
                 would read as a timestamp. NOT synchronized to any external clock on its own.
                 Two radios have two unrelated TSFs until a timing protocol aligns them.
+
+                Pass `set_tsf_us` to WRITE the clock (TSF adoption): a slave slewing onto a
+                master's timebase. The counter keeps running, so the readback is the written
+                value plus the round trip and `took` says whether it matched — a write that
+                silently did nothing (a backend that does not wire WriteTsf) reports
+                `took:false` rather than success. A write moves the reported TSF and the beacon
+                timestamp, NOT the beacon TBTT air-time.
             """.trimIndent(),
             inputSchema = ToolSchema(
                 properties = buildJsonObject {
                     put("session", schema("integer", "Session id of a brought-up radio."))
+                    put("set_tsf_us", schema("integer", "Write the TSF to this many microseconds (>= 0). Omit to read."))
                 },
                 required = listOf("session"),
             ),
         ) { request ->
-            val result = radios.tsf(request.intOr("session", -1))
+            val session = request.intOr("session", -1)
+            val setTo = request.optionalLong("set_tsf_us")
+            val result = if (setTo == null) radios.tsf(session) else radios.writeTsf(session, setTo)
             text(json.encodeToString(Tsf.serializer(), result))
         }
 
@@ -2062,6 +2073,20 @@ internal fun io.modelcontextprotocol.kotlin.sdk.types.CallToolRequest.optionalIn
  * field whose presence means "do the write" must not silently fall back to
  * `false` and turn the write into a read that reports success.
  */
+/**
+ * A present argument as a Long, or null when absent. Strict, like
+ * [optionalInt] — a quoted number must not silently become a write of 0.
+ */
+internal fun io.modelcontextprotocol.kotlin.sdk.types.CallToolRequest.optionalLong(key: String): Long? {
+    val element = params.arguments?.get(key) ?: return null
+    if (element is JsonNull) return null
+    val primitive = element as? JsonPrimitive
+    if (primitive == null || primitive.isString || primitive.longOrNull == null) {
+        throw IllegalArgumentException("$key must be an integer")
+    }
+    return primitive.longOrNull
+}
+
 internal fun io.modelcontextprotocol.kotlin.sdk.types.CallToolRequest.optionalBoolean(key: String): Boolean? {
     val element = params.arguments?.get(key) ?: return null
     if (element is JsonNull) return null
