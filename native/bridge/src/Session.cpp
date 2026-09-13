@@ -1702,6 +1702,37 @@ bool Session::clear_ampdu(std::string &err) {
   return true;
 }
 
+Json Session::tsf_json() {
+  std::lock_guard<std::recursive_mutex> life(_life_mu);
+  Json j;
+  j.set("session", _id);
+  if (_radio == nullptr) {
+    j.set("supported", false).set("why", "session has no radio");
+    return j;
+  }
+  if (!_up) {
+    j.set("supported", true).set("readable", false).set("why",
+          "the radio is not brought up — retune or start a monitor before "
+          "reading the TSF");
+    return j;
+  }
+  const uint64_t tsf = _radio->ReadTsf();
+  const bool readable = tsf != 0;
+  j.set("supported", true)
+      .set("readable", readable)
+      .set("tsf_us", static_cast<int64_t>(tsf));
+  if (!readable)
+    j.set("why",
+          "ReadTsf returned 0 — the MAC clock is not running, or this backend "
+          "does not wire it (the RTL8733B family reports 0)");
+  else
+    j.set("note",
+          "microseconds since the MAC's epoch; each received frame carries a "
+          "MAC-latched timestamp in its tsfl. NOT synchronized to any external "
+          "clock on its own — adoption requires WriteTsf or a timing protocol.");
+  return j;
+}
+
 Json Session::rx_energy_json(bool with_nhm) {
   std::lock_guard<std::recursive_mutex> life(_life_mu);
   Json j;

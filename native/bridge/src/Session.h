@@ -286,6 +286,12 @@ public:
   bool set_ampdu(const devourer::AmpduMode &mode, std::string &err);
   bool clear_ampdu(std::string &err);
 
+  /* The 64-bit MAC TSF in microseconds (`IRadio::ReadTsf`): the free-running
+   * MAC clock, MAC-latched into each frame's `tsfl`. There is no capability
+   * flag, so `readable` is derived from a non-zero read on a brought-up radio
+   * rather than asserted. */
+  Json tsf_json();
+
   /* Per-frame TX receipts (`tx.report`): what the hardware said about each
    * reported transmission — delivery state, hardware retry count, final rate,
    * queue time, and (HalMAC) the frame's SW_DEFINE echo. These are the

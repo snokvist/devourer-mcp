@@ -65,6 +65,7 @@ header.
 | `radio.thermal` | the RF 0x42 thermal meter: raw thermal units, baseline, delta, and a coarse bucket. Telemetry, not a calibrated temperature and not a validated degradation predictor. `supported:false` where no meter is wired. |
 | `radio.cca` | MAC carrier-sense gate. Antisocial when disabled; the Kotlin layer requires `SafetyLevel.EXPERIMENTAL` |
 | `radio.ack_responder` | arm/clear the hardware ACK responder (`IRadio::SetAckResponder`): auto-ACK unicast frames to `mac` with no host involvement, the reliable-unicast enabler. Omit both to read. Unicast only; capability-gated on `AdapterCaps.ack_responder_ok`. Arming is EXPERIMENTAL in the Kotlin layer (it answers others' air); clearing is always allowed and best-effort. |
+| `radio.tsf` | the 64-bit MAC TSF in microseconds (`IRadio::ReadTsf`); `readable:false` says it is not running yet or unwired, rather than a bare 0. MAC-latches each received frame's `tsfl`. |
 | `radio.ampdu` | read/set/clear the A-MPDU TX session mode (`IRadio::SetAmpduMode`). Omit fields to read; `mode` sets; `clear:true` disables. No capability flag and the cleared state equals the unwired default, so the reply's `capability` is supported/unsupported/**unknown** until a set attempt settles it. The goodput gain needs a deep TX feeder this bridge's send path does not provide. |
 | `sessions` / `shutdown` | |
 

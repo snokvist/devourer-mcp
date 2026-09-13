@@ -139,6 +139,27 @@ class SensorWireTest {
     }
 
     @Test
+    fun `a tsf reply decodes every field`() {
+        val json = """{"session":3,"supported":true,"readable":true,"tsf_us":12345678}"""
+
+        val t = BridgeJson.format.decodeFromString(Tsf.serializer(), json)
+
+        assertTrue(t.supported)
+        assertTrue(t.readable)
+        assertEquals(12_345_678L, t.tsfUs)
+    }
+
+    @Test
+    fun `a not-running tsf reply keeps the absence honest`() {
+        val json = """{"session":3,"supported":true,"readable":false,"tsf_us":0,"why":"not up"}"""
+
+        val t = BridgeJson.format.decodeFromString(Tsf.serializer(), json)
+
+        assertFalse(t.readable)
+        assertEquals("not up", t.why)
+    }
+
+    @Test
     fun `a thermal reply decodes every field`() {
         val json = """
             {"session":3,"supported":true,"raw":20,"baseline":18,"delta":2,

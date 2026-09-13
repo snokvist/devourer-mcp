@@ -715,6 +715,16 @@ Json op_radio_ampdu(const Json &req) {
   return ok(s->ampdu_json());
 }
 
+Json op_radio_tsf(const Json &req) {
+  std::string err;
+  auto s = find_session(req, err);
+  if (!s)
+    return fail("no_session", err);
+  if (Json bad = unknown_field(req, {}); !bad.is_null())
+    return bad;
+  return ok(s->tsf_json());
+}
+
 Json op_radio_rx_energy(const Json &req) {
   std::string err;
   auto s = find_session(req, err);
@@ -1062,6 +1072,8 @@ Json dispatch(const Json &req) {
     return op_radio_ack_responder(req);
   if (op == "radio.ampdu")
     return op_radio_ampdu(req);
+  if (op == "radio.tsf")
+    return op_radio_tsf(req);
   if (op == "radio.cca_gates")
     return op_radio_cca_gates(req);
   if (op == "radio.cca")

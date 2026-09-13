@@ -864,6 +864,21 @@ Control only. The +30% goodput needs the TX queue fed deep enough for the MAC
 to aggregate; this bridge's structured send path feeds one frame at a time, so
 the reply's note says the gain is not reachable here yet.
 
+## The MAC TSF
+
+`radio_tsf` reads `IRadio::ReadTsf` — the 64-bit microsecond MAC clock that is
+MAC-latched into every received frame's `tsfl`, the timebase a beacon stamps.
+`tools/tsf-test.py`:
+
+- **All three adapters** report `readable:false` with a reason *before*
+  bring-up, rather than a bare `tsf_us:0` that reads as a timestamp.
+- After bring-up the TSF advanced **303 ms over a 300 ms sleep** on every
+  adapter — the clock runs at wall-clock rate.
+
+A read is not synchronization: two radios have two unrelated TSFs until a
+timing protocol aligns them (`WriteTsf` adoption is the primitive, not yet
+exposed).
+
 ## Reproducing
 
 ```sh
@@ -872,6 +887,7 @@ tools/host/bridge-ctl.sh start
 tools/mcp-verify.py              # every tool, real requests, artifacts + dashboard
 tools/ack-responder-test.py      # hardware ACK responder arm/clear + safety gate
 tools/ampdu-test.py              # A-MPDU read/enable/clear + capability tri-state
+tools/tsf-test.py                # MAC TSF read + rate
 tools/smoke-test.py              # RX path, all adapters
 tools/rx-gain-cca-test.py        # receive-gain clamp + split CCA gates, needs a Realtek
 tools/tx-power-test.py           # TX-power knobs + a sweep measured on a witness
