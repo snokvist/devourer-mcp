@@ -800,6 +800,23 @@ picture of zeros. The numbers are channel-busy / false-alarm counts over one
 dwell each — energy, not decoded frames — so this is a "where to look" hint,
 not a throughput prediction.
 
+## Per-frame TX receipts
+
+`radio_tx_receipts` surfaces the radio's own account of each transmission
+(`tx.report`), the TX-side sensor `tx_stats` cannot be — a host submission
+count cannot see hardware retries or the final rate. Opened with
+`radio_open.tx_report`, then a 200-frame `link_probe` burst from the 8822C
+(`tools/tx-receipts-test.py`):
+
+- **200/200 reports**, one per frame at sampling 1, drained on read; the
+  HalMAC `tag` increments 0,1,2,… so the emission stream has no gaps.
+- Each carries `state` (0 = delivered), `ok`, `retries`, `final_rate`,
+  `queue_time_raw`, `bmc`, `macid`, and the format.
+
+The MT7612U accepts the divisor and reports nothing: the CCX report is a
+HalMAC/Jaguar facility, so `enabled:true` means the capture is configured,
+not that the silicon will emit. The reply's note says so.
+
 ## Reproducing
 
 ```sh
@@ -811,6 +828,7 @@ tools/tx-power-test.py           # TX-power knobs + a sweep measured on a witnes
 tools/rx-quality-thermal-test.py # fused RX sensor + thermal meter
 tools/fast-retune-test.py        # lean same-band hop + narrowband toggle
 tools/spectrum-sweep-test.py     # coarse per-channel energy survey
+tools/tx-receipts-test.py        # per-frame TX reports (needs a Jaguar TX)
 tools/stall-test.py              # a sink that stops reading, all adapters
 tools/backpressure-test.py       # sustained overload through a real capture
 tools/host/devourer-mcp          # MCP on stdio; dashboard on 127.0.0.1:8910

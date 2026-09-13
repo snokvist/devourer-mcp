@@ -19,6 +19,8 @@ import org.openipc.devourer.protocol.RxGain
 import org.openipc.devourer.protocol.RxQuality
 import org.openipc.devourer.protocol.SyntheticFrames
 import org.openipc.devourer.protocol.Thermal
+import org.openipc.devourer.protocol.TxReceipt
+import org.openipc.devourer.protocol.TxReceipts
 import org.openipc.devourer.protocol.TxPower
 import org.openipc.devourer.protocol.TxRateDiffs
 import org.openipc.devourer.protocol.UsbDevice
@@ -186,6 +188,12 @@ public class FakeRadios(radios: List<OpenRadio> = emptyList()) : Radios {
     public var adaptiveGainRequested: Boolean = false
         private set
 
+    /** The tx.report divisor requested at open, per session (0 = off). */
+    private val txReportSampling: MutableMap<Int, Int> = ConcurrentHashMap()
+
+    /** Injected TX receipts per session, for tests that want a populated ring. */
+    public val receipts: MutableMap<Int, MutableList<TxReceipt>> = ConcurrentHashMap()
+
     /** Set to throw from the next call to the named op, once. */
     public var failNext: MutableMap<String, Throwable> = mutableMapOf()
 
@@ -293,12 +301,15 @@ public class FakeRadios(radios: List<OpenRadio> = emptyList()) : Radios {
         reset: Boolean,
         noiseFloor: Boolean,
         adaptiveGain: Boolean,
+        txReport: Int,
     ): OpenRadio {
         record("open", "$bus/$address")
         noiseFloorRequested = noiseFloor
         adaptiveGainRequested = adaptiveGain
-        return open.values.firstOrNull { it.device.bus == bus && it.device.address == address }
+        val r = open.values.firstOrNull { it.device.bus == bus && it.device.address == address }
             ?: throw IllegalArgumentException("no fake radio at bus $bus address $address")
+        txReportSampling[r.session] = txReport
+        return r
     }
 
     override suspend fun describe(session: Int): OpenRadio {
@@ -735,6 +746,30 @@ public class FakeRadios(radios: List<OpenRadio> = emptyList()) : Radios {
             put("submitted", JsonPrimitive(c.txSent))
             put("failed", JsonPrimitive(0))
         }
+    }
+
+    override suspend fun txReceipts(session: Int, clear: Boolean): TxReceipts {
+        record("txReceipts", "$session,clear=$clear")
+        radio(session)
+        val sampling = txReportSampling[session] ?: 0
+        if (sampling <= 0) {
+            return TxReceipts(
+                session = session,
+                enabled = false,
+                why = "tx.report was not enabled at open",
+            )
+        }
+        val ring = receipts[session]
+        val out = TxReceipts(
+            session = session,
+            enabled = true,
+            sampling = sampling,
+            total = (ring?.size ?: 0).toLong(),
+            buffered = (ring?.size ?: 0).toLong(),
+            receipts = ring?.toList() ?: emptyList(),
+        )
+        if (clear) ring?.clear()
+        return out
     }
 
     override suspend fun activeRxPaths(session: Int): JsonObject {

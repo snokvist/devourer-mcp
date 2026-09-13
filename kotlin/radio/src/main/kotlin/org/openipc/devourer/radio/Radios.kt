@@ -15,6 +15,7 @@ import org.openipc.devourer.protocol.RxGain
 import org.openipc.devourer.protocol.RxQuality
 import org.openipc.devourer.protocol.Thermal
 import org.openipc.devourer.protocol.TxPower
+import org.openipc.devourer.protocol.TxReceipts
 import org.openipc.devourer.protocol.TxRateDiffs
 import org.openipc.devourer.protocol.UsbDevice
 
@@ -98,12 +99,21 @@ public interface Radios {
      *  is unreachable on Realtek wave-1 parts through this bridge — see
      *  [RxEnergy.noiseFloorWhy], which says which kind of absent applies.
      */
+    /**
+     * @param txReport ask for per-frame TX reports (`DeviceConfig tx.report`):
+     *  0 = off, N>1 = a CCX report on every Nth data frame, 1 = every frame.
+     *  Set at open because it changes the TX descriptor on every frame, so it
+     *  is off unless asked for. Reports are read with [txReceipts] and need an
+     *  RX loop (a monitor, or a family whose coex thread drains C2H); the
+     *  RTL8733B has no report path and emits none.
+     */
     public suspend fun open(
         bus: Int,
         address: Int,
         reset: Boolean = true,
         noiseFloor: Boolean = false,
         adaptiveGain: Boolean = false,
+        txReport: Int = 0,
     ): OpenRadio
 
     public suspend fun describe(session: Int): OpenRadio
@@ -302,6 +312,18 @@ public interface Radios {
     public suspend fun thermal(session: Int): Thermal
 
     public suspend fun txStats(session: Int): JsonObject
+
+    /**
+     * Per-frame TX reports (`tx.report`) — what the radio did with a frame,
+     * as opposed to [txStats] which is what the host submitted. Populated only
+     * when the session was opened with `txReport > 0`; `enabled = false` says
+     * it was not, rather than reporting an empty list of reports that never
+     * existed.
+     *
+     * Drained by default (these are events); pass `clear = false` to peek.
+     * Bounded ring, with a cumulative `total` and a `dropped` count.
+     */
+    public suspend fun txReceipts(session: Int, clear: Boolean = true): TxReceipts
 
     public suspend fun activeRxPaths(session: Int): JsonObject
 

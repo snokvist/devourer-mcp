@@ -16,8 +16,8 @@ The architecture is proven end to end on real hardware:
 LLM ──MCP(stdio)──▶ Kotlin runtime ──UDS──▶ devourer-bridge ──libusb──▶ adapter
 ```
 
-34 MCP tools across DISCOVER / OBSERVE / INSPECT / TRANSMIT / EXPERIMENT /
-CHARACTERIZE / BUILD TOOL. 196 offline tests plus 63 vendored Devourer
+35 MCP tools across DISCOVER / OBSERVE / INSPECT / TRANSMIT / EXPERIMENT /
+CHARACTERIZE / BUILD TOOL. 201 offline tests plus 63 vendored Devourer
 selftests, none of which need hardware. Three hardware tests that refuse to
 pass vacuously: the end-to-end smoke test, a stalled-sink test, and a
 sustained-overload test.
@@ -32,7 +32,7 @@ page down with it.
 | Subsystem | State | Notes |
 |---|---|---|
 | Vendored Devourer | done | pinned at `45f4022`, one local RX-gain patch |
-| `devourer-bridge` | done | separate process, protocol v1.7, session ownership |
+| `devourer-bridge` | done | separate process, protocol v1.8, session ownership |
 | Radio discovery + capabilities | done | derived from source, never a hand-kept table |
 | Monitor capture | done | ~1500–3300 frames/s, zero drops |
 | Capture store, query, PCAP | done | radiotap synthesized; raw bytes always reachable |
@@ -79,7 +79,7 @@ set. Roughly in value order:
 | TX power: a `link_probe` power axis | done | `sweep_power_qdb` produces a point per offset in one experiment, records requested vs applied qdB, and restores the pre-run offset. Delivery-vs-power with an independent witness is now first-class. |
 | `GetRxQuality` / `LinkHealth` | done | Exposed as `radio_rx_quality`. Subsumes `GetRxEnergy`; do not poll both on one cadence (shared counters). |
 | `GetThermalStatus` | done | Exposed as `radio_thermal`. Telemetry only, not a degradation predictor. |
-| TX receipts: per-frame `tx.report` | medium | The TX-side sensor (hardware retry count, final rate, queue time, per-frame correlation). The library emits it as a JSONL *event* through a shared `FILE*` sink, so the bridge needs an event-capture pipe + parser plus a `cfg.tx.report` opt-in that sets SPE_RPT in every TX descriptor. `GetRxQuality` (the RX-side half) is done; this half is its own slice. |
+| TX receipts: per-frame `tx.report` | done | `radio_tx_receipts` plus `radio_open`'s `tx_report` divisor. Per-session `EventSink` capture (temp file, drained on read), 200/200 reports on a burst on the 8822C. The TX-side sensor `tx_stats` cannot be. |
 | `FastRetune` | done | `radio_fast_retune`; 21 ms on the 8822C, full-retune fallback elsewhere. The scan/survey built on it is still open. |
 | `FastSetBandwidth` | done | `radio_fast_bandwidth`; 20<->5/10 narrowband, capability-gated on the adapter's width set. |
 | Channel sweep / spectrum survey | done | `spectrum_sweep` dwells channels with `FastRetune` and reads the frame-free energy per bin; Realtek only, and the quietest channel is a hint not a throughput answer. |
@@ -220,7 +220,7 @@ separate pin operation.
 - **`radio_list` before open.** Realtek 11ac parts report `probe_required` and
   cannot be identified without opening them. Correct and honest, but a caller
   wanting an inventory must open every candidate.
-- **Bridge protocol versioning.** v1.7 with a major-version gate. No
+- **Bridge protocol versioning.** v1.8 with a major-version gate. No
   negotiation, no capability discovery beyond `hello`.
 
 ---
