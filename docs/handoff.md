@@ -233,29 +233,26 @@ retune/survey primitives are done, M4 is partial, M6 has started.
 
 ### Next
 
-1. **M6 beacons are done and independently verified.** `radio_beacon`
-   (arm/update/stop) is built; `tools/beacon-test.py` has a second MT7612U
-   decode the autonomous beacon, its 102.4 ms cadence, its live TX-egress TSF
-   stamp and an on-air `update`, then confirms the air goes quiet after `stop`.
-   The host MT7922 on its stock kernel driver independently saw the same
-   beacon (`iw scan`) and its TSF (monitor capture). Station *association* is
-   a separate feature, not part of the beacon slice: it needs an AP responder
-   for probe/auth/assoc (the vendored `ap_responder`), which the instrument
-   does not expose.
-2. **M4.** Hardware ARQ is done and verified (`tools/tx-retry-arq-test.py`):
-   the new `radio_open` retry knobs (`tx_retry_limit`/`tx_ack_timeout_us`/
-   `tx_retry_fallback_off`) plus `radio_ack_responder` give retries 0/1 and
-   delivered receipts where no responder gave retries at the limit.
-   Per-packet TX power is done and verified too: `experiment_link_probe
-   pkt_power_db` sets the per-frame radiotap `DBM_TX_POWER` (bit 10) and the
-   witness RSSI tracks it (0→43, −6→37, −12→33 on the 8812CU). The deep feeder
-   is built (`radio_open usb_agg`, `experiment_link_probe batch:true` over
-   `send_packets`, `goodput_bytes_per_sec`), but **A-MPDU goodput is still
-   open**: the probe frames are plain data, not QoS, so the MAC has no TID to
-   aggregate. QoS probe frames are the missing piece.
-3. **Multi-witness role in `LinkProbe`** — the two-witness run that settled the
-   carrier-sense question was done by hand at the bridge; making it a
-   first-class role would also settle the open antenna question.
+The ordered plan lives in
+[`roadmap.md`](roadmap.md) under **"Path to the gate (next steps)"**. Short
+version, and the immediate next action is step 1:
+
+1. **A-MPDU goodput** — add QoS probe frames (a TID) so the MAC aggregates,
+   then measure delivered bytes vs an A-MPDU-off baseline on a witness. The
+   deep feeder and `goodput_bytes_per_sec` are already in place.
+2. M4 loose ends: verify STBC on a witness; decide no-ack semantics.
+3. Multi-witness role in `LinkProbe` (also settles the open antenna question).
+4. M3 remainders: narrowband; the absolute noise floor stays blocked on the
+   `Init` vs `InitWrite` bring-up path.
+5. Run the demo-vs-MCP acceptance matrix on the bench.
+6. Optional: convert the Python hardware checks to the JUnit `hardware` tag.
+
+Already done and independently verified this session: M6 beacons
+(`radio_beacon` + `tools/beacon-test.py`, plus the host MT7922 as an
+independent-generation witness) and the non-A-MPDU half of M4 — hardware ARQ
+(`tools/tx-retry-arq-test.py`) and per-packet TX power (`pkt_power_db`, radiotap
+`DBM_TX_POWER` bit 10). Station *association* and the M5 algorithms are
+deliberately out of scope; the reasons are in the roadmap section above.
 
 ### Open findings (recorded, not fixed — vendored)
 

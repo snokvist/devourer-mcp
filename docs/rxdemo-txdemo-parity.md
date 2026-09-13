@@ -32,8 +32,9 @@ the acceptance test.
 - **Proven end to end on the current bench**: discover/open/describe; monitor
   RX with per-frame telemetry and raw bytes; capture store/query/PCAP; frame
   inspection; TX structured and raw; split carrier-sense gates; receive-gain
-  clamp; TX-power offset/index/reapply; frame-free channel energy; active RX
-  paths; tx_stats; hardware beacon; multi-witness `experiment_link_probe`;
+  clamp; TX-power offset/index/reapply and per-packet `pkt_power_db`;
+  frame-free channel energy; active RX paths; tx_stats; per-frame TX receipts;
+  hardware ACK/ARQ; hardware beacon; multi-witness `experiment_link_probe`;
   characterization DB; scratchpad; dashboard.
 - **TX_VERIFIED**: RTL8812CU (jaguar3) and MT7612U, witnessed independently.
 

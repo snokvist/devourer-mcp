@@ -115,6 +115,49 @@ adaptive hopset, channel migration, TDMA scheduling and fused FEC are
 algorithms, not knob sets; they belong in the experiment engine or in
 scratchpad programs promoted to saved tools, not in a wall of MCP arguments.
 
+### Path to the gate (next steps)
+
+Ordered by what unblocks the most, and by what a demo cannot do — the whole
+point of the comparison. The per-milestone tables in
+[`rxdemo-txdemo-parity.md`](rxdemo-txdemo-parity.md) carry each row's status.
+
+1. **Finish M4: A-MPDU goodput.** The deep feeder is in place (`radio_open
+   usb_agg`, `experiment_link_probe batch:true` over `IRadio::send_packets`,
+   `goodput_bytes_per_sec`). What is missing is QoS probe frames — the MAC needs
+   a TID to aggregate, and `ProbeFrame` builds plain data frames today. Add the
+   QoS form, then measure delivered bytes against an A-MPDU-off baseline on an
+   independent witness at the same PHY rate. This is the last real `txdemo`
+   capability gap.
+2. **M4 loose ends.** Verify STBC decodes on a witness (the mode grammar already
+   carries `/STBC`). Decide and document no-ack semantics; `tx_retry_limit:0`
+   and `AmpduMode.no_ack` already give the no-retry recipe. QoS is subsumed by
+   step 1.
+3. **Multi-witness role in `LinkProbe`.** The two-witness run that settled the
+   carrier-sense question was done by hand at the bridge. Making it first-class
+   both closes a plan item and is the only way to settle the open antenna
+   question (`hardware-evidence.md`, "which MT7612U board has four antennas").
+   A demo cannot do this at all, which is the "strictly better" half of the
+   gate.
+4. **M3 remainders.** Narrowband (5/10 MHz) as an open argument / width path,
+   verified TX+RX on J1/J3 with a witness. The absolute noise floor stays
+   blocked on the bring-up path (`Init` vs `InitWrite`); either move bring-up
+   onto `Init` or keep it recorded as blocked with the reason.
+5. **Run the acceptance matrix.** For each capability, drive `rxdemo`/`txdemo`
+   with the equivalent env knobs and the MCP tool, and compare on the bench.
+   `tools/smoke-test.py` and `tools/mcp-verify.py` are the shape. Where the demo
+   cannot measure it, MCP's witness/verification/capture is the result. This is
+   the artifact that actually declares the gate met, and it stays a documented
+   hardware run, never a unit test.
+6. **Optional: hardware-tagged JUnit.** The `hardware` tag exists but nothing
+   carries it; converting the Python hardware checks would make the parity
+   matrix a gated CI target rather than a set of scripts.
+
+Out of scope, decided: **AP/station association** (needs a probe/auth/assoc
+responder, which the instrument does not expose — see the M6 note above) and
+the **M5 hopping/sensing algorithms** (they belong in the experiment engine or
+the scratchpad, not MCP arguments). **M7** (CSI/LA, beamforming, HE
+trigger/TWT/UL-OFDMA, PCIe) stays `UNAVAILABLE` until hardware exists.
+
 ---
 
 ## Experiment engine
