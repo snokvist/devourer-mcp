@@ -115,6 +115,19 @@ public:
   Json describe();
 
   bool bring_up(SelectedChannel ch, std::string &err);
+
+  /* Lean same-band retune (IRadio::FastRetune): the width/offset/band are kept
+   * and only the RF channel moves. Requires an already-brought-up radio — use
+   * radio.channel for the first tune. On a band change, or where the family
+   * has no lean path, devourer falls back to a full SetMonitorChannel: correct
+   * either way, only the cost differs. */
+  bool fast_retune(int channel, std::string &err);
+  /* The bandwidth analogue (IRadio::FastSetBandwidth): a 20<->5/10 narrowband
+   * toggle that falls back to a full retune for any other endpoint. */
+  bool fast_bandwidth(ChannelWidth_t width, std::string &err);
+  /* The current channel/width/offset/band, plus whether this adapter has the
+   * lean FastRetune path (AdapterCaps.fastretune_ok). */
+  Json channel_json();
   bool start_monitor(std::string &err);
   void stop_monitor();
   bool set_channel(SelectedChannel ch, std::string &err);

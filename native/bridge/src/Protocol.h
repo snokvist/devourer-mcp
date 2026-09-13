@@ -57,8 +57,10 @@ inline constexpr int kProtocolVersionMajor = 1;
  * `clear_rate_diffs`) for the per-rate TXAGC shape. Additive request fields;
  * the reply already carried the rate_diffs* caps.
  * 6: new ops radio.rx_quality (the fused windowed RX sensor) and radio.thermal
- * (the RF 0x42 meter). Additive; an older client never asks for them. */
-inline constexpr int kProtocolVersionMinor = 6;
+ * (the RF 0x42 meter). Additive; an older client never asks for them.
+ * 7: new ops radio.fast_retune and radio.fast_bandwidth — the lean retune
+ * paths the demos' dwell loops use. Additive. */
+inline constexpr int kProtocolVersionMinor = 7;
 
 /* 'D','V','R','F' — present on every frame record so a desynchronized reader
  * fails loudly at the next record instead of interpreting payload as a

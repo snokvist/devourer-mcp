@@ -6,6 +6,7 @@ import org.openipc.devourer.protocol.ChannelSpec
 import org.openipc.devourer.protocol.RxGain
 import org.openipc.devourer.protocol.TxPower
 import org.openipc.devourer.protocol.TxRateDiffs
+import org.openipc.devourer.radio.ChannelInfo
 import org.openipc.devourer.radio.OpenRadio
 import org.openipc.devourer.radio.Radios
 import org.openipc.devourer.radio.SafetyLevel
@@ -60,6 +61,12 @@ public class RecordingRadios(
 
     override suspend fun retune(session: Int, channel: ChannelSpec): JsonObject =
         delegate.retune(session, channel).also { refresh(session) }
+
+    override suspend fun fastRetune(session: Int, channel: Int): ChannelInfo =
+        delegate.fastRetune(session, channel).also { refresh(session) }
+
+    override suspend fun fastBandwidth(session: Int, widthMhz: Int): ChannelInfo =
+        delegate.fastBandwidth(session, widthMhz).also { refresh(session) }
 
     override suspend fun setCarrierSense(
         session: Int,

@@ -28,7 +28,7 @@ the acceptance test.
 
 ## Where it is now (2026-09-13)
 
-- 31 MCP tools, 21 bridge ops, 22 of 55 `IRadio` methods called.
+- 33 MCP tools, 23 bridge ops, 24 of 55 `IRadio` methods called.
 - **Proven end to end on the current bench**: discover/open/describe; monitor
   RX with per-frame telemetry and raw bytes; capture store/query/PCAP; frame
   inspection; TX structured and raw; split carrier-sense gates; receive-gain
@@ -56,8 +56,8 @@ what later milestones build on.
 
 | Capability | Demo knobs | Now | Where | Verify |
 |---|---|---|---|---|
-| `FastRetune` | `HOP_FAST` (non-FH use) | Fallback-only retune (~130 ms) | bridge op; used by sweeps | Time a same-band hop; compare to `SetMonitorChannel` |
-| `FastSetBandwidth` | `NB_BW` | Gap | bridge op | 20<->5/10 toggle without a full retune |
+| `FastRetune` | `HOP_FAST` (non-FH use) | **Done**: `radio_fast_retune` | — | Same-band hop: 21 ms lean on the 8822C vs ~130 ms full retune |
+| `FastSetBandwidth` | `NB_BW` | **Done**: `radio_fast_bandwidth` | Capability-gated on the adapter's widths | 20<->5/10 toggle; refused on a 20/40/80 adapter |
 | Spectrum sweep | `RX_SWEEP`, `RX_SWEEP_DWELL_MS`, `RX_SWEEP_FULL` | Single-channel `channel_energy` only | experiment or tool: dwell `FastRetune` bins, build the energy map | Survey ch1/6/11, check the picture matches per-channel `channel_energy` |
 | Absolute noise floor | `RX_NOISE_FLOOR` | Open arg only, unreachable pre-`Init` | blocked on bring-up path (`Init` vs `InitWrite`) | Compare to the meter on a quiet channel |
 | Narrowband | `NB_BW/ADC/DAC` | Gap | open arg / channel width | 5/10 MHz TX+RX on J1/J3, witnessed |

@@ -695,6 +695,48 @@ Json op_radio_channel(const Json &req) {
   return ok(Json().set("session", s->id()).set("channel", ch.Channel));
 }
 
+/* Lean same-band retune. The reply carries the resulting channel plus whether
+ * this adapter actually has the lean path; a fallback is not an error, only a
+ * slower retune, and the caller deserves to know which it got. */
+Json op_radio_fast_retune(const Json &req) {
+  std::string err;
+  auto s = find_session(req, err);
+  if (!s)
+    return fail("no_session", err);
+  if (Json bad = unknown_field(req, {"channel"}); !bad.is_null())
+    return bad;
+  if (!req.at("channel").is_number())
+    return fail("bad_request", "channel is required (the FastRetune hop target)");
+  int64_t channel = 0;
+  if (!ranged(req, "channel", 0, 255, channel, err))
+    return fail("bad_request", err);
+  if (!s->fast_retune(static_cast<int>(channel), err))
+    return fail("retune_failed", err);
+  Json r = s->channel_json();
+  r.set("session", s->id());
+  return ok(r);
+}
+
+Json op_radio_fast_bandwidth(const Json &req) {
+  std::string err;
+  auto s = find_session(req, err);
+  if (!s)
+    return fail("no_session", err);
+  if (Json bad = unknown_field(req, {"width_mhz"}); !bad.is_null())
+    return bad;
+  if (!req.at("width_mhz").is_number())
+    return fail("bad_request", "width_mhz is required");
+  ChannelWidth_t w;
+  if (!width_from_mhz(static_cast<int>(req.at("width_mhz").integer(0)), w))
+    return fail("bad_request",
+                "width_mhz must be one of 5, 10, 20, 40, 80, 160");
+  if (!s->fast_bandwidth(w, err))
+    return fail("retune_failed", err);
+  Json r = s->channel_json();
+  r.set("session", s->id());
+  return ok(r);
+}
+
 /* Assemble the frame to air.
  *
  * Two paths, deliberately unequal in ceremony:
@@ -892,6 +934,10 @@ Json dispatch(const Json &req) {
     return op_radio_close(req);
   if (op == "radio.channel")
     return op_radio_channel(req);
+  if (op == "radio.fast_retune")
+    return op_radio_fast_retune(req);
+  if (op == "radio.fast_bandwidth")
+    return op_radio_fast_bandwidth(req);
   if (op == "sessions")
     return op_sessions();
   if (op == "monitor.start")
