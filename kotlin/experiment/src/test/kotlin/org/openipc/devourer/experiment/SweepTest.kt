@@ -86,4 +86,24 @@ class SweepTest {
             Sweep(modes = listOf("6M", "24M"), channels = listOf("ch1", "ch6")).axes,
         )
     }
+
+    @Test
+    fun `a power axis multiplies points and names itself in the label`() {
+        val points = Sweep(
+            modes = listOf("6M"),
+            powerOffsetQdb = listOf(-16, 0, 16),
+        ).expand(base)
+        assertEquals(3, points.size)
+        assertEquals(listOf(-16, 0, 16), points.map { it.powerOffsetQdb })
+        assertEquals("6M @ch6 200B -16qdB", points.first().label)
+        assertEquals(listOf("power_offset_qdb"), Sweep(powerOffsetQdb = listOf(-16, 16)).axes)
+    }
+
+    @Test
+    fun `an absurd power offset is refused before any radio is touched`() {
+        val e = assertFailsWith<IllegalArgumentException> {
+            Sweep(powerOffsetQdb = listOf(100_000)).expand(base)
+        }
+        assertTrue("outside" in e.message!!, e.message)
+    }
 }

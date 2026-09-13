@@ -20,6 +20,13 @@ public data class SweepPoint(
     val channel: ChannelLabel,
     @SerialName("frame_bytes") val frameBytes: Int,
     @SerialName("interval_us") val intervalUs: Int,
+    /**
+     * TX-power offset in quarter-dB to apply for this point, or null to leave
+     * the transmitter's power alone. Relative to the calibrated per-rate table
+     * and the family's own step, which is why the caps' `step_measured` still
+     * governs whether a point is a calibrated dB.
+     */
+    @SerialName("power_offset_qdb") val powerOffsetQdb: Int? = null,
 ) {
     /** Stable, greppable, and short enough to be a chart axis. */
     public val label: String
@@ -28,6 +35,7 @@ public data class SweepPoint(
             append(" @").append(channel.text)
             append(" ").append(frameBytes).append("B")
             if (intervalUs != DEFAULT_INTERVAL_US) append(" /").append(intervalUs).append("us")
+            if (powerOffsetQdb != null) append(" ").append(powerOffsetQdb).append("qdB")
         }
 
     public companion object {
@@ -63,6 +71,12 @@ public data class Sweep(
     val channels: List<String> = emptyList(),
     @SerialName("frame_bytes") val frameBytes: List<Int> = emptyList(),
     @SerialName("interval_us") val intervalUs: List<Int> = emptyList(),
+    /**
+     * TX-power offsets in quarter-dB. Empty leaves power alone; a single entry
+     * pins it. Validated against the adapter's caps when the run starts, since
+     * the envelope is family-specific.
+     */
+    @SerialName("power_offset_qdb") val powerOffsetQdb: List<Int> = emptyList(),
 ) {
     /** Which axes actually vary. Used to describe the run in its conclusion. */
     public val axes: List<String>
@@ -71,6 +85,7 @@ public data class Sweep(
             if (channels.size > 1) add("channel")
             if (frameBytes.size > 1) add("frame_bytes")
             if (intervalUs.size > 1) add("interval_us")
+            if (powerOffsetQdb.size > 1) add("power_offset_qdb")
         }
 
     public fun expand(default: SweepPoint): List<SweepPoint> {
@@ -78,6 +93,7 @@ public data class Sweep(
         val c = channels.ifEmpty { listOf(default.channel.text) }
         val b = frameBytes.ifEmpty { listOf(default.frameBytes) }
         val i = intervalUs.ifEmpty { listOf(default.intervalUs) }
+        val p: List<Int?> = powerOffsetQdb.ifEmpty { listOf(default.powerOffsetQdb) }
 
         b.forEach {
             require(it in MIN_FRAME_BYTES..MAX_FRAME_BYTES) {
@@ -85,14 +101,19 @@ public data class Sweep(
             }
         }
         i.forEach { require(it in 0..1_000_000) { "interval_us $it is outside 0..1000000" } }
+        p.forEach {
+            require(it == null || it in MIN_POWER_QDB..MAX_POWER_QDB) {
+                "power_offset_qdb $it is outside $MIN_POWER_QDB..$MAX_POWER_QDB"
+            }
+        }
 
-        val total = m.size.toLong() * c.size * b.size * i.size
+        val total = m.size.toLong() * c.size * b.size * i.size * p.size
         if (total > MAX_POINTS) {
             throw ExperimentException(
                 "that sweep expands to $total points (max $MAX_POINTS). Axes: " +
                     "${m.size} modes x ${c.size} channels x ${b.size} sizes x ${i.size} " +
-                    "intervals. Narrow one axis, or run it as several experiments so each " +
-                    "one's result stays interpretable.",
+                    "intervals x ${p.size} power offsets. Narrow one axis, or run it as " +
+                    "several experiments so each one's result stays interpretable.",
             )
         }
 
@@ -105,7 +126,9 @@ public data class Sweep(
             label.spec() // parse now, so a typo fails before any radio is touched
             for (mode in m) {
                 for (bytes in b) {
-                    for (us in i) out += SweepPoint(mode, label, bytes, us)
+                    for (us in i) {
+                        for (qdb in p) out += SweepPoint(mode, label, bytes, us, qdb)
+                    }
                 }
             }
         }
@@ -124,6 +147,14 @@ public data class Sweep(
 
         /** Well under the 2304-byte MSDU limit; a probe is not a throughput test. */
         public const val MAX_FRAME_BYTES: Int = 1_500
+
+        /**
+         * A sanity bound on a power offset, not the real one: the adapter's
+         * caps decide the envelope and are checked when the run starts. This
+         * only stops an absurd caller value before a radio is touched.
+         */
+        public const val MIN_POWER_QDB: Int = -512
+        public const val MAX_POWER_QDB: Int = 512
     }
 }
 

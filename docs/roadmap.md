@@ -17,7 +17,7 @@ LLM ──MCP(stdio)──▶ Kotlin runtime ──UDS──▶ devourer-bridge 
 ```
 
 29 MCP tools across DISCOVER / OBSERVE / INSPECT / TRANSMIT / EXPERIMENT /
-CHARACTERIZE / BUILD TOOL. 172 offline tests plus 63 vendored Devourer
+CHARACTERIZE / BUILD TOOL. 176 offline tests plus 63 vendored Devourer
 selftests, none of which need hardware. Three hardware tests that refuse to
 pass vacuously: the end-to-end smoke test, a stalled-sink test, and a
 sustained-overload test.
@@ -76,7 +76,7 @@ set. Roughly in value order:
 |---|---|---|
 | TX power: offset / flat index / reapply / state | done | Exposed as `radio_tx_power`. Note `step_measured=false` on most families — the slope is uncalibrated, and results must say so. |
 | TX power: per-rate `SetTxPowerRateDiffs` | done | `radio_tx_power` takes a structured `{cck, legacy, mcs[8]}` table, or `clear_rate_diffs`. Jaguar1/2/3 (both dies) and Kestrel honour it; MT7612U/RTL8733B refuse it. |
-| TX power: a `link_probe` power axis | medium | The remaining piece that turns the knob into a *power sweep*: sweep `offset_qdb` and record delivery-vs-power with an independent witness, as a first-class experiment rather than a manual loop. |
+| TX power: a `link_probe` power axis | done | `sweep_power_qdb` produces a point per offset in one experiment, records requested vs applied qdB, and restores the pre-run offset. Delivery-vs-power with an independent witness is now first-class. |
 | `GetRxQuality` / `LinkHealth` | small | Windowed link aggregates Devourer already computes, plus its fused verdict; today we recompute a weaker version from frames. Subsumes `GetRxEnergy`, which `channel_energy` already exposes. |
 | `GetThermalStatus` | small | Long experiments drift thermally and nothing currently notices. |
 | `FastRetune` + channel sweep | medium | Scanning and survey. `FastRetune` is the lean path Devourer added for dwell loops; a naive `SetMonitorChannel` per dwell costs ~130 ms. |

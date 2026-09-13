@@ -279,60 +279,78 @@ def check_unsupported(c, devices):
 
 
 def sweep(c, txo, rxo, args):
-    """Move the knob and watch the independent receiver's RSSI follow."""
+    """Sweep the power axis in one experiment and watch the witness RSSI follow.
+
+    This exercises `sweep_power_qdb` — the axis that makes delivery-vs-power a
+    first-class measurement rather than a caller-driven loop.
+    """
     tx, rx = txo["session"], rxo["session"]
     print(f"\n  power sweep: {txo['chip']} tx session {tx} -> "
           f"{rxo['chip']} witness session {rx} on ch{args.channel}")
     caps = txo["power"]
-    # A swing big enough to clear receiver AGC and probe noise: the caps range
-    # can be far wider than is useful, and the adapters are inches apart.
     lo = max(caps.get("offset_min_qdb", -16), -64)
     hi = min(caps.get("offset_max_qdb", 16), 64)
     if hi <= lo:
         lo, hi = caps.get("offset_min_qdb", -4), caps.get("offset_max_qdb", 4)
-    points = sorted(set([lo, 0, hi]))
+    offsets = sorted(set([lo, 0, hi]))
+
+    before = c.tool("radio_tx_power", {"session": tx}).get("offset_qdb")
+    res = c.tool(
+        "experiment_link_probe",
+        {
+            "tx_session": tx, "rx_session": rx,
+            "channel": args.channel, "width_mhz": args.width,
+            "modes": ["6M"], "sweep_power_qdb": offsets,
+            "frames_per_point": args.frames, "interval_us": 1000,
+            "max_duration_ms": 60000,
+        },
+        timeout=300,
+    )
+    failures = []
+    if res.get("_isError") or not res.get("points"):
+        bad(f"power-axis link_probe failed: {res.get('_text', json.dumps(res))[:160]}")
+        return ["txpower: power-axis experiment"]
 
     measured = []
-    for offset in points:
-        c.tool("radio_tx_power", {"session": tx, "offset_qdb": offset})
-        res = c.tool(
-            "experiment_link_probe",
-            {
-                "tx_session": tx,
-                "rx_session": rx,
-                "channel": args.channel,
-                "width_mhz": args.width,
-                "modes": ["6M"],
-                "frames_per_point": args.frames,
-                "interval_us": 1000,
-                "max_duration_ms": 30000,
-            },
-            timeout=180,
-        )
-        if res.get("_isError") or not res.get("points"):
-            bad(f"link_probe at offset {offset}: {res.get('_text', json.dumps(res))[:120]}")
-            return ["txpower: sweep link_probe"]
-        point = res["points"][0]
-        witness = point.get("witnesses", {}).get("RX_PEER", {})
+    for p in res["points"]:
+        witness = p.get("witnesses", {}).get("RX_PEER", {})
         rssi = witness.get("rssi_mean")
-        measured.append((offset, rssi, point.get("delivery_ratio")))
-        print(f"       offset {offset:>4} qdB -> witness rssi {rssi} delivery {point.get('delivery_ratio'):.3f}")
+        measured.append((p.get("power_offset_qdb"), p.get("power_applied_qdb"), rssi))
+        print(f"       offset {p.get('power_offset_qdb'):>4} qdB "
+              f"(applied {p.get('power_applied_qdb')}) -> witness rssi {rssi} "
+              f"delivery {p.get('delivery_ratio'):.3f}")
 
-    failures = []
-    rssis = [(o, r) for o, r, _ in measured if r is not None]
+    # The axis must have set each point's offset, in the order asked for.
+    if [m[0] for m in measured] == offsets:
+        ok(f"the power axis produced one point per offset {offsets}")
+    else:
+        bad(f"axis offsets wrong: {[m[0] for m in measured]} != {offsets}")
+        failures.append("txpower: axis offsets")
+
+    rssis = [(o, r) for o, _, r in measured if r is not None]
     if len(rssis) >= 2:
         low_offset, low_rssi = rssis[0]
         high_offset, high_rssi = rssis[-1]
         if high_rssi > low_rssi:
-            ok(f"witness RSSI followed the knob: {low_rssi:.1f} dBm at {low_offset} qdB "
+            ok(f"witness RSSI followed the axis: {low_rssi:.1f} dBm at {low_offset} qdB "
                f"-> {high_rssi:.1f} dBm at {high_offset} qdB")
         else:
-            bad(f"witness RSSI did NOT follow the knob ({low_rssi} at {low_offset} -> "
+            bad(f"witness RSSI did NOT follow the axis ({low_rssi} at {low_offset} -> "
                 f"{high_rssi} at {high_offset})")
-            failures.append("txpower: sweep did not move RSSI")
+            failures.append("txpower: axis did not move RSSI")
     else:
-        bad("the sweep produced no witness RSSI")
+        bad("the axis produced no witness RSSI")
         failures.append("txpower: no sweep RSSI")
+
+    # And the run must leave the transmitter at its pre-run power, whatever
+    # that was — not at 0 and not at the last point's value.
+    after = c.tool("radio_tx_power", {"session": tx})
+    if after.get("offset_qdb") == before:
+        ok(f"the run restored the transmitter's offset to its pre-run {before} qdB")
+    else:
+        bad(f"offset left at {after.get('offset_qdb')} after the run, was {before}: "
+            f"{json.dumps(after)}")
+        failures.append("txpower: sweep did not restore")
     return failures
 
 

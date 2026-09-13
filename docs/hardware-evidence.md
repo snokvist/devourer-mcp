@@ -699,8 +699,11 @@ absolute whole-dBm actuator with no TXAGC index (`index_max == 0`), not as
 `supported:false`. The expectation going in — that the MediaTek had no such
 knob — was wrong, and only the caps report said so.
 
-**The sweep**, RTL8812CU transmitting, MT7612U as the independent witness,
-ch6/20, 6M, 300 frames a point, carrier sense on:
+**The sweep** is now a first-class experiment axis: one `experiment_link_probe`
+with `sweep_power_qdb` produces a point per offset, records the requested *and*
+applied qdB on each, and restores the transmitter's pre-run offset when it
+finishes. RTL8812CU transmitting, MT7612U as the independent witness, ch6/20,
+6M, 300 frames a point, carrier sense on:
 
 | TX offset | witness RSSI | delivery |
 |---|---|---|
