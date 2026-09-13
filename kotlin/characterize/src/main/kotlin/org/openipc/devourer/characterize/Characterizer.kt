@@ -166,6 +166,12 @@ public class Characterizer(
             supported?.let { notes += "channel $ch: $it" }
 
             val store = CaptureStore("char-rx-$ch", capacity = 50_000)
+            /* Stop unconditionally first, like LinkProbe.retuneAll. The bridge
+             * refuses monitor.start on a session already monitoring, so without
+             * this a characterization fails outright because the caller left a
+             * capture running — a failure that depends on what happened before
+             * the run, which is the kind that only appears when it matters. */
+            runCatching { radios.stopMonitor(session) }
             radios.startMonitor(session, spec)
             val job: Job = scope.launch { radios.frames(session).collect { store.add(it) } }
             delay(options.rxDwellMs)
