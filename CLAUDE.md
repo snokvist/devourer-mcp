@@ -103,7 +103,7 @@ Owned by the user, physically attached, and the routine subject of this work.
 | Device | USB ID | Kernel driver | Devourer backend |
 |---|---|---|---|
 | MediaTek MT7612U ×2 | `0e8d:7612` | `mt76x2u` | `mt7612u` (behind `IRadio`; build with `DEVOURER_MT7612U=ON`, which upstream defaults OFF) |
-| Realtek RTL8812AU | `0bda:8812` | `rtw_8812au` | Jaguar1 |
+| Realtek RTL8812CU | `0bda:c812` | `rtw_8822cu` | Jaguar3 (rtl8822c, chip-id `0x13`) — replaced the RTL8812AU/Jaguar1 part on 2026-09-13 |
 | MediaTek MT7922 (internal) | `0e8d:0616` | — | **off limits** |
 
 The internal MT7922 carries the host's own connectivity. Never claim, unbind

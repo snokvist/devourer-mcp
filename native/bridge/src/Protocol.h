@@ -44,8 +44,13 @@ inline constexpr int kProtocolVersionMajor = 1;
  * last release and have no client, and the behaviour being removed was a
  * misspelled request silently doing nothing and reporting the unchanged
  * state as if it had. Nothing that worked stops working, so: minor, and
- * recorded here rather than decided silently. */
-inline constexpr int kProtocolVersionMinor = 2;
+ * recorded here rather than decided silently.
+ * 3: radio.cca_gates' SUPPORTED reply now carries the combined `cca_disabled`
+ * alongside the two per-gate fields. Additive and ignorable by an older
+ * client, but the reply shape changed, so the minor says so. The unsupported
+ * reply and describe's state already had it; the hardware test caught that a
+ * radio with EDCCA off read `cca_disabled:false` without it. */
+inline constexpr int kProtocolVersionMinor = 3;
 
 /* 'D','V','R','F' — present on every frame record so a desynchronized reader
  * fails loudly at the next record instead of interpreting payload as a

@@ -16,8 +16,8 @@ The architecture is proven end to end on real hardware:
 LLM ──MCP(stdio)──▶ Kotlin runtime ──UDS──▶ devourer-bridge ──libusb──▶ adapter
 ```
 
-26 MCP tools across DISCOVER / OBSERVE / INSPECT / TRANSMIT / EXPERIMENT /
-CHARACTERIZE / BUILD TOOL. 150 offline tests plus 63 vendored Devourer
+28 MCP tools across DISCOVER / OBSERVE / INSPECT / TRANSMIT / EXPERIMENT /
+CHARACTERIZE / BUILD TOOL. 159 offline tests plus 63 vendored Devourer
 selftests, none of which need hardware. Three hardware tests that refuse to
 pass vacuously: the end-to-end smoke test, a stalled-sink test, and a
 sustained-overload test.
@@ -32,7 +32,7 @@ page down with it.
 | Subsystem | State | Notes |
 |---|---|---|
 | Vendored Devourer | done | pinned at `45f4022`, one local RX-gain patch |
-| `devourer-bridge` | done | separate process, protocol v1.2, session ownership |
+| `devourer-bridge` | done | separate process, protocol v1.3, session ownership |
 | Radio discovery + capabilities | done | derived from source, never a hand-kept table |
 | Monitor capture | done | ~1500–3300 frames/s, zero drops |
 | Capture store, query, PCAP | done | radiotap synthesized; raw bytes always reachable |
@@ -47,9 +47,12 @@ page down with it.
 
 | Adapter | State |
 |---|---|
-| RTL8812AU (jaguar1) | `TX_VERIFIED` — witnessed by two independent receivers |
+| RTL8812CU (jaguar3) | `TX_VERIFIED` — 100% at 6M–MCS7 on ch6, witnessed by both MT7612U simultaneously |
 | MT7612U ×2 | `TX_VERIFIED` — 99–100% delivery witnessed by the Realtek |
 | Everything else | `UNAVAILABLE` — no hardware, which is not a failure |
+
+The RTL8812AU (jaguar1) that produced the earlier TX evidence left the bench on
+2026-09-13; its results stay in `hardware-evidence.md` as history.
 
 Full evidence, including the findings below, is in
 [`hardware-evidence.md`](hardware-evidence.md).
@@ -59,9 +62,11 @@ Full evidence, including the findings below, is in
 ## The big one: `IRadio` coverage
 
 **The bridge calls 14 of `IRadio`'s 55 virtual methods.** That single number is
-the most useful measure of what is left, and it is why this does not yet replace
-Devourer's own `rxdemo`/`txdemo` as research instruments (those expose ~60 and
-~85 environment knobs respectively).
+the most useful measure of what is left, and it is why this does not yet fully
+replace Devourer's own `rxdemo`/`txdemo` as research instruments. Those two are
+thin loops over the same API: 76 bring-up knobs in `DeviceConfig` (77 `env:`
+tags), the runtime `IRadio` setters below, and each demo's own telemetry and
+pacing code. There is no separate capability hiding in them.
 
 Most of the gap is volume rather than difficulty — a bridge op, a Kotlin method,
 an MCP tool, each following the pattern `radio.tx_stats` and `radio.cca` already
@@ -82,6 +87,31 @@ set. Roughly in value order:
 | HE trigger / TWT / UL-OFDMA | large | Kestrel only — `UNAVAILABLE` until an 11ax adapter exists on this bench. |
 | CSI / LA capture | large | Devourer has both; nothing here surfaces them. |
 | PCIe transport (`CreateRadioPcie`) | medium | Compiled OFF. Needs an RTL8821CE and vfio binding. |
+
+---
+
+## Acceptance gate: replacing `rxdemo`/`txdemo`
+
+The instrument exists to make Devourer's two demo binaries unnecessary, so the
+gate is parity plus what a demo cannot do. Through MCP alone:
+
+- **RX** — a capture runs, frames decode, raw bytes stay reachable, and the
+  per-frame signal telemetry `rxdemo` prints is available.
+- **TX** — a bounded burst is aired and an *independent* receiver decodes it.
+  `txdemo` cannot show this at all; it has no witness.
+- **The knob set** — every `DeviceConfig` bring-up knob and runtime setter the
+  demos use is reachable, or its absence is explicit with a reason.
+
+The core loop meets this today on jaguar3 and mt7612u (see
+`hardware-evidence.md`); the coverage table above is the rest of the checklist.
+Beyond the demos, the same MCP surface already carries the verification ladder,
+multi-witness counting, persistent capture/query/PCAP, capability gating and
+the experiment engine.
+
+This gate does **not** promise parity with everything under `examples/`. The
+adaptive hopset, channel migration, TDMA scheduling and fused FEC are
+algorithms, not knob sets; they belong in the experiment engine or in
+scratchpad programs promoted to saved tools, not in a wall of MCP arguments.
 
 ---
 
@@ -139,11 +169,12 @@ threshold from it — so the threshold is the most sensitive value the adaptive
 loop can produce, on every channel, and no channel choice moves it. See
 `hardware-evidence.md`.
 
-The lever is now implemented by the remaining local vendor patch:
+The lever is now implemented end to end by the remaining local vendor patch:
 `IRadio::SetRxGainRange`, with state/capability reporting on Jaguar1 and
-Jaguar3. It is reachable in the native bridge as `radio.rx_gain`, but is not
-yet surfaced through `RadioManager` or MCP. Closing that vertical slice is the
-next integration step; the full design and remaining backend gaps are in
+Jaguar3; the bridge ops `radio.rx_gain` and `radio.cca_gates`; and the MCP
+tools `radio_rx_gain` and `radio_cca_gates`. `radio.cca` stays as the portable
+all-or-nothing carrier-sense control. The full design and remaining backend
+gaps are in
 [`proposals/rx-gain-range.md`](proposals/rx-gain-range.md). Every family has a
 receive-gain index and on five of six nothing moves it — jaguar2 is the only
 one whose gain genuinely adapts. The MT7612U is not winning because its 1 Hz
@@ -184,7 +215,7 @@ separate pin operation.
 - **`radio_list` before open.** Realtek 11ac parts report `probe_required` and
   cannot be identified without opening them. Correct and honest, but a caller
   wanting an inventory must open every candidate.
-- **Bridge protocol versioning.** v1.2 with a major-version gate. No
+- **Bridge protocol versioning.** v1.3 with a major-version gate. No
   negotiation, no capability discovery beyond `hello`.
 
 ---

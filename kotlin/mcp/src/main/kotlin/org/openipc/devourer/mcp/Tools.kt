@@ -37,10 +37,12 @@ import org.openipc.devourer.scratchpad.ScratchpadProgram
 import org.openipc.devourer.scratchpad.ScratchpadService
 import org.openipc.devourer.capture.FrameQuery
 import org.openipc.devourer.capture.PcapWriter
+import org.openipc.devourer.protocol.CcaGates
 import org.openipc.devourer.protocol.ChannelSpec
 import org.openipc.devourer.protocol.ChannelWidth
 import org.openipc.devourer.protocol.FrameAddresses
 import org.openipc.devourer.protocol.RxEnergy
+import org.openipc.devourer.protocol.RxGain
 import org.openipc.devourer.radio.CapabilityException
 import org.openipc.devourer.radio.OpenRadio
 import org.openipc.devourer.radio.Radios
@@ -408,6 +410,113 @@ internal class Tools(
                     ),
                 )
             }
+        }
+
+        register(
+            server,
+            name = "radio_rx_gain",
+            description = """
+                Read the receive-gain index, the envelope it may be clamped to, and whether an
+                adaptive loop is driving it.
+
+                `automatic_input` is the field that makes this more than a number: it says what the
+                loop keys on, or that nothing is adapting the gain and why. Two absences are
+                distinct and mean opposite things — `supported:false` ("this backend has no gain
+                index") versus `valid:false` ("there is one, but the baseband is not up yet"). The
+                index is a relative register value, not a dBm figure.
+
+                Pass `min_index` and `max_index` together to clamp it. `min == max` pins the gain.
+                The clamp STEERS an adaptive loop rather than replacing it, and on Realtek the
+                receive gain and the EDCCA carrier-sense threshold are coupled — raising the gain
+                floor also makes carrier sense less sensitive. The caps' min/max is the whole
+                supported envelope, not the window in force now; state restored by a caller must
+                use the live range.
+            """.trimIndent(),
+            inputSchema = ToolSchema(
+                properties = buildJsonObject {
+                    put("session", schema("integer", "Session id from radio_open."))
+                    put("min_index", schema("integer", "Lower bound of the clamp. Omit to just read."))
+                    put("max_index", schema("integer", "Upper bound of the clamp. `min == max` pins."))
+                },
+                required = listOf("session"),
+            ),
+        ) { request ->
+            val session = request.intOr("session", -1)
+            val args = request.params.arguments.orEmpty()
+            val hasMin = args.containsKey("min_index")
+            val hasMax = args.containsKey("max_index")
+            val result = when {
+                !hasMin && !hasMax -> radios.rxGain(session)
+                hasMin && hasMax -> radios.clampRxGain(
+                    session,
+                    request.intOr("min_index", 0),
+                    request.intOr("max_index", 0),
+                )
+                else -> return@register text(
+                    errorReply(
+                        "give both min_index and max_index to clamp, or neither to read",
+                        "hint" to "the value you set pins the gain when both are equal",
+                    ),
+                    isError = true,
+                )
+            }
+            text(json.encodeToString(RxGain.serializer(), result))
+        }
+
+        register(
+            server,
+            name = "radio_cca_gates",
+            description = """
+                Read and set the two carrier-sense gates SEPARATELY.
+
+                primary_cca_disabled defers to a decodable PREAMBLE; edcca_disabled defers to raw
+                in-band ENERGY. Which one matters is FAMILY-SPECIFIC and the two measured families
+                disagree — on one, turning EDCCA off recovers almost all lost delivery while primary
+                CCA alone does little; on another it inverts. `note` carries the measured warning;
+                read it before choosing.
+
+                Omit both to read. Supply one or both to change them; the gate you do not name is
+                left alone. DISABLING a gate requires safety_level="experimental" — the radio then
+                transmits without fully listening and will talk over others on the channel.
+                Re-enabling is always allowed, so a cleanup path never needs to re-ask.
+
+                Realtek only. A backend without the split reports `supported:false` with a reason,
+                and `cca_disabled` still reflects the combined state — a radio with carrier sense
+                fully off cannot present as compliant.
+            """.trimIndent(),
+            inputSchema = ToolSchema(
+                properties = buildJsonObject {
+                    put("session", schema("integer", "Session id of a brought-up radio."))
+                    put("primary_cca_disabled", schema("boolean", "Disable the preamble-deferring gate. Omit to leave unchanged."))
+                    put("edcca_disabled", schema("boolean", "Disable the energy-deferring gate. Omit to leave unchanged."))
+                    put("safety_level", schema("string", "Must be \"experimental\" to disable either gate."))
+                },
+                required = listOf("session"),
+            ),
+        ) { request ->
+            val session = request.intOr("session", -1)
+            val args = request.params.arguments.orEmpty()
+            val hasPrimary = args.containsKey("primary_cca_disabled")
+            val hasEdcca = args.containsKey("edcca_disabled")
+            val result = if (!hasPrimary && !hasEdcca) {
+                radios.ccaGates(session)
+            } else {
+                radios.setCcaGates(
+                    session,
+                    primaryCcaDisabled = if (hasPrimary) {
+                        request.boolOr("primary_cca_disabled", false)
+                    } else {
+                        null
+                    },
+                    edccaDisabled = if (hasEdcca) {
+                        request.boolOr("edcca_disabled", false)
+                    } else {
+                        null
+                    },
+                    safety = SafetyLevel.parse(request.stringOr("safety_level", "")),
+                )
+            }
+            text(json.encodeToString(CcaGates.serializer(), result))
         }
 
         register(

@@ -11,16 +11,22 @@ vendored source compiles; that is the least interesting thing we know.
 
 | Adapter | USB id | Backend | State | Evidence |
 |---|---|---|---|---|
-| Realtek RTL8812AU | `0bda:8812` | jaguar1 (chip-id 0x04) | `TX_VERIFIED` | RX: 8997 frames / 10 s. TX: witnessed by two independent MT7612U receivers |
-| MediaTek MT7612U ×2 | `0e8d:7612` | mt7612u | `TX_VERIFIED` | RX: 5905–20890 frames / 10 s. TX: 99–100% delivery witnessed by the RTL8812AU |
+| Realtek RTL8812CU | `0bda:c812` | jaguar3 (rtl8822c, chip-id 0x13) | `TX_VERIFIED`, `RX_VERIFIED` | RX: 46 frames / 4.8 s smoke. TX: 100% at 6M–MCS7 on ch6/20, witnessed by both MT7612U simultaneously, carrier sense on. Gain clamp and gate split driven from MCP |
+| MediaTek MT7612U ×2 | `0e8d:7612` | mt7612u | `TX_VERIFIED` | RX: 5905–20890 frames / 10 s. TX: 99–100% delivery witnessed by the Realtek |
 | Everything else devourer implements | — | — | `UNAVAILABLE` | no hardware present |
 
 TX_VERIFIED here means what the ladder says: an *independent* adapter received
 tagged frames off the air. No radio was allowed to witness itself.
 
+**The RTL8812AU (Jaguar1) left the bench on 2026-09-13**, replaced by the
+RTL8812CU above. Every "8812AU"/Jaguar1 result further down is a record of
+that part and stays valid as history; the current bench has no Jaguar1
+adapter, so a Jaguar1-specific claim is `UNAVAILABLE` to re-test here.
+
 ## The bench
 
-Ambient traffic, 4 s per channel, measured on all three adapters:
+Ambient traffic, 4 s per channel, measured on all three adapters (the Realtek
+then was the 8812A; the current Realtek is the 8812CU):
 
 | Adapter | ch1 | ch6 | ch11 |
 |---|---|---|---|
@@ -621,12 +627,59 @@ real ~20 dB difference, but position was not controlled, so it does not yet
 attribute to the antenna configuration. Settling it needs a fixed transmitter and
 both receivers swapped between positions.
 
+## The receive-gain clamp and the split gates, driven from MCP
+
+`radio_rx_gain` and `radio_cca_gates` graduated from `IMPLEMENTED_IN_SOURCE` to
+hardware-verified on the 2026-09-13 bench (RTL8812CU + two MT7612U), through
+the real MCP server. `tools/rx-gain-cca-test.py` is the repeatable check; it
+refuses to pass if no adapter reports a settable gain or the gate split.
+
+**RTL8822C (8812CU, jaguar3), ch6/20, monitor running:**
+
+- **Gain read.** `supported`/`settable` true, `index_name` `igi`, envelope
+  `[0x1e, 0x3e]` (30..62), `index_step_db` 1, `automatic` true with
+  `automatic_input` "phydm DIG on the RX tick, keyed on the false-alarm rate".
+  At ch6 the index sat at `0x1e` with live range `[0x1e, 0x22]` — the bottom of
+  its range, i.e. **maximum gain**, which is the same state the earlier Jaguar1
+  investigation found (there, at `0x1c`). The EDCCA threshold is coupled to it,
+  so this is also the most sensitive its carrier sense gets.
+- **Clamp.** `min=max=0x2e` pinned index and range to `0x2e`; restoring the
+  saved live range put it back to `[0x1e, 0x22]`. An out-of-envelope
+  (`max=0x3f`) and an inverted (`min>max`) request were both refused with a
+  reason, not coerced.
+- **Gates.** Both on by default. Disabling EDCCA alone with
+  `safety_level="experimental"` left primary CCA untouched; re-enabling it took
+  no safety argument; disabling primary CCA **without** the level was refused
+  and the state read back unchanged; with the level, primary went true and the
+  combined `cca_disabled` followed.
+
+**MT7612U ×2** report `supported:false` with a distinct reason for each tool
+("not ported here" for the gain; "not a Realtek backend" for the split), a
+clamp is refused rather than no-op'd, and the combined `cca_disabled` is still
+carried even when the split is unsupported.
+
+**A bug this found in our own code.** The *supported* `radio.cca_gates` reply
+omitted `cca_disabled`, so on the 8812CU a radio with EDCCA off came back with
+`edcca_disabled:true` and `cca_disabled:false` — "carrier sense off" reading as
+compliant. The unsupported branch and `describe`'s state both already carried
+it; only the supported branch did not. Fixed in
+`Session::cca_gates_json()`. The unit tests could not have seen it: the fake
+modelled `cca_disabled` from its own two gates rather than from the wire reply.
+
+**Transmit re-established on the new part.** `experiment_link_probe` with the
+8812CU as transmitter and both MT7612U as simultaneous witnesses on ch6/20,
+carrier sense enabled, 200 frames per point: **100% delivery at 6M, MCS0,
+MCS3, MCS5 and MCS7** on the RX peer (94.5–97.5% on the monitor witness). That
+is the current bench's `TX_VERIFIED` for jaguar3, and it was obtained entirely
+through MCP.
+
 ## Reproducing
 
 ```sh
 tools/host/bridge-ctl.sh start
 ./gradlew :mcp:installDist
 tools/smoke-test.py          # RX path, all adapters
+tools/rx-gain-cca-test.py    # receive-gain clamp + split CCA gates, needs a Realtek
 tools/stall-test.py          # a sink that stops reading, all adapters
 tools/backpressure-test.py   # sustained overload through a real capture
 tools/host/devourer-mcp      # MCP on stdio; dashboard on 127.0.0.1:8910

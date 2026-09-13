@@ -8,12 +8,14 @@ import kotlinx.coroutines.flow.first
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
+import org.openipc.devourer.protocol.CcaGates
 import org.openipc.devourer.protocol.ChannelSpec
 import org.openipc.devourer.protocol.FrameRecord
 import org.openipc.devourer.protocol.Identification
 import org.openipc.devourer.protocol.MonitorStats
 import org.openipc.devourer.protocol.RadioListResult
 import org.openipc.devourer.protocol.RxEnergy
+import org.openipc.devourer.protocol.RxGain
 import org.openipc.devourer.protocol.SyntheticFrames
 import org.openipc.devourer.protocol.UsbDevice
 
@@ -101,6 +103,33 @@ public class FakeRadios(radios: List<OpenRadio> = emptyList()) : Radios {
 
     /** What [rxEnergy] reports for a Realtek session, keyed by session. */
     public val energy: MutableMap<Int, RxEnergy> = ConcurrentHashMap()
+
+    /**
+     * What [rxGain] reports for a Realtek session, keyed by session.
+     *
+     * Seeded lazily so a test that only needs "the gain is readable" does not
+     * have to build a struct; absent means the modelled default below.
+     */
+    public val gain: MutableMap<Int, RxGain> = ConcurrentHashMap()
+
+    /** The split gates per session: `first` = primary CCA, `second` = EDCCA. */
+    private val gates: MutableMap<Int, Pair<Boolean, Boolean>> = ConcurrentHashMap()
+
+    private fun defaultGain(session: Int): RxGain = RxGain(
+        session = session,
+        supported = true,
+        settable = true,
+        indexName = "igi",
+        indexMin = 0x1c,
+        indexMax = 0x3e,
+        indexStepDb = 1,
+        automatic = false,
+        automaticInput = "nothing: the phydm watchdog is not running",
+        valid = true,
+        index = 0x1c,
+        rangeMin = 0x1c,
+        rangeMax = 0x2a,
+    )
 
     /** Whether the last [open] asked for an absolute noise floor. */
     public var noiseFloorRequested: Boolean = false
@@ -338,6 +367,108 @@ public class FakeRadios(radios: List<OpenRadio> = emptyList()) : Radios {
         RadioSafety.gateCarrierSense(enabled, safety)
         update(session) { it.copy(state = it.state.copy(carrierSenseDisabled = !enabled)) }
         return buildJsonObject { put("ok", JsonPrimitive(true)) }
+    }
+
+    override suspend fun rxGain(session: Int): RxGain {
+        record("rxGain", "$session")
+        if (radio(session).capabilities.generation !in REALTEK_GENERATIONS) {
+            return RxGain(
+                session = session,
+                supported = false,
+                why = "this backend does not report a receive-gain index",
+            )
+        }
+        return gain[session] ?: defaultGain(session)
+    }
+
+    override suspend fun clampRxGain(session: Int, minIndex: Int, maxIndex: Int): RxGain {
+        record("clampRxGain", "$session,$minIndex..$maxIndex")
+        val radio = radio(session)
+        if (radio.capabilities.generation !in REALTEK_GENERATIONS) {
+            throw CapabilityException(
+                "clamp receive gain", radio.label, "the backend reports no gain index",
+            )
+        }
+        require(minIndex <= maxIndex) { "minIndex must be <= maxIndex" }
+        val current = gain[session] ?: defaultGain(session)
+        require(minIndex >= current.indexMin && maxIndex <= current.indexMax) {
+            "range must lie inside [${current.indexMin}, ${current.indexMax}]"
+        }
+        val updated = current.copy(
+            valid = true,
+            index = minIndex,
+            rangeMin = minIndex,
+            rangeMax = maxIndex,
+        )
+        gain[session] = updated
+        return updated
+    }
+
+    override suspend fun ccaGates(session: Int): CcaGates {
+        record("ccaGates", "$session")
+        val radio = radio(session)
+        if (radio.capabilities.generation !in REALTEK_GENERATIONS) {
+            return CcaGates(
+                session = session,
+                supported = false,
+                why = "splitting the carrier-sense gate is a Realtek 0x520 facility",
+                ccaDisabled = radio.state.carrierSenseDisabled,
+            )
+        }
+        if (!radio.state.broughtUp) {
+            return CcaGates(
+                session = session,
+                supported = false,
+                why = "the radio is not brought up — set a channel first; " +
+                    "the gate register is meaningless before then",
+                ccaDisabled = radio.state.carrierSenseDisabled,
+            )
+        }
+        val (primary, edcca) = gates[session] ?: (false to false)
+        return CcaGates(
+            session = session,
+            supported = true,
+            ccaDisabled = primary || edcca,
+            primaryCcaDisabled = primary,
+            edccaDisabled = edcca,
+        )
+    }
+
+    override suspend fun setCcaGates(
+        session: Int,
+        primaryCcaDisabled: Boolean?,
+        edccaDisabled: Boolean?,
+        safety: SafetyLevel,
+    ): CcaGates {
+        record(
+            "setCcaGates",
+            "$session,primary=$primaryCcaDisabled,edcca=$edccaDisabled,$safety",
+        )
+        RadioSafety.gateCcaGates(primaryCcaDisabled, edccaDisabled, safety)
+        val radio = radio(session)
+        if (radio.capabilities.generation !in REALTEK_GENERATIONS) {
+            throw CapabilityException(
+                "split the carrier-sense gate", radio.label,
+                "the backend does not implement the gate split",
+            )
+        }
+        check(radio.state.broughtUp) {
+            "unsupported: the radio is not brought up — set a channel first"
+        }
+        val (oldPrimary, oldEdcca) = gates[session] ?: (false to false)
+        val primary = primaryCcaDisabled ?: oldPrimary
+        val edcca = edccaDisabled ?: oldEdcca
+        gates[session] = primary to edcca
+        update(session) {
+            it.copy(state = it.state.copy(carrierSenseDisabled = primary || edcca))
+        }
+        return CcaGates(
+            session = session,
+            supported = true,
+            ccaDisabled = primary || edcca,
+            primaryCcaDisabled = primary,
+            edccaDisabled = edcca,
+        )
     }
 
     /**

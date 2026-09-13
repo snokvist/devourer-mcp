@@ -11,7 +11,7 @@ what a cold session reads to resume.
 
 ## Where this stands
 
-**All 25 items are done.** 150 Kotlin tests, 63 native selftests,
+**All 25 items are done.** The Kotlin suite then held 150 tests, 63 native selftests,
 `scripts/check-docs.sh` green, and the four bridge fixes that could only be
 proven with a radio are now proven on all three adapters.
 

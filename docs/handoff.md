@@ -60,7 +60,7 @@ LLM ──MCP(stdio)──▶ Kotlin runtime ──UDS control + frame stream─
 | `kotlin/characterize/` | Evidence database, one JSON per adapter. |
 | `kotlin/scratchpad/` | Declarative micro-app runtime + live UI. |
 | `kotlin/dashboard/` | The persistent dashboard on `127.0.0.1:8910`. Reads in-process state only; never calls the bridge. |
-| `kotlin/mcp/` | The 26 tools. The only process the model talks to. |
+| `kotlin/mcp/` | The 28 tools. The only process the model talks to. |
 | `var/` | Runtime state: captures, `characterization/`, `scratchpads/`. Gitignored. |
 
 ### Why a separate bridge process
@@ -120,9 +120,10 @@ adapter is brought up. Realtek has it from construction.
 ## Testing
 
 ```sh
-./gradlew test                                   # 150 Kotlin tests, no hardware
+./gradlew test                                   # 159 Kotlin tests, no hardware
 ctest --test-dir build/native-bridge             # 63 vendored selftests
 tools/smoke-test.py                              # needs adapters; never passes vacuously
+tools/rx-gain-cca-test.py                        # receive-gain clamp + split CCA gates; needs a Realtek
 tools/stall-test.py                              # needs adapters; a sink that stops reading
 tools/backpressure-test.py                       # needs two adapters; sustained overload
 
@@ -190,22 +191,25 @@ EDCCA threshold.
 
 The September 13 repin to `45f4022` was replayed from a clean upstream clone.
 The full native build passed all 63 tests (the two reference-submodule checks
-were skipped as expected) and `./gradlew test --rerun-tasks` passed. An
-independent OpenCode Flash architecture review found no regression in the
-rebased RX-gain implementation; its concrete documentation-drift findings were
-fixed in the same PR. The review also confirmed the principal remaining gap:
-the bridge has `radio.rx_gain` and `radio.cca_gates`, but Kotlin/MCP has no
-client for either.
+were skipped as expected) and `./gradlew test --rerun-tasks` passed. A review of
+the rebased RX-gain patch found and fixed the repin's own gaps: `radio.rx_gain`
+let a wrong-typed value skip the write and return the unchanged state as
+success, and three docs counted a stale `IRadio` ratio.
 
-The highest-value next step is closing `IRadio` coverage — the bridge calls 14
-of 55 methods, and that single number explains most of what this cannot yet do.
-Start with a bounded TX-power vertical slice (`GetTxPowerCaps`, offset/index
-control, reapply and honest state reporting), then expose RX gain and the split
-CCA gates. `radio.tx_stats` and `radio.cca` are the pattern to copy: a bridge
-op, a `RadioManager` method, an MCP tool with a description that says what the
-result does *not* prove. Exposing the existing `radio.rx_gain`/`radio.cca_gates`
-ops needs no protocol change; a *new* bridge op (e.g. TX power) bumps the
-additive protocol minor from 1.2 to 1.3.
+The receive-gain clamp and the split carrier-sense gates are now exposed end to
+end: `radio.rx_gain`/`radio.cca_gates` in the bridge, `rxGain`/`clampRxGain`/
+`ccaGates`/`setCcaGates` on `Radios`, and the `radio_rx_gain` /
+`radio_cca_gates` MCP tools. Disabling either gate is gated on
+`SafetyLevel.EXPERIMENTAL` through the same `RadioSafety` the rest of the tree
+uses. No protocol change was needed — the ops already existed.
+
+The highest-value next step is still closing `IRadio` coverage — the bridge
+calls 14 of 55 methods, and that single number explains most of what this
+cannot yet do. Start with a bounded TX-power vertical slice (`GetTxPowerCaps`,
+offset/index control, reapply and honest state reporting). `radio.tx_stats` and
+`radio.cca` are the pattern to copy: a bridge op, a `RadioManager` method, an
+MCP tool with a description that says what the result does *not* prove. A new
+bridge op bumps the additive protocol minor from 1.3 to 1.4.
 
 After that, multi-witness experiments. The two-witness run that settled the
 carrier-sense question was done by hand against the bridge; making it a first-
