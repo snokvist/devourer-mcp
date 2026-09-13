@@ -1119,8 +1119,9 @@ Json Session::tx_power_json() {
 }
 
 bool Session::set_tx_power(std::optional<int> offset_qdb,
-                           std::optional<int> index_override, bool reapply,
-                           std::string &err) {
+                           std::optional<int> index_override, bool set_rate_diffs,
+                           const std::optional<devourer::TxRateDiffsQdb> &rate_diffs,
+                           bool reapply, std::string &err) {
   std::lock_guard<std::recursive_mutex> life(_life_mu);
   if (_radio == nullptr) {
     err = "session has no radio";
@@ -1131,10 +1132,21 @@ bool Session::set_tx_power(std::optional<int> offset_qdb,
     err = "this backend does not wire the runtime TX-power knobs";
     return false;
   }
-  /* Applied in the order the model composes: the flat index sets the
-   * baseline, the offset folds onto it, and a reapply forces the result at the
-   * current channel. A refused reapply is the one hard failure — it is false
-   * when the chip is not brought up. */
+  /* Applied in the order the model composes: the per-rate shape first (it
+   * REPLACES the chip's), then the flat index sets the baseline, then the
+   * offset folds onto it, then a reapply forces the result at the current
+   * channel. A refused reapply is the one hard failure — it is false when the
+   * chip is not brought up. */
+  if (set_rate_diffs) {
+    if (!caps.rate_diffs) {
+      err = "this backend does not honour per-rate TX-power diffs";
+      return false;
+    }
+    if (!_radio->SetTxPowerRateDiffs(rate_diffs)) {
+      err = "the backend refused the per-rate diff table";
+      return false;
+    }
+  }
   if (index_override) {
     if (*index_override >= 0 && *index_override > caps.index_max) {
       err = "index_override must be -1 (clear) or 0.." +

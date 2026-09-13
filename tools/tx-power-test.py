@@ -101,6 +101,10 @@ def main():
             print(f"\n  transmitter: {txo['chip']} session {txo['session']}")
             print(f"  witness:     {rxo['chip']} session {rxo['session']}\n")
             failures += check_knobs(c, txo)
+            if txo["power"].get("rate_diffs"):
+                failures += check_rate_diffs(c, txo, rxo, args)
+            else:
+                print("       (this family reports rate_diffs:false; per-rate table skipped)")
             if unsupported:
                 failures += check_unsupported(c, unsupported)
             else:
@@ -177,6 +181,81 @@ def check_knobs(c, txo):
     else:
         bad(f"override clear failed: {json.dumps(cleared)}")
         failures.append("txpower: index clear")
+    return failures
+
+
+def check_rate_diffs(c, txo, rxo, args):
+    """Trim one rate and confirm only that rate's received level moved.
+
+    This is the per-rate claim: the table REPLACES the calibrated shape, so a
+    cut on MCS0 must lower MCS0's RSSI at an independent receiver while MCS7 —
+    the anchor — stays put.
+    """
+    tx, rx = txo["session"], rxo["session"]
+    print(f"\n  per-rate diffs: {txo['chip']} tx {tx} -> {rxo['chip']} witness {rx}")
+
+    def probe():
+        res = c.tool(
+            "experiment_link_probe",
+            {
+                "tx_session": tx, "rx_session": rx,
+                "channel": args.channel, "width_mhz": args.width,
+                "modes": ["MCS0/20", "MCS7/20"],
+                "frames_per_point": args.frames, "interval_us": 1000,
+                "max_duration_ms": 30000,
+            },
+            timeout=180,
+        )
+        if res.get("_isError") or not res.get("points"):
+            return None
+        return {
+            p["point"].split()[0]: (p.get("witnesses", {}).get("RX_PEER", {}) or {}).get("rssi_mean")
+            for p in res["points"]
+        }
+
+    failures = []
+    base = probe()
+    if not base or base.get("MCS0/20") is None or base.get("MCS7/20") is None:
+        bad("baseline probe produced no witness RSSI")
+        return ["txpower: rate-diff baseline"]
+
+    trimmed = c.tool(
+        "radio_tx_power",
+        {"session": tx, "rate_diffs": {"cck": 0, "legacy": 0, "mcs": [-32, 0, 0, 0, 0, 0, 0, 0]}},
+    )
+    if trimmed.get("rate_diffs_custom") is True:
+        ok("a -32 qdB MCS0 diff was accepted and is reported configured")
+    else:
+        bad(f"rate_diffs did not register: {json.dumps(trimmed)}")
+        failures.append("txpower: rate diffs not configured")
+
+    after = probe()
+    if not after or after.get("MCS0/20") is None:
+        bad("post-trim probe produced no witness RSSI")
+        failures.append("txpower: rate-diff probe")
+    else:
+        drop = base["MCS0/20"] - after["MCS0/20"]
+        anchor_shift = abs(after["MCS7/20"] - base["MCS7/20"])
+        print(f"       MCS0 {base['MCS0/20']:.1f} -> {after['MCS0/20']:.1f} "
+              f"(drop {drop:.1f} dB); MCS7 {base['MCS7/20']:.1f} -> {after['MCS7/20']:.1f} "
+              f"(shift {anchor_shift:.1f} dB)")
+        if drop >= 2.0:
+            ok(f"MCS0 dropped {drop:.1f} dB while the anchor held")
+        else:
+            bad(f"MCS0 did not drop on the witness (drop {drop:.1f} dB)")
+            failures.append("txpower: rate diff did not move MCS0")
+        if anchor_shift <= 3.0:
+            ok(f"MCS7 anchor unchanged within noise ({anchor_shift:.1f} dB)")
+        else:
+            bad(f"MCS7 anchor moved {anchor_shift:.1f} dB — the table is not per-rate")
+            failures.append("txpower: anchor moved")
+
+    cleared = c.tool("radio_tx_power", {"session": tx, "clear_rate_diffs": True})
+    if cleared.get("rate_diffs_custom") is False:
+        ok("clear restored the calibrated shape")
+    else:
+        bad(f"clear did not take: {json.dumps(cleared)}")
+        failures.append("txpower: rate-diff clear")
     return failures
 
 

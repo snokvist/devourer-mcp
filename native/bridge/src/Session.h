@@ -32,6 +32,7 @@
 #include "Devices.h"
 #include "Json.h"
 #include "SelectedChannel.h"
+#include "TxPower.h"
 
 namespace devourer {
 class DeviceSession;
@@ -179,8 +180,15 @@ public:
    * the per-rate table. `reapply` forces a re-apply at the current channel
    * without moving a knob (the register-level check). Returns false only for
    * a hard failure — an unsupported backend reports that through the returned
-   * JSON, since a read must still work there. */
+   * JSON, since a read must still work there.
+   *
+   * `set_rate_diffs` is a separate flag because an absent table and an
+   * explicit clear (`rate_diffs = nullopt`) are different requests: the first
+   * leaves the configured shape alone, the second restores the chip's own.
+   * Only `rate_diffs`-capable backends accept it; the rest are refused. */
   bool set_tx_power(std::optional<int> offset_qdb, std::optional<int> index_override,
+                    bool set_rate_diffs,
+                    const std::optional<devourer::TxRateDiffsQdb> &rate_diffs,
                     bool reapply, std::string &err);
 
   /* Frame-free RX energy: what the chip's own PHY thinks is on the channel,

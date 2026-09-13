@@ -5,6 +5,7 @@ import org.openipc.devourer.protocol.CcaGates
 import org.openipc.devourer.protocol.ChannelSpec
 import org.openipc.devourer.protocol.RxGain
 import org.openipc.devourer.protocol.TxPower
+import org.openipc.devourer.protocol.TxRateDiffs
 import org.openipc.devourer.radio.OpenRadio
 import org.openipc.devourer.radio.Radios
 import org.openipc.devourer.radio.SafetyLevel
@@ -82,9 +83,11 @@ public class RecordingRadios(
         session: Int,
         offsetQdb: Int?,
         indexOverride: Int?,
+        rateDiffs: TxRateDiffs?,
+        clearRateDiffs: Boolean,
         reapply: Boolean,
     ): TxPower = delegate
-        .setTxPower(session, offsetQdb, indexOverride, reapply)
+        .setTxPower(session, offsetQdb, indexOverride, rateDiffs, clearRateDiffs, reapply)
         .also { refresh(session) }
 
     /** Best effort: a stale page is a nuisance, a failed radio op is not. */

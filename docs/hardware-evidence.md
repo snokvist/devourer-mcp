@@ -714,6 +714,21 @@ AGC compression (the two adapters are inches apart) and a stepped PA. Direction
 and magnitude are unambiguous, and `step_measured=true` on this family means
 those 0.25 dB steps are the slope devourer already validated on air.
 
+**Per-rate diffs, on the same link.** `SetTxPowerRateDiffs` REPLACES the
+calibrated shape, so the test that matters is that one rate moves and the
+others do not. With `mcs[0] = -32 qdB` (the MCS7 anchor is the reference):
+
+| rate | witness RSSI before | after | shift |
+|---|---|---|---|
+| MCS0/20 | 60.9 dBm | 53.1 dBm | **−7.8 dB** |
+| MCS7/20 | 61.3 dBm | 61.3 dBm | 0.0 dB |
+
+−32 qdB is −8 dB nominal and the witness moved −7.8 dB, with the anchor
+untouched. `clear_rate_diffs` restored the chip's own shape. This is the
+per-rate claim demonstrated on a second adapter, not a register report — and it
+ran on the **8822C**, which is why no 8822E is needed to develop or verify the
+feature (see the caps table above).
+
 **What the knob test also caught.** A quoted `"4"` for `offset_qdb` reached
 neither the radio nor an error: the MCP argument reader coerced it to the
 default 0 and the write reported success. The bridge's own wrong-type guards

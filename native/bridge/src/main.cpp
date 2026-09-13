@@ -528,7 +528,9 @@ Json op_radio_tx_power(const Json &req) {
   auto s = find_session(req, err);
   if (!s)
     return fail("no_session", err);
-  if (Json bad = unknown_field(req, {"offset_qdb", "index_override", "reapply"});
+  if (Json bad = unknown_field(
+          req, {"offset_qdb", "index_override", "rate_diffs", "clear_rate_diffs",
+                "reapply"});
       !bad.is_null())
     return bad;
   /* Presence decides whether this is a write, and a present-but-wrong-typed
@@ -541,17 +543,56 @@ Json op_radio_tx_power(const Json &req) {
   }
   if (!req.at("reapply").is_null() && req.at("reapply").type() != Json::Type::Bool)
     return fail("bad_request", "reapply must be a boolean");
+  if (!req.at("clear_rate_diffs").is_null() &&
+      req.at("clear_rate_diffs").type() != Json::Type::Bool)
+    return fail("bad_request", "clear_rate_diffs must be a boolean");
+  if (!req.at("rate_diffs").is_null() && !req.at("rate_diffs").is_object())
+    return fail("bad_request", "rate_diffs must be an object or null");
 
   const bool has_offset = !req.at("offset_qdb").is_null();
   const bool has_index = !req.at("index_override").is_null();
+  const bool clear_diffs = req.at("clear_rate_diffs").boolean(false);
   const bool reapply = req.at("reapply").boolean(false);
-  if (has_offset || has_index || reapply) {
+
+  std::optional<devourer::TxRateDiffsQdb> rate_diffs;
+  bool set_rate_diffs = false;
+  if (clear_diffs) {
+    /* nullopt is the explicit "restore the chip's calibrated shape". */
+    set_rate_diffs = true;
+  } else if (req.at("rate_diffs").is_object()) {
+    const Json &rd = req.at("rate_diffs");
+    if (Json bad = unknown_field(rd, {"cck", "legacy", "mcs"}); !bad.is_null())
+      return bad;
+    for (const char *k : {"cck", "legacy"}) {
+      const Json &v = rd.at(k);
+      if (!v.is_null() && !v.is_number())
+        return fail("bad_request", std::string("rate_diffs.") + k +
+                                     " must be an integer");
+    }
+    devourer::TxRateDiffsQdb d;
+    d.cck = static_cast<int8_t>(rd.at("cck").integer(0));
+    d.legacy = static_cast<int8_t>(rd.at("legacy").integer(0));
+    if (!rd.at("mcs").is_null()) {
+      if (!rd.at("mcs").is_array() || rd.at("mcs").items().size() != 8)
+        return fail("bad_request", "rate_diffs.mcs must be 8 integers (MCS0..7)");
+      for (size_t i = 0; i < 8; ++i) {
+        const Json &v = rd.at("mcs").items()[i];
+        if (!v.is_number())
+          return fail("bad_request", "rate_diffs.mcs must be 8 integers (MCS0..7)");
+        d.mcs[i] = static_cast<int8_t>(v.integer(0));
+      }
+    }
+    rate_diffs = d;
+    set_rate_diffs = true;
+  }
+
+  if (has_offset || has_index || set_rate_diffs || reapply) {
     std::optional<int> offset, index;
     if (has_offset)
       offset = static_cast<int>(req.at("offset_qdb").integer(0));
     if (has_index)
       index = static_cast<int>(req.at("index_override").integer(-1));
-    if (!s->set_tx_power(offset, index, reapply, err))
+    if (!s->set_tx_power(offset, index, set_rate_diffs, rate_diffs, reapply, err))
       return fail("unsupported", err);
   }
   return ok(s->tx_power_json());
