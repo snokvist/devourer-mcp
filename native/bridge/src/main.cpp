@@ -598,6 +598,26 @@ Json op_radio_tx_power(const Json &req) {
   return ok(s->tx_power_json());
 }
 
+Json op_radio_rx_quality(const Json &req) {
+  std::string err;
+  auto s = find_session(req, err);
+  if (!s)
+    return fail("no_session", err);
+  if (Json bad = unknown_field(req, {}); !bad.is_null())
+    return bad;
+  return ok(s->rx_quality_json());
+}
+
+Json op_radio_thermal(const Json &req) {
+  std::string err;
+  auto s = find_session(req, err);
+  if (!s)
+    return fail("no_session", err);
+  if (Json bad = unknown_field(req, {}); !bad.is_null())
+    return bad;
+  return ok(s->thermal_json());
+}
+
 Json op_radio_rx_energy(const Json &req) {
   std::string err;
   auto s = find_session(req, err);
@@ -874,6 +894,10 @@ Json dispatch(const Json &req) {
     return op_radio_rx_gain(req);
   if (op == "radio.tx_power")
     return op_radio_tx_power(req);
+  if (op == "radio.rx_quality")
+    return op_radio_rx_quality(req);
+  if (op == "radio.thermal")
+    return op_radio_thermal(req);
   if (op == "radio.cca_gates")
     return op_radio_cca_gates(req);
   if (op == "radio.cca")

@@ -739,17 +739,43 @@ never saw it. Fixed with a strict `optionalInt` in the tool layer, so a
 present-but-wrong-typed knob is refused before the request is built — the same
 class as the `radio.rx_gain` fix, one layer up.
 
+## The fused RX sensor and the thermal meter
+
+`radio_rx_quality` (`IRadio::GetRxQuality`) and `radio_thermal`
+(`IRadio::GetThermalStatus`) are exposed and verified with
+`tools/rx-quality-thermal-test.py` on the 2026-09-13 bench.
+
+- **RTL8822C**: the fused window is supported and valid; the thermal meter
+  reads raw 31 with baseline 31, delta 0, bucket `cool`. The 8822C wires no
+  efuse baseline, so `delta` there means "since the first read".
+- **MT7612U ×2**: both report `supported:false` with a reason — no fused feed
+  (the library only overrides `GetRxQuality` on the Realtek backends) and no
+  thermal meter — rather than a fabricated `NO_SIGNAL` or a raw 0 read as
+  "cool".
+
+**A parser anomaly the sensor exposed.** On ch6 the 8822C window reported
+`rssi_max_dbm` of 133–136 (raw PWDB 236–246) and, on that peak, the fused
+verdict `SATURATED`. The documented PWDB convention is raw 0..127 →
+−110..17 dBm, so at least one frame carried a value the parser should not
+produce; `smoke-test.py`'s per-chain RSSI shows the same class (raw up to 247).
+`parse_phy_sts_jgr3` stores the raw phy-status byte and assumes 0..127, so a
+byte ≥128 converts to a >17 dBm reading. The bridge now attaches a `note` to
+an out-of-range window and does not present the derived verdict as clean. The
+parser is vendored devourer code and a fix belongs upstream; recorded here as
+an open finding rather than silently corrected in the bridge.
+
 ## Reproducing
 
 ```sh
 tools/host/bridge-ctl.sh start
 ./gradlew :mcp:installDist
-tools/smoke-test.py          # RX path, all adapters
-tools/rx-gain-cca-test.py    # receive-gain clamp + split CCA gates, needs a Realtek
-tools/tx-power-test.py       # TX-power knobs + a sweep measured on a witness
-tools/stall-test.py          # a sink that stops reading, all adapters
-tools/backpressure-test.py   # sustained overload through a real capture
-tools/host/devourer-mcp      # MCP on stdio; dashboard on 127.0.0.1:8910
+tools/smoke-test.py              # RX path, all adapters
+tools/rx-gain-cca-test.py        # receive-gain clamp + split CCA gates, needs a Realtek
+tools/tx-power-test.py           # TX-power knobs + a sweep measured on a witness
+tools/rx-quality-thermal-test.py # fused RX sensor + thermal meter
+tools/stall-test.py              # a sink that stops reading, all adapters
+tools/backpressure-test.py       # sustained overload through a real capture
+tools/host/devourer-mcp          # MCP on stdio; dashboard on 127.0.0.1:8910
 ```
 
 The transmitting tests default to channel 6 because this bench measures it as

@@ -60,7 +60,7 @@ LLM ──MCP(stdio)──▶ Kotlin runtime ──UDS control + frame stream─
 | `kotlin/characterize/` | Evidence database, one JSON per adapter. |
 | `kotlin/scratchpad/` | Declarative micro-app runtime + live UI. |
 | `kotlin/dashboard/` | The persistent dashboard on `127.0.0.1:8910`. Reads in-process state only; never calls the bridge. |
-| `kotlin/mcp/` | The 29 tools. The only process the model talks to. |
+| `kotlin/mcp/` | The 31 tools. The only process the model talks to. |
 | `var/` | Runtime state: captures, `characterization/`, `scratchpads/`. Gitignored. |
 
 ### Why a separate bridge process
@@ -120,7 +120,7 @@ adapter is brought up. Realtek has it from construction.
 ## Testing
 
 ```sh
-./gradlew test                                   # 176 Kotlin tests, no hardware
+./gradlew test                                   # 184 Kotlin tests, no hardware
 ctest --test-dir build/native-bridge             # 63 vendored selftests
 tools/smoke-test.py                              # needs adapters; never passes vacuously
 tools/rx-gain-cca-test.py                        # receive-gain clamp + split CCA gates; needs a Realtek
@@ -196,25 +196,25 @@ the rebased RX-gain patch found and fixed the repin's own gaps: `radio.rx_gain`
 let a wrong-typed value skip the write and return the unchanged state as
 success, and three docs counted a stale `IRadio` ratio.
 
-The receive-gain clamp, the split carrier-sense gates, and the first TX-power
-slice are exposed end to end: `radio.rx_gain`/`radio.cca_gates`/`radio.tx_power`
-in the bridge, matching `Radios` methods, and the `radio_rx_gain` /
-`radio_cca_gates` / `radio_tx_power` MCP tools. Disabling either carrier-sense
-gate is gated on `SafetyLevel.EXPERIMENTAL` through the same `RadioSafety` the
-rest of the tree uses. The gain and gate ops already existed (no protocol
-change); `radio.tx_power` is new and, with the per-rate diff table, took the minor from 1.3 to 1.5.
+M2 is largely complete and exposed end to end: `radio.rx_gain`,
+`radio.cca_gates`, `radio.tx_power` (offset/index/reapply + per-rate diffs),
+`radio.rx_quality` and `radio.thermal` in the bridge; matching `Radios` methods
+and MCP tools; plus a `sweep_power_qdb` experiment axis. Disabling either
+carrier-sense gate is gated on `SafetyLevel.EXPERIMENTAL` through the same
+`RadioSafety` the rest of the tree uses. Protocol minor is now 1.6 (two new ops
+in the last slice).
 
 The highest-value next step is still closing `IRadio` coverage — the bridge
-calls 20 of 55 methods. TX power is now complete: offset/index/reapply, per-rate
-diffs, and a `sweep_power_qdb` axis that produces delivery-vs-power with an
-independent witness in one experiment. The staged plan for everything else on
-the demo-parity path is
-[`rxdemo-txdemo-parity.md`](rxdemo-txdemo-parity.md); the next untouched
-milestones are M2's TX receipts/thermal, then M3 (`FastRetune`,
-`FastSetBandwidth`, spectrum sweep). `radio.tx_stats` and `radio.cca` are the
-pattern to copy for a new op: a bridge op, a `RadioManager` method, an MCP tool
-with a description that says what the result does *not* prove. A new bridge op
-bumps the additive protocol minor from 1.5 to 1.6.
+calls 22 of 55 methods. The remaining M2 item is per-frame TX receipts
+(`tx.report`): the library emits them as JSONL events through a shared `FILE*`
+sink, so the bridge needs an event-capture pipe + parser and a `cfg.tx.report`
+opt-in that sets SPE_RPT in every TX descriptor. After that, M3
+(`FastRetune`, `FastSetBandwidth`, spectrum sweep). The staged plan is
+[`rxdemo-txdemo-parity.md`](rxdemo-txdemo-parity.md). `radio.tx_stats` and
+`radio.cca` are the pattern to copy for a new op: a bridge op, a
+`RadioManager` method, an MCP tool with a description that says what the
+result does *not* prove. A new bridge op bumps the additive protocol minor from
+1.6 to 1.7.
 
 After that, multi-witness experiments. The two-witness run that settled the
 carrier-sense question was done by hand against the bridge; making it a first-

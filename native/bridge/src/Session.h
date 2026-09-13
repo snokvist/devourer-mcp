@@ -191,6 +191,27 @@ public:
                     const std::optional<devourer::TxRateDiffsQdb> &rate_diffs,
                     bool reapply, std::string &err);
 
+  /* The fused, windowed RX sensor (IRadio::GetRxQuality): per-frame
+   * RSSI/SNR/EVM aggregate, a passive noise-floor estimate, the frame-free
+   * FA/CCA/IGI energy, and the LinkHealth verdict, in one draining read.
+   *
+   * Realtek-only in practice — only the IRtlRadio backends override
+   * GetRxQuality — so a non-Realtek reports `supported:false` rather than the
+   * default's all-invalid snapshot, which would read as a real NO_SIGNAL.
+   * DRAINS: read once to clear, dwell, read again for the window. Do not poll
+   * this and rx_energy on the same cadence; on Realtek they consume the same
+   * FA/CCA/IGI delta. */
+  Json rx_quality_json();
+
+  /* The chip's thermal meter (IRadio::GetThermalStatus): raw RF 0x42 thermal
+   * units, the baseline, the delta, and a coarse bucket. Telemetry, not a
+   * calibrated temperature, and not a validated degradation predictor.
+   *
+   * `supported:false` when the backend returned no reading at all (raw 0 with
+   * no baseline); a backend that has a meter but no baseline still reports
+   * supported with `valid:false`, because raw is meaningful there. */
+  Json thermal_json();
+
   /* Frame-free RX energy: what the chip's own PHY thinks is on the channel,
    * without decoding anything.
    *

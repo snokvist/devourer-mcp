@@ -185,6 +185,78 @@ public data class RxEnergy(
 }
 
 /**
+ * The fused, windowed RX link-quality snapshot (`IRadio::GetRxQuality`).
+ *
+ * One read that a closed-loop controller would otherwise assemble from the
+ * frame store: the per-frame RSSI/SNR/EVM aggregate, a passive noise-floor
+ * estimate, the frame-free FA/CCA/IGI energy, and the plain-language
+ * [verdict]. Realtek only — a non-Realtek reports [supported] false rather
+ * than the default all-invalid snapshot, which would read as a real
+ * `NO_SIGNAL`.
+ *
+ * The window DRAINS on every read, so a caller gets the interval since its
+ * previous call. Also consumes the same FA/CCA/IGI delta as [RxEnergy]: do not
+ * poll both on one cadence. [verdict]/[label]/[cause]/[fix] are the fused
+ * verdict; [evmValid] distinguishes "EVM was measured" from a zero.
+ */
+@Serializable
+public data class RxQuality(
+    val session: Int = 0,
+    val supported: Boolean = false,
+    val why: String? = null,
+    val fallback: String? = null,
+    val valid: Boolean = false,
+    val frames: Long = 0,
+    @SerialName("rssi_mean_dbm") val rssiMeanDbm: Int = 0,
+    @SerialName("rssi_max_dbm") val rssiMaxDbm: Int = 0,
+    @SerialName("snr_mean_db") val snrMeanDb: Double = 0.0,
+    @SerialName("snr_min_db") val snrMinDb: Double = 0.0,
+    @SerialName("snr_valid") val snrValid: Boolean = false,
+    @SerialName("evm_mean_db") val evmMeanDb: Double = 0.0,
+    @SerialName("evm_valid") val evmValid: Boolean = false,
+    @SerialName("noise_floor_dbm") val noiseFloorDbm: Double = 0.0,
+    @SerialName("nf_valid") val nfValid: Boolean = false,
+    @SerialName("abs_noise_floor_dbm") val absNoiseFloorDbm: Int = 0,
+    @SerialName("abs_nf_valid") val absNfValid: Boolean = false,
+    @SerialName("energy_valid") val energyValid: Boolean = false,
+    @SerialName("fa_ofdm") val faOfdm: Long = 0,
+    @SerialName("cca_ofdm") val ccaOfdm: Long = 0,
+    @SerialName("igi_valid") val igiValid: Boolean = false,
+    val igi: Int = 0,
+    val verdict: String = "",
+    val label: String = "",
+    val cause: String = "",
+    val fix: String = "",
+    @SerialName("igi_at_floor") val igiAtFloor: Boolean = false,
+    @SerialName("igi_at_ceiling") val igiAtCeiling: Boolean = false,
+    val note: String? = null,
+)
+
+/**
+ * The chip's thermal meter (`IRadio::GetThermalStatus`).
+ *
+ * [raw] is RF 0x42 thermal units (~1.5-2 C each), NOT absolute degrees;
+ * [delta] is [raw] minus [baseline] and is the heat signal. [valid] false means
+ * no baseline is available (only [raw] is meaningful). Telemetry, not a
+ * calibrated temperature and not a validated degradation predictor.
+ *
+ * [supported] false means the backend returned no reading at all — distinct
+ * from a meter that exists but has no baseline.
+ */
+@Serializable
+public data class Thermal(
+    val session: Int = 0,
+    val supported: Boolean = false,
+    val why: String? = null,
+    val raw: Int = 0,
+    val baseline: Int = 255,
+    val delta: Int = 0,
+    val valid: Boolean = false,
+    val bucket: String = "",
+    val note: String? = null,
+)
+
+/**
  * The receive-gain index, and whether anything is adjusting it.
  *
  * [supported] false means this backend has no gain index to report at all;
