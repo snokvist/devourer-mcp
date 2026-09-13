@@ -9,6 +9,8 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import org.openipc.devourer.protocol.AckResponder
+import org.openipc.devourer.protocol.AmpduMode
+import org.openipc.devourer.protocol.AmpduState
 import org.openipc.devourer.protocol.CcaGates
 import org.openipc.devourer.protocol.ChannelSpec
 import org.openipc.devourer.protocol.FrameRecord
@@ -197,6 +199,9 @@ public class FakeRadios(radios: List<OpenRadio> = emptyList()) : Radios {
 
     /** Armed ACK-responder state per session. */
     public val ackResponders: MutableMap<Int, AckResponder> = ConcurrentHashMap()
+
+    /** A-MPDU state per session, once a mode has been set. */
+    public val ampduStates: MutableMap<Int, AmpduState> = ConcurrentHashMap()
 
     /** Set to throw from the next call to the named op, once. */
     public var failNext: MutableMap<String, Throwable> = mutableMapOf()
@@ -825,6 +830,50 @@ public class FakeRadios(radios: List<OpenRadio> = emptyList()) : Radios {
         return next
     }
 
+    override suspend fun ampdu(session: Int): AmpduState {
+        record("ampdu", "$session")
+        val radio = radio(session)
+        if (radio.capabilities.generation !in AMPDU_GENERATIONS) {
+            return AmpduState(
+                session = session, capability = "unsupported",
+                note = "this backend does not wire SetAmpduMode",
+            )
+        }
+        return ampduStates[session]
+            ?: AmpduState(session = session, capability = "unknown", enabled = false)
+    }
+
+    override suspend fun setAmpdu(session: Int, mode: AmpduMode): AmpduState {
+        record("setAmpdu", "$session,enabled=${mode.enabled}")
+        val radio = radio(session)
+        if (radio.capabilities.generation !in AMPDU_GENERATIONS) {
+            throw CapabilityException(
+                "enable A-MPDU", radio.label, "the backend does not wire SetAmpduMode",
+            )
+        }
+        check(radio.state.broughtUp) { "bring the radio up before enabling A-MPDU" }
+        val next = AmpduState(
+            session = session, capability = "supported", enabled = mode.enabled,
+            tid = mode.tid, maxNum = mode.maxNum, density = mode.density,
+            noAck = mode.noAck, maxTime = mode.maxTime,
+            clearBurstMode = mode.clearBurstMode,
+        )
+        ampduStates[session] = next
+        return next
+    }
+
+    override suspend fun clearAmpdu(session: Int): AmpduState {
+        record("clearAmpdu", "$session")
+        val radio = radio(session)
+        if (radio.capabilities.generation !in AMPDU_GENERATIONS) {
+            return AmpduState(session = session, capability = "unsupported")
+        }
+        check(radio.state.broughtUp) { "bring the radio up before changing A-MPDU" }
+        val next = AmpduState(session = session, capability = "supported", enabled = false)
+        ampduStates[session] = next
+        return next
+    }
+
     override suspend fun activeRxPaths(session: Int): JsonObject {
         record("activeRxPaths", "$session")
         // Not implemented on MediaTek. Reporting "unsupported" rather than
@@ -874,6 +923,14 @@ public class FakeRadios(radios: List<OpenRadio> = emptyList()) : Radios {
 
         /** Generations that override `IRadio::GetThermalStatus`. */
         private val THERMAL_GENERATIONS = setOf("jaguar1", "jaguar2", "jaguar3")
+
+        /**
+         * Generations whose `SetAmpduMode` is wired. Not the IRtlRadio set:
+         * kestrel and rtl8733b inherit the refusing default, and the MT7612U
+         * deliberately refuses (its aggregation is descriptor state not yet
+         * plumbed through send_packet).
+         */
+        private val AMPDU_GENERATIONS = setOf("jaguar1", "jaguar2", "jaguar3")
 
         /**
          * A 2T2R Realtek, modelled on the bench RTL8812AU.

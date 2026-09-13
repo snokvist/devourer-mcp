@@ -121,6 +121,24 @@ class SensorWireTest {
     }
 
     @Test
+    fun `an ampdu reply decodes every field`() {
+        val json = """
+            {"session":3,"capability":"supported","enabled":true,"tid":2,"max_num":8,
+             "density":7,"no_ack":true,"max_time":32,"clear_burst_mode":true}
+        """.trimIndent()
+
+        val a = BridgeJson.format.decodeFromString(AmpduState.serializer(), json)
+
+        assertEquals("supported", a.capability)
+        assertTrue(a.enabled)
+        assertEquals(2, a.tid)
+        assertEquals(8, a.maxNum)
+        assertTrue(a.noAck)
+        assertEquals(32, a.maxTime)
+        assertTrue(a.clearBurstMode)
+    }
+
+    @Test
     fun `a thermal reply decodes every field`() {
         val json = """
             {"session":3,"supported":true,"raw":20,"baseline":18,"delta":2,

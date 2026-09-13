@@ -2,6 +2,8 @@ package org.openipc.devourer.dashboard
 
 import kotlinx.serialization.json.JsonObject
 import org.openipc.devourer.protocol.AckResponder
+import org.openipc.devourer.protocol.AmpduMode
+import org.openipc.devourer.protocol.AmpduState
 import org.openipc.devourer.protocol.CcaGates
 import org.openipc.devourer.protocol.ChannelSpec
 import org.openipc.devourer.protocol.RxGain
@@ -107,6 +109,12 @@ public class RecordingRadios(
 
     override suspend fun clearAckResponder(session: Int): AckResponder =
         delegate.clearAckResponder(session).also { refresh(session) }
+
+    override suspend fun setAmpdu(session: Int, mode: AmpduMode): AmpduState =
+        delegate.setAmpdu(session, mode).also { refresh(session) }
+
+    override suspend fun clearAmpdu(session: Int): AmpduState =
+        delegate.clearAmpdu(session).also { refresh(session) }
 
     /** Best effort: a stale page is a nuisance, a failed radio op is not. */
     private suspend fun refresh(session: Int) {

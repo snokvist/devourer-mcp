@@ -1609,6 +1609,99 @@ bool Session::clear_ack_responder(std::string &err) {
   return true;
 }
 
+Json Session::ampdu_json() {
+  std::lock_guard<std::recursive_mutex> life(_life_mu);
+  Json j;
+  j.set("session", _id);
+  if (_radio == nullptr) {
+    j.set("supported", false).set("why", "session has no radio");
+    return j;
+  }
+  const auto m = _radio->GetAmpduMode();
+  j.set("enabled", m.enabled)
+      .set("tid", m.tid)
+      .set("max_num", m.max_num)
+      .set("density", m.density)
+      .set("no_ack", m.no_ack)
+      .set("max_time", m.max_time)
+      .set("clear_burst_mode", m.clear_burst_mode);
+  const bool unknown = !_ampdu_supported && !m.enabled;
+  j.set("capability",
+        _ampdu_supported ? (*_ampdu_supported ? "supported" : "unsupported")
+                         : (m.enabled ? "supported" : "unknown"));
+  if (unknown)
+    j.set("note",
+          "a read cannot tell a supported-but-off backend from one that does "
+          "not wire SetAmpduMode — the cleared state is the same bytes. Set a "
+          "mode to find out which.");
+  else if (j.at("capability").str() == std::string("supported"))
+    j.set("note",
+          "A-MPDU needs the TX queue fed deep enough for the MAC to aggregate; "
+          "a shallow feed produces single-MPDU aggregates and no goodput gain. "
+          "The queue path here feeds one frame at a time, so the structured "
+          "send path will not show the +30% the demos measure.");
+  return j;
+}
+
+bool Session::set_ampdu(const devourer::AmpduMode &mode, std::string &err) {
+  std::lock_guard<std::recursive_mutex> life(_life_mu);
+  if (_radio == nullptr) {
+    err = "session has no radio";
+    return false;
+  }
+  if (!_up) {
+    err = "bring the radio up before enabling A-MPDU";
+    return false;
+  }
+  if (mode.enabled) {
+    if (mode.tid > 7) {
+      err = "tid must be 0..7 (the QSEL the aggregatable frames ride)";
+      return false;
+    }
+    if (mode.max_num < 1 || mode.max_num > 0x1f) {
+      err = "max_num must be 1..31";
+      return false;
+    }
+    if (mode.density > 7) {
+      err = "density must be 0..7";
+      return false;
+    }
+  }
+  try {
+    if (!_radio->SetAmpduMode(mode)) {
+      _ampdu_supported = false;
+      err = "the backend refused the A-MPDU mode (unsupported, or the chip is "
+            "not brought up)";
+      return false;
+    }
+  } catch (const std::exception &e) {
+    _ampdu_supported = false;
+    err = std::string("SetAmpduMode threw: ") + e.what();
+    return false;
+  }
+  _ampdu_supported = true;
+  return true;
+}
+
+bool Session::clear_ampdu(std::string &err) {
+  std::lock_guard<std::recursive_mutex> life(_life_mu);
+  if (_radio == nullptr) {
+    err = "session has no radio";
+    return false;
+  }
+  if (!_up) {
+    err = "bring the radio up before changing A-MPDU";
+    return false;
+  }
+  try {
+    _radio->ClearAmpduMode();
+  } catch (const std::exception &e) {
+    err = std::string("ClearAmpduMode threw: ") + e.what();
+    return false;
+  }
+  return true;
+}
+
 Json Session::rx_energy_json(bool with_nhm) {
   std::lock_guard<std::recursive_mutex> life(_life_mu);
   Json j;

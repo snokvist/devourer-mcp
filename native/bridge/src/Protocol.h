@@ -63,8 +63,9 @@ inline constexpr int kProtocolVersionMajor = 1;
  * 8: new op radio.tx_receipts, and radio.open takes `tx_report` (the
  * per-frame CCX report divisor). Additive.
  * 9: new op radio.ack_responder — arm/clear the hardware ACK responder.
- * Additive. */
-inline constexpr int kProtocolVersionMinor = 9;
+ * Additive.
+ * 10: new op radio.ampdu — the A-MPDU TX session mode. Additive. */
+inline constexpr int kProtocolVersionMinor = 10;
 
 /* 'D','V','R','F' — present on every frame record so a desynchronized reader
  * fails loudly at the next record instead of interpreting payload as a

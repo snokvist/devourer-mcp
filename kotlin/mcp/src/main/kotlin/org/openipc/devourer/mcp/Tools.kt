@@ -41,6 +41,8 @@ import org.openipc.devourer.scratchpad.ScratchpadService
 import org.openipc.devourer.capture.FrameQuery
 import org.openipc.devourer.capture.PcapWriter
 import org.openipc.devourer.protocol.AckResponder
+import org.openipc.devourer.protocol.AmpduMode
+import org.openipc.devourer.protocol.AmpduState
 import org.openipc.devourer.protocol.CcaGates
 import org.openipc.devourer.protocol.ChannelSpec
 import org.openipc.devourer.protocol.ChannelWidth
@@ -1146,6 +1148,67 @@ internal class Tools(
                 else -> radios.ackResponder(session)
             }
             text(json.encodeToString(AckResponder.serializer(), result))
+        }
+
+        register(
+            server,
+            name = "radio_ampdu",
+            description = """
+                Read or set the 802.11 A-MPDU TX mode: mark data frames aggregatable and
+                program the MAC pacing that gates net goodput. Amortizes one PHY preamble over
+                many MPDUs — +30% on-air goodput at MCS7/20 in the vendor measurements.
+
+                Omit the mode fields to read; give `enabled` (and any of `tid`, `max_num`,
+                `density`, `no_ack`, `max_time`, `clear_burst_mode`) to set; `clear:true` to
+                disable. `tid` picks the QSEL the aggregatable frames ride (0..7), `max_num` the
+                MPDUs per aggregate (1..31), `density` the min spacing (7 is bench-fastest), and
+                `no_ack` the broadcast/no-BlockAck per-frame retry-limit-0 recipe.
+
+                Two honest limits. First, `capability` reads `unknown` until a set attempt has
+                told the bridge whether this adapter honours A-MPDU: the cleared state is the
+                same bytes as the unwired default, so a read cannot tell "off" from "not
+                implemented". Second, the gain needs the TX queue fed deep enough for the MAC to
+                aggregate; this bridge's structured send path feeds one frame at a time, so
+                enabling it here does not by itself produce the +30% a real feeder gets.
+            """.trimIndent(),
+            inputSchema = ToolSchema(
+                properties = buildJsonObject {
+                    put("session", schema("integer", "Session id of a brought-up radio."))
+                    put("enabled", schema("boolean", "Enable A-MPDU (with the mode fields below)."))
+                    put("tid", schema("integer", "QSEL/TID 0..7 the aggregatable frames ride. Default 0."))
+                    put("max_num", schema("integer", "Max MPDUs per A-MPDU 1..31. Default 16."))
+                    put("density", schema("integer", "Min MPDU spacing 0..7. Default 7."))
+                    put("no_ack", schema("boolean", "Broadcast/no-BlockAck: per-frame retry limit 0. Default true."))
+                    put("max_time", schema("integer", "Aggregate-fill timer; 0x20 is the proven unlock. Default 32."))
+                    put("clear_burst_mode", schema("boolean", "Clear the burst-mode gate (HalMAC +40%). Default true."))
+                    put("clear", schema("boolean", "Disable A-MPDU."))
+                },
+                required = listOf("session"),
+            ),
+        ) { request ->
+            val session = request.intOr("session", -1)
+            val args = request.params.arguments.orEmpty()
+            val modeKeys = setOf(
+                "enabled", "tid", "max_num", "density", "no_ack", "max_time",
+                "clear_burst_mode",
+            )
+            val result = when {
+                request.boolOr("clear", false) -> radios.clearAmpdu(session)
+                modeKeys.any { args.containsKey(it) } -> radios.setAmpdu(
+                    session,
+                    AmpduMode(
+                        enabled = request.boolOr("enabled", true),
+                        tid = request.intOr("tid", 0),
+                        maxNum = request.intOr("max_num", 16),
+                        density = request.intOr("density", 7),
+                        noAck = request.boolOr("no_ack", true),
+                        maxTime = request.intOr("max_time", 0x20),
+                        clearBurstMode = request.boolOr("clear_burst_mode", true),
+                    ),
+                )
+                else -> radios.ampdu(session)
+            }
+            text(json.encodeToString(AmpduState.serializer(), result))
         }
 
         register(
