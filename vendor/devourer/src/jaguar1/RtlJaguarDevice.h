@@ -55,24 +55,16 @@ class RtlJaguarDevice : public IRtlRadio {
    * declaration order, and _eepromManager / _radioManagement / _halModule all
    * take _cfg in the constructor's init list. */
   const devourer::DeviceConfig _cfg;
-  /* The receive-gain clamp in force. Defaults are phydm's DIG coverage for
-   * this family; the ceiling is widened to the value jaguar2's dig_step
-   * already allows, because backing gain off is the direction a host needs
-   * and 0x2a is only DIG's own upper bound, not the register's. */
-  bool _cca_disabled = false; /* last SetCcaMode argument; see SetRxGainRange */
-  /* The two gates, tracked separately so a later re-apply restores what the
-   * caller actually asked for. Collapsing them to _cca_disabled made
-   * SetRxGainRange's re-apply silently re-enable a gate the caller had
-   * turned off, with nothing in the log to say so. */
+  /* The receive-gain clamp in force. Defaults are phydm's actual unlinked DIG
+   * window; caps advertise the wider supported host-clamp envelope. */
+  /* Remember the independent gate state so a gain change can re-derive the
+   * IGI-coupled EDCCA threshold without collapsing the split configuration. */
   bool _cca_primary_disabled = false;
   bool _cca_edcca_disabled = false;
-  /* Programs 0x520[14]/[15] and the BB EDCCA thresholds. The EDCCA half of
-   * the work keys off the edcca argument: parked at never-trigger when that
-   * gate is off, at the vendor IGI-coupled operating point when it is on. */
-  void apply_cca(bool primary_disabled, bool edcca_disabled);
   uint8_t _rx_gain_min = kRxGainIndexMin;
-  uint8_t _rx_gain_max = kRxGainIndexMax;
+  uint8_t _rx_gain_max = 0x2a;
   bool _rx_gain_clamped = false;
+  void ApplyConfiguredRxGain();
   std::shared_ptr<EepromManager> _eepromManager;
   std::shared_ptr<RadioManagementModule> _radioManagement;
   /* Last channel handed to SetMonitorChannel. Value-initialised so the
@@ -341,8 +333,7 @@ public:
    * parked at never-trigger by the BB table, programmed to the vendor
    * operating point on enable (EDCCA only exists once they are set). */
   void SetCcaMode(bool disabled) override;
-  /* The two gates independently — see IRtlRadio. SetCcaMode is
-   * SetCcaGates(d, d) plus the remembered state. */
+  /* The two gates independently — see IRtlRadio. */
   bool SetCcaGates(bool primary_disabled, bool edcca_disabled) override;
   bool GetCcaGates(bool &primary_disabled, bool &edcca_disabled) override;
   /* A-MPDU TX mode (IRadio contract; src/AmpduMode.h). Programs the
@@ -467,6 +458,11 @@ public:
   bool la_capture_wedged() const { return _la && _la->is_wedged(); }
 
 private:
+  /* Programs 0x520[14]/[15] and, for the EDCCA gate only, the BB thresholds
+   * at 0x8a4. SetCcaMode is apply_cca(d, d) and writes exactly what it
+   * wrote before the split existed. */
+  void apply_cca(bool primary_disabled, bool edcca_disabled);
+
   void StartWithMonitorMode(SelectedChannel selectedChannel);
   bool NetDevOpen(SelectedChannel selectedChannel);
 

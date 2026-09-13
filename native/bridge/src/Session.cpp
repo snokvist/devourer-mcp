@@ -438,16 +438,25 @@ Json Session::describe() {
     j.set("permanent_mac", std::string{buf});
   }
 
-  j.set("state", Json()
-                     .set("brought_up", _up.load())
-                     .set("monitoring", _rx_running.load())
-                     /* Either gate off, not both: a radio with only the
-                      * energy gate disabled is still transmitting without
-                      * fully listening, and this field is what the
-                      * dashboard's warning and the MCP reply key off. */
-                     .set("cca_disabled", cca_disabled())
-                     .set("primary_cca_disabled", _cca_primary_disabled)
-                     .set("edcca_disabled", _cca_edcca_disabled));
+  Json st;
+  st.set("brought_up", _up.load())
+      .set("monitoring", _rx_running.load())
+      /* Either gate off, not both: a radio with only the energy gate
+       * disabled is still transmitting without fully listening, and this
+       * field is what the dashboard's warning and the MCP reply key off. */
+      .set("cca_disabled", cca_disabled());
+  /* The two gate bits are a hardware reading, not a remembered request, and
+   * a backend that cannot give one gets neither field. Reporting the
+   * session's defaults here would present "we never asked" as "the gates are
+   * on", which is the same fabricated-measurement failure the not-ported
+   * default exists to avoid — and an RTL8733BU, which implements SetCcaMode
+   * but not the split, is a real device that hits it. */
+  {
+    bool primary = false, edcca = false, is_rtl = false;
+    if (read_cca_gates(primary, edcca, is_rtl))
+      st.set("primary_cca_disabled", primary).set("edcca_disabled", edcca);
+  }
+  j.set("state", st);
   if (_up) {
     j.set("channel", Json()
                          .set("channel", _channel.Channel)
@@ -843,8 +852,48 @@ bool Session::set_cca(bool disabled, std::string &err) {
     err = std::string("SetCcaMode threw: ") + e.what();
     return false;
   }
-  _cca_disabled = disabled;
+  /* SetCcaMode moves BOTH gates, so both per-gate flags follow it. Writing a
+   * separate combined flag here is what let describe report
+   * cca_disabled=false while primary_cca_disabled and edcca_disabled were
+   * both true — one object, two answers, and the false one is the field the
+   * dashboard warning keys off. */
+  _cca_primary_disabled = disabled;
+  _cca_edcca_disabled = disabled;
   return true;
+}
+
+bool Session::read_cca_gates(bool &primary, bool &edcca, bool &is_rtl) const {
+  auto *rtl = dynamic_cast<IRtlRadio *>(_radio);
+  is_rtl = rtl != nullptr;
+  if (rtl == nullptr || !_up)
+    return false;
+  try {
+    return rtl->GetCcaGates(primary, edcca);
+  } catch (const std::exception &) {
+    /* A dying or half-unplugged adapter is exactly when someone asks. Fold
+     * the throw into "no reading" the way GetPermanentMacAddress does rather
+     * than letting it escape as internal_error. */
+    return false;
+  }
+}
+
+/* Why the gate split is unavailable, distinguishing the three reasons that
+ * all arrive here as "GetCcaGates returned false". Before the RTL8733BU
+ * joined the bench every Realtek adapter here implemented the split, so
+ * "is an IRtlRadio" and "supports the split" were the same question and
+ * this collapsed into one message — which then told a brought-up 8733BU
+ * that it was not brought up. */
+const char *Session::cca_split_unavailable_reason(bool is_rtl) const {
+  if (!is_rtl)
+    return "splitting the carrier-sense gate is a Realtek 0x520 facility "
+           "(IRtlRadio::GetCcaGates) and this is not a Realtek backend; "
+           "radio.cca still turns both gates off together";
+  if (!_up)
+    return "the radio is not brought up — set a channel first; the gate "
+           "register is meaningless before then";
+  return "this Realtek backend does not implement the carrier-sense gate "
+         "split (IRtlRadio::GetCcaGates is optional and not ported here); "
+         "radio.cca is the portable all-or-nothing control";
 }
 
 Json Session::cca_gates_json() {
@@ -855,19 +904,11 @@ Json Session::cca_gates_json() {
     j.set("supported", false).set("why", "session has no radio");
     return j;
   }
-  auto *rtl = dynamic_cast<IRtlRadio *>(_radio);
-  bool primary = false, edcca = false;
-  if (rtl == nullptr || !rtl->GetCcaGates(primary, edcca)) {
+  bool primary = false, edcca = false, is_rtl = false;
+  if (!read_cca_gates(primary, edcca, is_rtl)) {
     j.set("supported", false)
-        .set("why",
-             rtl == nullptr
-                 ? "splitting the carrier-sense gate is a Realtek 0x520 "
-                   "facility (IRtlRadio::GetCcaGates) and is not ported for "
-                   "this backend; radio.cca still turns both gates off "
-                   "together"
-                 : "the radio is not brought up — set a channel first; the "
-                   "gate register is meaningless before then")
-        .set("cca_disabled", _cca_disabled);
+        .set("why", cca_split_unavailable_reason(is_rtl))
+        .set("cca_disabled", cca_disabled());
     return j;
   }
   j.set("supported", true)
@@ -899,12 +940,9 @@ bool Session::get_cca_gates(bool &primary_disabled, bool &edcca_disabled,
     err = "session has no radio";
     return false;
   }
-  auto *rtl = dynamic_cast<IRtlRadio *>(_radio);
-  if (rtl == nullptr || !rtl->GetCcaGates(primary_disabled, edcca_disabled)) {
-    err = _up ? "this backend cannot report the two carrier-sense gates "
-                "separately; use radio.cca"
-              : "radio is not brought up — set a channel first; the gate "
-                "register is meaningless before then";
+  bool is_rtl = false;
+  if (!read_cca_gates(primary_disabled, edcca_disabled, is_rtl)) {
+    err = cca_split_unavailable_reason(is_rtl);
     return false;
   }
   return true;
@@ -923,11 +961,10 @@ bool Session::set_cca_gates(bool primary_disabled, bool edcca_disabled,
   }
   auto *rtl = dynamic_cast<IRtlRadio *>(_radio);
   if (rtl == nullptr)
-    return (err = "this backend cannot address the two carrier-sense gates "
-                  "separately; use radio.cca"), false;
+    return (err = cca_split_unavailable_reason(false)), false;
   try {
     if (!rtl->SetCcaGates(primary_disabled, edcca_disabled)) {
-      err = "the backend refused the gate change";
+      err = cca_split_unavailable_reason(true);
       return false;
     }
   } catch (const std::exception &e) {
@@ -938,7 +975,6 @@ bool Session::set_cca_gates(bool primary_disabled, bool edcca_disabled,
   }
   _cca_primary_disabled = primary_disabled;
   _cca_edcca_disabled = edcca_disabled;
-  _cca_disabled = primary_disabled && edcca_disabled;
   return true;
 }
 

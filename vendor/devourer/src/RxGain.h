@@ -3,14 +3,14 @@
 
 #include <cstdint>
 
-/* Receive-gain reporting and clamping, across generations.
+/* Receive-gain reporting and clamping. Jaguar1 and Jaguar3 currently expose
+ * this contract; the other backends retain the honest unsupported defaults.
  *
- * Every backend in this tree has a receive-gain index. On most of them
- * nothing moves it: jaguar1's DIG watchdog is opt-in and its floor is written
- * once at bring-up, jaguar3's IGI is static, kestrel has no DIG monitor at
- * all, and the mt76 port's 1 Hz gain tracker runs with a hard-coded RSSI
- * input because a monitor consumer has no associated-station table. Only
- * jaguar2's ~100 ms dig_step genuinely adapts.
+ * Every backend in this tree has some form of receive-gain index, but its
+ * runtime differs: jaguar1's DIG watchdog is opt-in, Jaguar3's RX tick and
+ * Jaguar2's ~100 ms dig_step adapt, Kestrel has no DIG monitor, and the mt76
+ * port's 1 Hz tracker uses a fixed RSSI input in monitor mode. Those facts
+ * motivate this interface; they do not imply every backend implements it.
  *
  * That matters because the index decides more than sensitivity. On Realtek
  * the EDCCA threshold is re-derived from IGI, so a gain pinned at the DIG

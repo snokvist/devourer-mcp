@@ -40,10 +40,20 @@ total=$(grep -c '^  virtual' vendor/devourer/src/IRadio.h)
 # Look for a WRONG ratio rather than demanding an exact phrasing: the check
 # should catch drift, not dictate prose. Line breaks inside a sentence made an
 # exact-match version fail on correct docs, which is its own kind of wrong.
-wrong=$(grep -rhoE '[0-9]+ of ([0-9]+ )?`?IRadio' docs/ CLAUDE.md 2>/dev/null \
-        | grep -oE '^[0-9]+' | sort -u | grep -v "^${called}$" || true)
+#
+# Both numbers are checked. Watching only the numerator let "14 of 52" survive
+# while IRadio gained three virtuals and the real ratio became 14 of 55.
+wrong=""
+while IFS= read -r claim; do
+  [ -n "$claim" ] || continue
+  n=$(printf '%s' "$claim" | grep -oE '^[0-9]+')
+  m=$(printf '%s' "$claim" | grep -oE '[0-9]+ of [0-9]+' | grep -oE '[0-9]+$')
+  [ "$n" = "$called" ] && { [ -z "$m" ] || [ "$m" = "$total" ]; } && continue
+  wrong="$wrong ${n} of ${m:-?}"
+done < <(grep -rhoE '[0-9]+ of ([0-9]+ )?`?IRadio' docs/ CLAUDE.md 2>/dev/null | sort -u)
 if [ -n "$wrong" ]; then
-  bad "docs claim IRadio coverage of $(echo "$wrong" | tr '\n' ' ')" "actual ${called}"
+  bad "docs claim IRadio coverage of$(echo "$wrong" | sed 's/  */ /g;s/^ / /')" \
+      "actual ${called} of ${total}"
 else
   ok "IRadio coverage" "${called} of ${total} methods"
 fi

@@ -46,13 +46,15 @@ public:
    * so inside the caller's window. min == max pins. Atomic because dig()
    * runs from the RX tick while a control-plane caller may be setting it. */
   void PinGainRange(uint8_t min, uint8_t max) {
-    _gain_min.store(min, std::memory_order_relaxed);
-    _gain_max.store(max, std::memory_order_relaxed);
-    _gain_pinned.store(true, std::memory_order_relaxed);
+    _gain_range.store(static_cast<uint16_t>(min) << 8 | max,
+                      std::memory_order_relaxed);
   }
-  uint8_t GainRangeMin() const { return _gain_min.load(std::memory_order_relaxed); }
-  uint8_t GainRangeMax() const { return _gain_max.load(std::memory_order_relaxed); }
-  bool GainRangePinned() const { return _gain_pinned.load(std::memory_order_relaxed); }
+  uint8_t GainRangeMin() const {
+    return static_cast<uint8_t>(_gain_range.load(std::memory_order_relaxed) >> 8);
+  }
+  uint8_t GainRangeMax() const {
+    return static_cast<uint8_t>(_gain_range.load(std::memory_order_relaxed) & 0xff);
+  }
 
   /* The live index, and a direct write clamped to the range above — what a
    * host clamp needs when no tick has run yet. */
@@ -99,9 +101,8 @@ private:
   int _last_l2h_logged = 0x7fff;
 
   /* Host clamp on DIG's coverage window; defaults are phydm's own. */
-  std::atomic<uint8_t> _gain_min{0x1e}; /* DIG_MIN_COVERAGE */
-  std::atomic<uint8_t> _gain_max{0x22}; /* DIG_MAX_OF_MIN_COVERAGE */
-  std::atomic<bool> _gain_pinned{false};
+  /* Packed min/max; callers also serialize hardware access on _reg_mu. */
+  std::atomic<uint16_t> _gain_range{0x1e22};
 };
 
 } // namespace jaguar3

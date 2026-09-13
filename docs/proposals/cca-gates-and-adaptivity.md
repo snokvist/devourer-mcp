@@ -1,7 +1,8 @@
 # Upstream proposal: address the two CCA gates separately, and stop enabling EDCCA by default on Jaguar1
 
-For OpenIPC/devourer. Built and measured on this bench first; the patch is
-`vendor/patches/0002-cca-gates.patch`.
+For OpenIPC/devourer. Built and measured on this bench first; the gate split
+and its runnable Jaguar1 verification are now in upstream `master` through
+#427 and #429, so the local vendor patch has been retired.
 
 **Item 1 (the gate split) is upstream as
 [OpenIPC/devourer#427](https://github.com/OpenIPC/devourer/pull/427)**,
@@ -117,3 +118,21 @@ Jaguar3, Kestrel and RTL8733B are left to the maintainer.
 and the two gates as separate cells rather than one `dis_cca` flag. The
 no-flooder baseline is the important addition — on Jaguar3 the DUT transmits
 at full rate alone, and on Jaguar1 it does not, which is the whole finding.
+
+Item 1 landed as this; it now also carries `tests/cca_gates_probe.cpp` and
+`tests/cca_gates_regcheck.sh`, the in-tree caller and the register-level
+check, so the tables above are reproducible from the tree rather than only
+from a PR description.
+
+## Status
+
+| Item | Where it stands |
+|---|---|
+| 1. `SetCcaGates` / `GetCcaGates` | Upstream as [OpenIPC/devourer#427](https://github.com/OpenIPC/devourer/pull/427); extended to jaguar3 and through a maintainer review round. Verified on RTL8812AU, RTL8822C, and RTL8733BU as an unported backend. |
+| 2. Do not enable EDCCA on Jaguar1 by default | Raised as [OpenIPC/devourer#428](https://github.com/OpenIPC/devourer/issues/428), deliberately as an issue rather than a PR: a default change has a blast radius one bench cannot measure, and 5 GHz regulatory adaptivity is a real reason a project might want it on. |
+| 3. Thresholds as config rather than constants | In the same issue, as the smallest of the three options it offers. |
+| 4. Correct the `CLAUDE.md` claim | Done, inside #427 at the maintainer's request: the Jaguar3 result is no longer stated as general, both families are given as disagreeing measurements, and the flooder arm is paired in so the Jaguar1 number cannot be read as "disable everything". |
+
+Items 2 and 3 are the only open ones, and they are deliberately a question
+rather than a patch. Nothing in this repo depends on the answer — the gate
+split gives a caller the lever either way.

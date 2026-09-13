@@ -21,6 +21,11 @@ A vendor-neutral receive-gain contract — `GetRxGainCaps` / `GetRxGainState` /
 upstream; see [`docs/proposals/rx-gain-range.md`](../../docs/proposals/rx-gain-range.md)
 for the design and the measurements.
 
+Rebased onto upstream `45f4022` after the CCA-gate work landed. The Jaguar1
+part remembers the independent primary/EDCCA gate state when re-deriving the
+IGI-coupled EDCCA threshold; that integration now belongs to this patch rather
+than the retired gate patch.
+
 This directory was empty on purpose until now, and the reason it is not any
 more is worth stating: the change had to be built and driven on real adapters
 before it could honestly be proposed, and building it is what disproved the
@@ -29,17 +34,3 @@ hypothesis that motivated it. Carrying it here rather than in a fork keeps
 makes the divergence from `DEVOURER_VERSION` a file someone can read.
 
 Retire it the moment it lands upstream.
-
-## 0002-cca-gates.patch
-
-`IRtlRadio::SetCcaGates` / `GetCcaGates` — the MAC carrier-sense gate one bit
-at a time, because on Jaguar1 the two bits do opposite things and
-`SetCcaMode` can only move them together. See
-[`docs/proposals/cca-gates-and-adaptivity.md`](../../docs/proposals/cca-gates-and-adaptivity.md);
-the measurement it enabled is that EDCCA alone costs an 8812AU injector 94%
-of its frames, which inverts the Jaguar3 result devourer documents as general.
-
-Upstream as [OpenIPC/devourer#427](https://github.com/OpenIPC/devourer/pull/427)
-(derived against a pristine tree — this file carries the same change stacked
-on 0001, which is why the two differ in context). Retire it when that lands.
-

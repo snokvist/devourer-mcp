@@ -8,6 +8,7 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <thread>
 
 class RadioManagementModule;
@@ -60,27 +61,34 @@ public:
    * maximum sensitivity while leaving it free to react to false alarms
    * above that. min == max pins it. */
   void SetGainRange(uint8_t min, uint8_t max) {
-    _rx_gain_range_min.store(min, std::memory_order_relaxed);
-    _rx_gain_range_max.store(max, std::memory_order_relaxed);
+    _rx_gain_range.store(static_cast<uint16_t>(min) << 8 | max,
+                         std::memory_order_relaxed);
   }
-  /* As above, and remembered as a host decision so DigInit leaves it alone. */
-  void PinGainRange(uint8_t min, uint8_t max) {
-    SetGainRange(min, max);
-    _gain_range_pinned.store(true, std::memory_order_relaxed);
-  }
+  /* As above, remembered as a host decision, and applied synchronously with
+   * DIG so a tick cannot restore its cached IGI after this returns. */
+  uint8_t PinGainRange(uint8_t min, uint8_t max);
   uint8_t GainRangeMin() const {
-    return _rx_gain_range_min.load(std::memory_order_relaxed);
+    return static_cast<uint8_t>(
+        _rx_gain_range.load(std::memory_order_relaxed) >> 8);
   }
   uint8_t GainRangeMax() const {
-    return _rx_gain_range_max.load(std::memory_order_relaxed);
+    return static_cast<uint8_t>(
+        _rx_gain_range.load(std::memory_order_relaxed) & 0xff);
   }
 
-  /* EDCCA threshold tracking (the SetCcaMode enable path): when on, each
-   * tick re-derives the BB 0x8a4 L2H/H2L from the IGI DIG just wrote —
-   * the vendor couples the EDCCA threshold to IGI per watchdog cycle
-   * (phydm_adaptivity). Off = leave 0x8a4 alone (SetCcaMode owns the
-   * parked/static value). */
-  void SetEdccaTrack(bool on) { _edcca_track.store(on, std::memory_order_relaxed); }
+  /* EDCCA threshold tracking (the SetCcaMode / SetCcaGates enable path):
+   * when on, each tick re-derives the BB 0x8a4 L2H/H2L from the IGI DIG
+   * just wrote — the vendor couples the EDCCA threshold to IGI per watchdog
+   * cycle (phydm_adaptivity). Off = leave 0x8a4 alone (the caller owns the
+   * parked/static value).
+   *
+   * Synchronous by contract: this returns only once no tick is inside the
+   * EDCCA block and none can enter, so a caller turning tracking OFF may
+   * then write 0x8a4 knowing the watchdog will not overwrite it. Without
+   * that, a tick landing between the park write and the flag store leaves
+   * live thresholds behind a disable the caller already asked for — which
+   * only becomes reachable once the gates are settable mid-session. */
+  void SetEdccaTrack(bool on);
 
   /* Most-recent FA counter snapshot — exposed for diagnostics /
    * future DIG integration. */
@@ -143,15 +151,19 @@ private:
    * just walk based on FA count). */
   bool _digInitialised = false;
   uint8_t _cur_ig_value = 0x20;
-  std::atomic<bool> _edcca_track{false};
+  /* Serialises the whole DIG cycle with a host range change. */
+  std::mutex _dig_mu;
+  /* Serialises the tick's EDCCA block against SetEdccaTrack. Held only
+   * across that block, never across a whole tick. */
+  std::mutex _edcca_mu;
+  bool _edcca_track = false;          /* guarded by _edcca_mu */
   uint8_t _edcca_last_l2h = 0x7f; /* parked sentinel — first tick writes */
   uint8_t _dm_dig_max = 0x26;       /* DIG_MAX_COVERAGR */
   uint8_t _dm_dig_min = 0x1c;       /* DIG_MIN_COVERAGE */
   uint8_t _dig_max_of_min = 0x2a;   /* DIG_MAX_OF_MIN_BALANCE_MODE */
-  /* Atomic: DigTick reads these on the watchdog thread while a control-plane
-   * caller may be setting them through SetGainRange. */
-  std::atomic<uint8_t> _rx_gain_range_max{0x2a};
-  std::atomic<uint8_t> _rx_gain_range_min{0x1c};
+  /* One packed atomic prevents readers observing min from one host update and
+   * max from another. High byte=min, low byte=max. */
+  std::atomic<uint16_t> _rx_gain_range{0x1c2a};
   std::atomic<bool> _gain_range_pinned{false};
 };
 

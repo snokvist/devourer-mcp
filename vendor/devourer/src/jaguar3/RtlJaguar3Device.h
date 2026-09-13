@@ -193,8 +193,8 @@ public:
 
   /* Consolidated windowed RX link-quality snapshot (see RxQuality.h) — subsumes
    * GetRxEnergy. Fed per decoded frame in the RX loop via _rxq. On Jaguar3 the
-   * noise-floor is the passive rssi-snr estimate (this generation has no
-   * background DIG, so IGI is static and can't track the floor). */
+   * noise-floor is the passive rssi-snr estimate; DIG runs on the RX/coex tick
+   * but there is no absolute idle-noise measurement on this generation. */
   devourer::RxQuality GetRxQuality() override {
     return devourer::build_rx_quality(_rxq.snapshot(), GetRxEnergy(true));
   }
@@ -207,8 +207,7 @@ public:
    * downlink residual from ~472 µs to 0.39 µs on a crowded channel (the TBTT
    * beacon airs on schedule instead of after a CSMA backoff). */
   void SetCcaMode(bool disabled) override;
-  /* The two gates independently — see IRtlRadio. SetCcaMode is
-   * SetCcaGates(d, d), and writes exactly the same bytes it always did. */
+  /* The two gates independently — see IRtlRadio. */
   bool SetCcaGates(bool primary_disabled, bool edcca_disabled) override;
   bool GetCcaGates(bool &primary_disabled, bool &edcca_disabled) override;
 
@@ -312,12 +311,12 @@ private:
   std::atomic<bool> _bf_apply_on{false};
   std::atomic<uint64_t> _bf_cbr_count{0};
   uint8_t _bf_peer[6] = {0};
-  /* dis_cca sticky state — re-applied after SetMonitorChannel (the channel set
-   * rewrites the BB CCA registers). Caller holds _reg_mu. */
-  bool _cca_disabled = false;
-  /* The two gates, tracked separately so a channel set re-asserts exactly
-   * what the caller asked for. Both false is the default, which is what
-   * _cca_disabled == false always meant. */
+  /* dis_cca sticky state, one field per gate — re-applied after
+   * SetMonitorChannel (the channel set rewrites the BB CCA registers) and
+   * handed to phydm as edcca_track. Both false is the default. Caller holds
+   * _reg_mu. There is deliberately no combined flag: every consumer wants
+   * one specific gate, and the single all-or-nothing bool this replaced was
+   * how EDCCA tracking ended up keyed on the wrong one. */
   bool _cca_primary_disabled = false;
   bool _cca_edcca_disabled = false;
   void apply_cca_mode_locked(bool disabled);

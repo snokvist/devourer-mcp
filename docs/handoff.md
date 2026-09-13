@@ -51,7 +51,7 @@ LLM ──MCP(stdio)──▶ Kotlin runtime ──UDS control + frame stream─
 
 | Path | What |
 |---|---|
-| `vendor/devourer/` | Pinned upstream at `30d248e`. Read-mostly; sync with `tools/host/vendor-devourer.sh`. |
+| `vendor/devourer/` | Pinned upstream at `45f4022`. Read-mostly; sync with `tools/host/vendor-devourer.sh`. |
 | `native/bridge/` | The C++ helper. `Protocol.h` is the entire boundary contract. |
 | `kotlin/protocol/` | Wire types. `FrameRecord` hardcodes byte offsets — see below. |
 | `kotlin/radio/` | Bridge client, capability model, verification ladder. |
@@ -174,19 +174,38 @@ Settled, with evidence in [`hardware-evidence.md`](hardware-evidence.md):
   0x32 - IGI`, clamped to 10) and even its permissive end leaves delivery at
   ~4%.
 
-Two vendored patches carry the work, both hardware-verified before being
-proposed: `0001-rx-gain-range.patch` (the `RxGain*` contract) and
-`0002-cca-gates.patch` (the gate split). The gate split is upstream as
-[OpenIPC/devourer#427](https://github.com/OpenIPC/devourer/pull/427). Retire
-each patch when it lands.
+One vendored patch remains: `0001-rx-gain-range.patch` (the hardware-verified
+`RxGain*` contract). The gate split landed upstream through
+[OpenIPC/devourer#427](https://github.com/OpenIPC/devourer/pull/427) and its
+[follow-up #429](https://github.com/OpenIPC/devourer/pull/429) — see
+[`hardware-evidence.md`](hardware-evidence.md) for what the bench said about
+each point, including the one maintainer claim that did not survive
+measurement. The EDCCA-at-bring-up policy question is
+[#428](https://github.com/OpenIPC/devourer/issues/428). The RX-gain patch was
+rebased onto the merged CCA/watchdog code; its Jaguar1 implementation now owns
+the small amount of gate-state memory needed when a gain change re-derives the
+EDCCA threshold.
 
 ## Picking up
 
-The highest-value next step is closing `IRadio` coverage — the bridge calls 14 of
-52 methods, and that single number explains most of what this cannot yet do.
-`radio.tx_stats` and `radio.cca` are the pattern to copy: a bridge op, a
-`RadioManager` method, an MCP tool with a description that says what the result
-does *not* prove.
+The September 13 repin to `45f4022` was replayed from a clean upstream clone.
+The full native build passed all 63 tests (the two reference-submodule checks
+were skipped as expected) and `./gradlew test --rerun-tasks` passed. An
+independent OpenCode Flash architecture review found no regression in the
+rebased RX-gain implementation; its concrete documentation-drift findings were
+fixed in the same PR. The review also confirmed the principal remaining gap:
+the bridge has `radio.rx_gain` and `radio.cca_gates`, but Kotlin/MCP has no
+client for either.
+
+The highest-value next step is closing `IRadio` coverage — the bridge calls 14
+of 55 methods, and that single number explains most of what this cannot yet do.
+Start with a bounded TX-power vertical slice (`GetTxPowerCaps`, offset/index
+control, reapply and honest state reporting), then expose RX gain and the split
+CCA gates. `radio.tx_stats` and `radio.cca` are the pattern to copy: a bridge
+op, a `RadioManager` method, an MCP tool with a description that says what the
+result does *not* prove. Exposing the existing `radio.rx_gain`/`radio.cca_gates`
+ops needs no protocol change; a *new* bridge op (e.g. TX power) bumps the
+additive protocol minor from 1.2 to 1.3.
 
 After that, multi-witness experiments. The two-witness run that settled the
 carrier-sense question was done by hand against the bridge; making it a first-
