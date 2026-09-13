@@ -893,6 +893,111 @@ A read is not synchronization: two radios have two unrelated TSFs until a
 timing protocol aligns them, and the alignment primitive does not work on
 MediaTek here.
 
+## The hardware beacon
+
+`radio_beacon` arms, updates and stops the MAC's beacon (`IRadio::StartBeacon`
+family). The chip then auto-transmits at every TBTT with no host involvement —
+so the only honest verification is an independent receiver decoding it.
+`tools/beacon-test.py`, two MT7612U (one transmitter, one witness), a 66-byte
+beacon MPDU, `interval_tu = 100`:
+
+- Starting without `safety_level:"experimental"` is refused; with it, the
+  bridge reports `active:true`, and the state read reflects it. `active` and
+  `interval_tu` are the bridge's record of what it asked the backend to do —
+  `IRadio` has no beacon getter — not a chip read.
+- The witness decoded **30 beacons over 2970 ms (~9.8/s, median inter-frame gap
+  102.4 ms)** for the programmed 100 TU. That is the chip, not a host loop: one
+  call keeps it airing.
+- `frame_inspect` on a witnessed beacon carries `tx_egress_tsf` — the live
+  hardware TSF the transmitting MAC wrote into the body's timestamp field at
+  the TX instant (bytes 24-31). The beacon's TSF stamp is real on the air.
+- `update` swaps the airing content in place: the reply keeps `interval_tu` and
+  the witness then decodes the **new** SSID (`devourer-updated`) from the
+  beacon body, so the reserved-page payload really was replaced mid-flight.
+- After `stop`, the witness saw no further beacons. A session that ends with
+  one armed also stops it during teardown, because the MAC beacons
+  autonomously and killing the host does not silence it.
+
+The RTL8812CU (Jaguar3) — the family the upstream `docs/ap-mode.md` work uses —
+was exercised the same way once the bench ground station (`waybeam-hub`)
+released it, with an MT7612U as witness: `tools/beacon-test.py
+--tx-generation jaguar3` armed at 100 TU, the witness decoded **30 beacons over
+2971 ms (102.4 ms median gap)**, the body carried a live TX-egress TSF
+(`0x5c309b`), the SSID update was decoded on air, and the air went quiet after
+`stop`.
+
+### An independent-generation witness (MT7922, stock kernel driver)
+
+Every receiver above is an MT7612U. The host's MT7922 (11ax / `mt7921e`) is a
+different generation — and, running its stock kernel driver with nothing
+unbound and no devourer involved, an independent witness in the strongest
+sense. It is also the internal adapter the bench rules mark off limits because
+it can carry the host's own connectivity; it was used here only with the
+operator's say-so, the host uplink is Ethernet, and its rfkill/managed state
+was restored afterwards. It saw the MT7612U's beacon:
+
+- Managed-mode `iw scan` listed the AP: `SSID: devourer-m6`, BSSID
+  `02:42:75:05:d6:00`, `beacon interval: 100 TUs`, `capability: ESS (0x0001)`,
+  `DS Parameter set: channel 6`, −45 dBm.
+- In monitor mode the same driver captured **30 beacons**, 6 Mb/s at
+  2437 MHz, −44 dBm. The beacon body's fixed timestamp — the sender's live
+  hardware TX-egress TSF — advanced with a **median delta of 102399 µs** per
+  beacon (100 TU = 102400 µs), so the on-air cadence and the hardware stamp
+  are both confirmed by a receiver of another generation.
+
+Station *association* is not exercised, and is deliberately outside this
+instrument's M6 scope: associating needs the AP to answer probe/auth/assoc (the
+vendored `ap_responder` responder). M6 here is the beacon and its TSF stamp,
+witnessed independently; a full AP stack would be a separate feature.
+
+## M4: retry/ARQ, the deep feeder, and per-packet power
+
+The M4 slice — MAC features that change what a burst *is*. What the bench has
+shown so far, and what it has not:
+
+**Hardware ARQ works, and the retry knob is what turns it on.**
+`tools/tx-retry-arq-test.py` opens a Jaguar transmitter with
+`tx_retry_limit=8` and `tx_report=1` and sends a bounded unicast burst, with a
+second adapter as the responder:
+
+- **No responder**: every frame's receipt reports `retries=8` (the limit) and
+  `state=1` (retry-drop). Nothing was delivered, and the hardware tried to the
+  limit.
+- **MT7612U responder armed** (`radio_ack_responder` for the destination MAC):
+  the receipts collapse to `retries` median 0 / max 1 with `state=0`
+  (delivered) on 130 of the receipt events.
+
+That is the ARQ loop closed in hardware — a nonzero `tx_retry_limit` plus the
+ACK responder — and the receipts tier is what makes it visible; no host-side
+counter can see hardware retries.
+
+**The deep feeder is built but A-MPDU goodput is not yet shown.**
+`radio_open` now takes `usb_agg` (USB TX aggregation) and `experiment_link_probe`
+takes `batch:true`, which submits through `IRadio::send_packets` instead of a
+per-frame loop; the experiment also reports `goodput_bytes_per_sec` (delivered
+payload over the burst). But the probe frames the experiment builds are plain
+data frames, not QoS data, and A-MPDU formation needs a TID/QoS frame — so
+arming `radio_ampdu` with this feeder showed no goodput gain. QoS probe frames
+are the missing piece.
+
+**Per-packet TX power works — after a radiotap presence-bit bug was fixed.**
+`experiment_link_probe` accepts the per-frame radiotap `DBM_TX_POWER`
+(`pkt_power_db`). The first implementation wrote the field under presence bit
+**5**, which is `DBM_ANTSIGNAL`; the consumer matches `DBM_TX_POWER`, which is
+bit **10** (`vendor/devourer/src/ieee80211_radiotap.h:471`), so the field was
+silently discarded and the feature looked inert on every backend. With the bit
+fixed, an independent MT7612U witness tracks the request on the 8812CU:
+
+- raw radiotap path: 0 dB → RSSI ~43; −6 dB → ~37; −12 dB → ~33; −24/−40 dB →
+  ~33 (the bank floor; it stops moving past about −12 dB).
+- structured `experiment_link_probe pkt_power_db`: 0 dB → ~62; −12 dB → ~52.
+
+`LinkProbe` now refuses `pkt_power_db` up front on an adapter whose caps do not
+report `per_packet_txpower`, so a backend with no descriptor field cannot air
+the frame at full power while the reply reads as success. (The `LinkProbeTest`
+fixture for this adds the capability explicitly, because the 8812AU fixture
+models a part that does not have it.)
+
 ## Reproducing
 
 ```sh
@@ -902,6 +1007,7 @@ tools/mcp-verify.py              # every tool, real requests, artifacts + dashbo
 tools/ack-responder-test.py      # hardware ACK responder arm/clear + safety gate
 tools/ampdu-test.py              # A-MPDU read/enable/clear + capability tri-state
 tools/tsf-test.py                # MAC TSF read + rate
+tools/beacon-test.py             # hardware beacon, decoded by an independent witness
 tools/smoke-test.py              # RX path, all adapters
 tools/rx-gain-cca-test.py        # receive-gain clamp + split CCA gates, needs a Realtek
 tools/tx-power-test.py           # TX-power knobs + a sweep measured on a witness
@@ -909,6 +1015,7 @@ tools/rx-quality-thermal-test.py # fused RX sensor + thermal meter
 tools/fast-retune-test.py        # lean same-band hop + narrowband toggle
 tools/spectrum-sweep-test.py     # coarse per-channel energy survey
 tools/tx-receipts-test.py        # per-frame TX reports (needs a Jaguar TX)
+tools/tx-retry-arq-test.py       # retry-limit knob + hardware ARQ receipts
 tools/stall-test.py              # a sink that stops reading, all adapters
 tools/backpressure-test.py       # sustained overload through a real capture
 tools/host/devourer-mcp          # MCP on stdio; dashboard on 127.0.0.1:8910

@@ -11,6 +11,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.test.runTest
 import org.openipc.devourer.protocol.ChannelSpec
 import org.openipc.devourer.protocol.RxEnergy
+import org.openipc.devourer.radio.CapabilityException
 import org.openipc.devourer.radio.FakeRadios
 import org.openipc.devourer.radio.SafetyLevel
 import org.openipc.devourer.radio.SafetyLevelException
@@ -32,18 +33,42 @@ class LinkProbeTest {
 
     private fun fake() = FakeRadios(listOf(tx, rx, rx2))
 
+    /**
+     * The realtek fixture is an 8812AU, which has no per-packet descriptor
+     * field; add the capability for the tests that exercise per-frame power.
+     */
+    private fun fakeWithPerPacketPower(): FakeRadios {
+        val capable = tx.copy(
+            capabilities = tx.capabilities.copy(
+                features = tx.capabilities.features + ("per_packet_txpower" to true),
+                parameters = tx.capabilities.parameters + mapOf(
+                    "per_packet_txpower_min_qdb" to -256,
+                    "per_packet_txpower_max_qdb" to 252,
+                ),
+            ),
+        )
+        return FakeRadios(listOf(capable, rx, rx2))
+    }
+
     private fun spec(
         roles: Map<RadioRole, Int> = mapOf(RadioRole.TX_PEER to 1, RadioRole.RX_PEER to 2),
         sweep: Sweep = Sweep(),
         carrierSense: Boolean = true,
         safety: SafetyLevel = SafetyLevel.NORMAL,
-        bounds: ExperimentBounds = ExperimentBounds(framesPerPoint = 100, intervalUs = 100),
+        batch: Boolean = false,
+        pktPowerDb: Int? = null,
+        bounds: ExperimentBounds = ExperimentBounds(
+            framesPerPoint = 100,
+            intervalUs = if (batch) 0 else 100,
+        ),
     ) = ExperimentSpec(
         roles = roles,
         sweep = sweep,
         bounds = bounds,
-        basePoint = SweepPoint("6M", ChannelLabel("ch6"), 200, 100),
+        basePoint = SweepPoint("6M", ChannelLabel("ch6"), 200, if (batch) 0 else 100),
         carrierSense = carrierSense,
+        batch = batch,
+        pktPowerDb = pktPowerDb,
         safety = safety,
     )
 
@@ -351,6 +376,36 @@ class LinkProbeTest {
                 ),
             )
         }
+    }
+
+    @Test
+    fun `per-frame power on an adapter without the capability is refused`() = runTest {
+        // The 8812AU fixture has no per-packet field; accepting the request
+        // would air at full power while reporting success.
+        assertFailsWith<CapabilityException> {
+            LinkProbe(fake(), backgroundScope).run(spec(pktPowerDb = -12))
+        }
+    }
+
+    @Test
+    fun `batch and per-frame power reach the transmitter and yield goodput`() = runTest {
+        val radios = fakeWithPerPacketPower()
+        var seen: FakeRadios.Probe? = null
+        radios.onProbe = { p ->
+            seen = p
+            radios.deliverTo(p, to = 2, frames = p.count)
+            // 100 frames x 200 B in 2 ms = 10 MB/s of delivered payload.
+            FakeRadios.TxOutcome(accepted = p.count, elapsedNs = 2_000_000)
+        }
+
+        val result = LinkProbe(radios, backgroundScope)
+            .run(spec(batch = true, pktPowerDb = -20, bounds = ExperimentBounds(framesPerPoint = 100)))
+
+        assertTrue(assertNotNull(seen).batch)
+        assertEquals(-20, seen!!.pktPowerDb)
+        val point = result.points.single()
+        assertEquals(200, point.frameBytes)
+        assertEquals(10_000_000.0, assertNotNull(point.goodputBytesPerSec), 1.0)
     }
 
     @Test

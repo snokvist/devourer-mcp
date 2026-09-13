@@ -95,6 +95,35 @@ struct OpenOptions {
    * receive them (a monitor, or a family whose coex thread drains C2H).
    * RTL8733B has no such path and emits none. Read them with tx_receipts. */
   int tx_report = 0;
+
+  /* Hardware retry/ARQ bring-up knobs (`DeviceConfig tx.*`), settable only at
+   * CreateRadio because devourer reads them once. They are what decides how a
+   * lost unicast frame behaves:
+   *
+   *   tx_retry_limit    per-frame hardware retry limit, 0..63. 0 = no retries
+   *                     (the broadcast/no-ack recipe; also the WFB default,
+   *                     where FEC carries reliability). A nonzero value is
+   *                     REQUIRED for hardware-ARQ (SetAckResponder + unicast).
+   *   tx_ack_timeout_us the ACK response window, 1..255 us: the range lever for
+   *                     hardware-ARQ (a longer window is not free — every retry
+   *                     of a lost frame waits it). Default 128.
+   *   tx_retry_fallback when true, disable per-retry rate fallback: retries
+   *                     re-air at the descriptor rate instead of walking the
+   *                     firmware ladder. For constant-rate links.
+   *
+   * The capabilities (tx_retry_limit_ok) say whether the family honors these
+   * at all; an adapter without it accepts the open and is unchanged. */
+  int tx_retry_limit = 0;
+  int tx_ack_timeout_us = 128;
+  bool tx_retry_fallback_off = false;
+
+  /* USB TX aggregation (`DeviceConfig tx.usb_agg_max`): pack up to N frames
+   * into one bulk-OUT URB inside IRadio::send_packets. 0 = off, the default
+   * (send_packets degrades to a per-frame loop, byte-identical to before).
+   * Only meaningful with the batched send path (`tx.send` batch:true); the
+   * deep feed the MAC needs to form A-MPDUs. Clamped by the backend to the
+   * agg-num field and the vendor packing rules. USB only. */
+  unsigned usb_agg_max = 0;
 };
 
 struct SessionStats {
@@ -156,6 +185,24 @@ public:
   void detach_sink();
 
   bool send_frame(const uint8_t *data, size_t len, std::string &err);
+
+  /* Batch TX: submit several radiotap+MPDU frames through
+   * `IRadio::send_packets` in one call. With `usb_agg_max` > 0 the USB
+   * generations pack consecutive frames into shared bulk-OUT URBs — one
+   * transfer per burst instead of one per frame, and the frames land in the
+   * TXDMA back-to-back, which is the deep feed the MAC needs to form A-MPDUs
+   * (SetAmpduMode is the other half). Returns the number of frames the TX path
+   * accepted; sets `err` on a hard failure. A frame whose radiotap CHANNEL
+   * differs from the current channel triggers a hop inside the backend. */
+  size_t send_frames(const std::vector<std::vector<uint8_t>> &frames,
+                     std::string &err);
+
+  /* Whether this adapter's capability report advertises per-packet TX power
+   * (`AdapterCaps.per_packet_txpower`, true on Jaguar2/J3 and the 8814A). The
+   * send path uses it to refuse a `pkt_power_db` on a backend that has no
+   * descriptor field, rather than airing at full power while reporting the
+   * request accepted. */
+  bool supports_per_packet_txpower() const;
 
   /* Live estimate of which RF chains are actually carrying signal.
    *
@@ -296,6 +343,27 @@ public:
    * freeze; and it moves the reported TSF, NOT the beacon TBTT air-time. */
   bool write_tsf(uint64_t tsf_us, std::string &err);
 
+  /* The hardware beacon (`IRadio::StartBeacon`/`UpdateBeaconPayload`/
+   * `StopBeacon`): load an 802.11 beacon MPDU into the MAC's beacon
+   * reserved-page so the chip auto-transmits it at every TBTT, hardware-timed
+   * and hardware-TSF-stamped. `beacon` may carry a leading radiotap header,
+   * which the backend strips; addr2/addr3 in the MPDU become the port MAC and
+   * BSSID. `interval_tu` is the interval in TU (1 TU = 1024 us).
+   *
+   * The chip beacons AUTONOMOUSLY once armed — killing the bridge does not
+   * silence it — so any path that ends a beaconing session stops it first.
+   * `IRadio` has no beacon getter, so `beacon_json` reports what this bridge
+   * ASKED the backend to do, not a chip read. */
+  Json beacon_json();
+  bool start_beacon(const std::vector<uint8_t> &beacon, int interval_tu,
+                    std::string &err);
+  bool update_beacon_payload(const std::vector<uint8_t> &beacon, std::string &err);
+  /* Returns false only on a real failure; `was_active` says whether the bridge
+   * believed a beacon was armed, which distinguishes "stop failed" (still
+   * airing — retry) from "no beacon was active" (IRadio returns false for
+   * both). */
+  bool stop_beacon(bool &was_active, std::string &err);
+
   /* Per-frame TX receipts (`tx.report`): what the hardware said about each
    * reported transmission — delivery state, hardware retry count, final rate,
    * queue time, and (HalMAC) the frame's SW_DEFINE echo. These are the
@@ -402,6 +470,15 @@ private:
    * GetTxPowerState is not overridden (the MT7612U's dBm model), where the
    * state readback is otherwise empty. Guarded by _life_mu. */
   std::optional<int> _last_applied_offset_qdb;
+
+  /* The beacon this session armed, if any. There is no beacon getter on
+   * IRadio, so the bridge mirrors what it asked the backend to do; it does not
+   * claim to read the MAC. Guarded by _life_mu. `_beacon_mpdu_bytes` is the
+   * length after the optional radiotap strip, as reported to the caller. */
+  bool _beacon_active = false;
+  int _beacon_interval_tu = 0;
+  size_t _beacon_frame_bytes = 0;
+  size_t _beacon_mpdu_bytes = 0;
 
   /* Per-session logger. Per-session rather than shared so a session's
    * `tx.report` events can be captured without other sessions interleaving

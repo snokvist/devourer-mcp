@@ -44,6 +44,7 @@ import org.openipc.devourer.capture.PcapWriter
 import org.openipc.devourer.protocol.AckResponder
 import org.openipc.devourer.protocol.AmpduMode
 import org.openipc.devourer.protocol.AmpduState
+import org.openipc.devourer.protocol.Beacon
 import org.openipc.devourer.protocol.CcaGates
 import org.openipc.devourer.protocol.ChannelSpec
 import org.openipc.devourer.protocol.ChannelWidth
@@ -228,6 +229,46 @@ internal class Tools(
                                 "C2H). RTL8733B emits none.",
                         ),
                     )
+                    put(
+                        "tx_retry_limit",
+                        schema(
+                            "integer",
+                            "Per-frame hardware retry limit, 0..63. Default 0 = no retries (the " +
+                                "broadcast/no-ack recipe). A NONZERO value is required for " +
+                                "hardware-ARQ: with radio_ack_responder armed, a unicast frame to " +
+                                "that MAC is retried by the MAC until it is ACKed, visible as " +
+                                "`retries` in radio_tx_receipts. Set at open only; a family whose " +
+                                "caps report feature `tx_retry_limit:false` accepts it unchanged.",
+                        ),
+                    )
+                    put(
+                        "tx_ack_timeout_us",
+                        schema(
+                            "integer",
+                            "Hardware ACK response window, 1..255 us. Default 128. The ARQ range " +
+                                "lever (~6.7 us per round-trip km); a longer window is not free, as " +
+                                "every retry of a LOST frame waits the full window.",
+                        ),
+                    )
+                    put(
+                        "tx_retry_fallback_off",
+                        schema(
+                            "boolean",
+                            "True disables the firmware per-retry rate fallback: retries re-air at " +
+                                "the descriptor rate. Default false (the ladder). For constant-rate " +
+                                "links where a step-down retry wastes airtime.",
+                        ),
+                    )
+                    put(
+                        "usb_agg",
+                        schema(
+                            "integer",
+                            "USB TX aggregation depth: pack up to N frames into one bulk-OUT URB " +
+                                "on the batched TX path (experiment_link_probe `batch:true`). " +
+                                "Default 0 = a per-frame submission. This is the deep feed the MAC " +
+                                "needs to form A-MPDUs, alongside radio_ampdu. USB only.",
+                        ),
+                    )
                 },
                 required = listOf("bus", "address"),
             ),
@@ -239,6 +280,10 @@ internal class Tools(
                 noiseFloor = request.boolOr("noise_floor", false),
                 adaptiveGain = request.boolOr("adaptive_gain", false),
                 txReport = request.intOr("tx_report", 0),
+                txRetryLimit = request.intOr("tx_retry_limit", 0),
+                txAckTimeoutUs = request.intOr("tx_ack_timeout_us", 128),
+                txRetryFallbackOff = request.boolOr("tx_retry_fallback_off", false),
+                usbAggMax = request.intOr("usb_agg", 0),
             )
             text(json.encodeToString(OpenRadio.serializer(), radio))
         }
@@ -1250,6 +1295,89 @@ internal class Tools(
 
         register(
             server,
+            name = "radio_beacon",
+            description = """
+                Arm, update or stop the hardware beacon on an open, brought-up radio — the
+                autonomous-AP primitive. Starting loads an 802.11 beacon MPDU into the MAC's
+                reserved page and the chip then AUTO-TRANSMITS it at every TBTT, hardware-timed
+                and hardware-TSF-stamped, with no host involvement. One call keeps it airing.
+
+                Actions:
+                  read    (default) — report the beacon state.
+                  start   — `frame_hex` + `interval_tu`: arm it. The frame is a full 802.11
+                            beacon MPDU; a leading radiotap header, if present, is stripped, and
+                            addr2/addr3 become the port MAC/BSSID. interval_tu is in TU (1 TU =
+                            1024 us).
+                  update  — `frame_hex`: replace the ACTIVE beacon's payload in place. The
+                            interval, TBTT phase and port identity are NOT touched, and changing
+                            addr2/addr3 mid-flight is unsupported.
+                  stop    — silence it.
+
+                STARTING IS EXPERIMENTAL and must be asked for by name: the radio becomes an
+                autonomous transmitter that occupies the channel and announces a BSS. Stopping
+                is never gated, so cleanup cannot be blocked.
+
+                `active`, `interval_tu` and `frame_bytes` are the BRIDGE'S record of what it
+                asked the backend to do — IRadio has no beacon getter, so they are not a chip
+                read. The beacon airs autonomously: killing the host does not silence it, which
+                is why a session that ends with one armed stops it during teardown.
+
+                There is no separate capability flag: a backend with no beacon engine refuses
+                start/update/stop and the call says so. Confirm the beacon on an independent
+                receiver — a witness decoding the beacon and its TSF stamp is the evidence,
+                never this reply.
+
+                CAVEAT (Kestrel/RTW89 only): `start` is ported there but `stop` and `update`
+                are not, so a Kestrel beacon can be ARMED AND NOT SILENCED through this
+                interface (teardown's stop is best-effort and `Stop()` does not disable the AX
+                beacon engine). Do not start a Kestrel beacon you cannot power-cycle. No such
+                hardware is on the current bench.
+            """.trimIndent(),
+            inputSchema = ToolSchema(
+                properties = buildJsonObject {
+                    put("session", schema("integer", "Session id of a brought-up radio."))
+                    put("action", schema("string", "\"read\" (default), \"start\", \"update\" or \"stop\"."))
+                    put("frame_hex", schema("string", "The beacon frame: a full 802.11 beacon MPDU, or one with a leading radiotap header (stripped). Required for start/update."))
+                    put("interval_tu", schema("integer", "Beacon interval in TU (1 TU = 1024 us), 1..65535. Required for start."))
+                    put("safety_level", schema("string", "Must be \"experimental\" to start a beacon."))
+                },
+                required = listOf("session"),
+            ),
+        ) { request ->
+            val session = request.intOr("session", -1)
+            val action = request.stringOr("action", "read").lowercase().ifBlank { "read" }
+            if (action !in setOf("read", "start", "update", "stop")) {
+                return@register text(
+                    errorReply("action must be \"read\", \"start\", \"update\" or \"stop\""),
+                    isError = true,
+                )
+            }
+            val frameHex = request.stringOr("frame_hex", "")
+            val result = when (action) {
+                "read" -> radios.beacon(session)
+                "start" -> {
+                    val interval = request.optionalInt("interval_tu")
+                    if (interval == null) {
+                        return@register text(
+                            errorReply("interval_tu is required to start a beacon (TU, 1 TU = 1024 us)"),
+                            isError = true,
+                        )
+                    }
+                    radios.startBeacon(
+                        session,
+                        frameHex,
+                        interval,
+                        SafetyLevel.parse(request.stringOr("safety_level", "")),
+                    )
+                }
+                "update" -> radios.updateBeaconPayload(session, frameHex)
+                else -> radios.stopBeacon(session)
+            }
+            text(json.encodeToString(Beacon.serializer(), result))
+        }
+
+        register(
+            server,
             name = "tx_send",
             description = """
                 Transmit a frame a bounded number of times on an open, brought-up radio.
@@ -1372,6 +1500,28 @@ internal class Tools(
                                 "the link is bad.",
                         ),
                     )
+                    put(
+                        "batch",
+                        schema(
+                            "boolean",
+                            "Default false. Submit each burst through the deep, unpaced batched " +
+                                "TX path (send_packets). Open the transmitter with `usb_agg` > 0 " +
+                                "for the USB generations to pack frames into shared URBs — this " +
+                                "is the feed A-MPDU goodput needs. Mutually exclusive with a " +
+                                "nonzero interval_us.",
+                        ),
+                    )
+                    put(
+                        "pkt_power_db",
+                        schema(
+                            "integer",
+                            "Per-frame TX power as a signed whole-dB delta against the calibrated " +
+                                "per-rate table (radiotap DBM_TX_POWER), applied to every frame in " +
+                                "the run. Distinct from sweep_power_qdb (the session-wide offset) " +
+                                "and composes with it. Only for adapters whose caps report " +
+                                "per_packet_txpower. Omit for none.",
+                        ),
+                    )
                 },
                 required = listOf("tx_session", "rx_session"),
             ),
@@ -1387,7 +1537,18 @@ internal class Tools(
                 if (sweepChannels.isEmpty() && baseChannel.channel < 0) {
                     throw ExperimentException("give either channel or sweep_channels")
                 }
-                val intervalUs = request.intOr("interval_us", 1_000)
+                // The batch path is a deep, unpaced feed. `interval_us` defaults
+                // to 1000, which would make {batch:true} alone fail deep in the
+                // send call; force 0 unless the caller explicitly asked for a
+                // nonzero spacing, which is contradictory.
+                val batch = request.boolOr("batch", false)
+                val intervalArg = request.optionalInt("interval_us")
+                if (batch && intervalArg != null && intervalArg != 0) {
+                    throw ExperimentException(
+                        "batch is a deep unpaced feed; omit interval_us or set it to 0",
+                    )
+                }
+                val intervalUs = if (batch) 0 else (intervalArg ?: 1_000)
                 val bounds = ExperimentBounds(
                     maxDurationMs = request.longOr("max_duration_ms", 60_000),
                     framesPerPoint = request.intOr("frames_per_point", 200),
@@ -1404,6 +1565,16 @@ internal class Tools(
                             "${witnessRoles.joinToString()}); got ${extra.size}",
                     )
                 }
+                // The interval sweep is the other way a nonzero spacing could
+                // reach a batch point; reject it rather than let it fail deep
+                // in the send call.
+                val sweepInterval = request.intList("sweep_interval_us")
+                if (batch && sweepInterval.any { it != 0 }) {
+                    throw ExperimentException(
+                        "batch is a deep unpaced feed; sweep_interval_us must be " +
+                            "empty or all zeros",
+                    )
+                }
                 val spec = ExperimentSpec(
                     roles = buildMap {
                         put(RadioRole.TX_PEER, request.intOr("tx_session", -1))
@@ -1414,7 +1585,7 @@ internal class Tools(
                         modes = modes,
                         channels = sweepChannels,
                         frameBytes = request.intList("sweep_frame_bytes"),
-                        intervalUs = request.intList("sweep_interval_us"),
+                        intervalUs = if (batch) emptyList() else sweepInterval,
                         powerOffsetQdb = sweepPower,
                     ),
                     bounds = bounds,
@@ -1427,6 +1598,8 @@ internal class Tools(
                         powerOffsetQdb = sweepPower.firstOrNull(),
                     ),
                     carrierSense = request.boolOr("carrier_sense", true),
+                    batch = batch,
+                    pktPowerDb = request.optionalInt("pkt_power_db"),
                     safety = SafetyLevel.parse(request.stringOr("safety_level", "")),
                 )
                 val points = spec.sweep.expand(spec.basePoint).size

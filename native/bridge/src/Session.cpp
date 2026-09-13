@@ -442,13 +442,25 @@ std::unique_ptr<Session> Session::open(uint32_t id, const OpenOptions &opts,
   cfg.rx.abs_noise_floor = opts.noise_floor;
   cfg.tuning.phydm_watchdog = opts.adaptive_gain;
   cfg.tx.report = opts.tx_report;
+  cfg.tx.retry_limit = opts.tx_retry_limit;
+  cfg.tx.ack_timeout_us = opts.tx_ack_timeout_us;
+  if (opts.tx_retry_fallback_off)
+    cfg.tx.retry_fallback = devourer::RetryFallback::Off;
+  cfg.tx.usb_agg_max = opts.usb_agg_max;
   s->_noise_floor_requested = opts.noise_floor;
   /* Say when a session is brought up on anything but the default tuning. A
    * run whose behaviour depends on an option nobody can see afterwards is
    * not reproducible, and all of these change what the radio does. */
-  if (opts.noise_floor || opts.adaptive_gain || opts.tx_report > 0) {
-    logger->info("bridge: open with noise_floor={} adaptive_gain={} tx_report={}",
-                 opts.noise_floor, opts.adaptive_gain, opts.tx_report);
+  if (opts.noise_floor || opts.adaptive_gain || opts.tx_report > 0 ||
+      opts.tx_retry_limit != 0 || opts.tx_retry_fallback_off ||
+      opts.usb_agg_max > 0 ||
+      opts.tx_ack_timeout_us != 128) {
+    logger->info("bridge: open with noise_floor={} adaptive_gain={} "
+                 "tx_report={} retry_limit={} ack_timeout_us={} "
+                 "retry_fallback_off={} usb_agg_max={}",
+                 opts.noise_floor, opts.adaptive_gain, opts.tx_report,
+                 opts.tx_retry_limit, opts.tx_ack_timeout_us,
+                 opts.tx_retry_fallback_off, opts.usb_agg_max);
   }
   auto radio = driver.CreateRadio(handle, ctx, lock, cfg);
   if (!radio) {
@@ -980,6 +992,41 @@ bool Session::send_frame(const uint8_t *data, size_t len, std::string &err) {
   if (!ok)
     err = "send_packet returned false (queue full or TX path down)";
   return ok;
+}
+
+size_t Session::send_frames(const std::vector<std::vector<uint8_t>> &frames,
+                            std::string &err) {
+  std::lock_guard<std::recursive_mutex> life(_life_mu);
+  if (!_up) {
+    err = "radio is not brought up";
+    return 0;
+  }
+  if (frames.empty())
+    return 0;
+  /* Views borrow the caller's frame buffers; send_packets completes (or skips)
+   * every one before returning, so the pointers stay valid for the call. */
+  std::vector<TxPacketView> views;
+  views.reserve(frames.size());
+  for (const auto &f : frames)
+    views.push_back(TxPacketView{f.data(), f.size()});
+  const size_t sent = _radio->send_packets(views.data(), views.size());
+  {
+    std::lock_guard<std::mutex> sl(_stats_mu);
+    _stats.tx_sent += sent;
+    _stats.tx_failed += frames.size() - sent;
+  }
+  if (sent != frames.size())
+    err = "send_packets submitted " + std::to_string(sent) + " of " +
+          std::to_string(frames.size()) +
+          " (queue full or TX path down)";
+  return sent;
+}
+
+bool Session::supports_per_packet_txpower() const {
+  std::lock_guard<std::recursive_mutex> life(_life_mu);
+  if (_radio == nullptr)
+    return false;
+  return _radio->GetAdapterCaps().per_packet_txpower;
 }
 
 Json Session::rx_paths_json() {
@@ -1628,6 +1675,134 @@ bool Session::write_tsf(uint64_t tsf_us, std::string &err) {
   return true;
 }
 
+/* The MPDU length after an optional leading radiotap header, stripped exactly
+ * as the backends strip it (it_len at bytes [2:3], LE; a malformed it_len is
+ * treated as "no radiotap"). Reporting only — the backend does the strip. */
+static size_t beacon_mpdu_bytes(const std::vector<uint8_t> &b) {
+  size_t rt = b.size() >= 4 ? static_cast<size_t>(b[2] | (b[3] << 8)) : 0;
+  if (rt > b.size())
+    rt = 0;
+  return b.size() - rt;
+}
+
+Json Session::beacon_json() {
+  std::lock_guard<std::recursive_mutex> life(_life_mu);
+  Json j;
+  j.set("session", _id);
+  if (_radio == nullptr) {
+    j.set("supported", false).set("why", "session has no radio");
+    return j;
+  }
+  j.set("supported", true)
+      .set("active", _beacon_active)
+      .set("interval_tu", _beacon_active ? _beacon_interval_tu : 0)
+      .set("frame_bytes",
+           _beacon_active ? static_cast<int64_t>(_beacon_frame_bytes) : 0)
+      .set("mpdu_bytes",
+           _beacon_active ? static_cast<int64_t>(_beacon_mpdu_bytes) : 0);
+  if (_beacon_active)
+    j.set("note",
+          "active/interval_tu/frame_bytes are the bridge's record of what it "
+          "asked the backend to do — IRadio has no beacon getter. The chip "
+          "beacons AUTONOMOUSLY: the MAC airs it at every TBTT with the live "
+          "TSF stamped, no host involvement, until it is stopped or the "
+          "session is torn down.");
+  else
+    j.set("note",
+          "no beacon is armed on this session. Starting one makes the MAC "
+          "auto-transmit at every TBTT, hardware-timed and hardware-TSF-"
+          "stamped, until stopped.");
+  return j;
+}
+
+bool Session::start_beacon(const std::vector<uint8_t> &beacon, int interval_tu,
+                           std::string &err) {
+  std::lock_guard<std::recursive_mutex> life(_life_mu);
+  if (_radio == nullptr) {
+    err = "session has no radio";
+    return false;
+  }
+  if (!_up) {
+    err = "bring the radio up before arming a beacon";
+    return false;
+  }
+  try {
+    if (!_radio->StartBeacon(beacon.data(), beacon.size(), interval_tu)) {
+      err = "the backend refused to arm the beacon (no beacon engine on this "
+            "backend, or it rejected the payload/interval)";
+      return false;
+    }
+  } catch (const std::exception &e) {
+    err = std::string("StartBeacon threw: ") + e.what();
+    return false;
+  }
+  _beacon_active = true;
+  _beacon_interval_tu = interval_tu;
+  _beacon_frame_bytes = beacon.size();
+  _beacon_mpdu_bytes = beacon_mpdu_bytes(beacon);
+  return true;
+}
+
+bool Session::update_beacon_payload(const std::vector<uint8_t> &beacon,
+                                    std::string &err) {
+  std::lock_guard<std::recursive_mutex> life(_life_mu);
+  if (_radio == nullptr) {
+    err = "session has no radio";
+    return false;
+  }
+  if (!_up) {
+    err = "bring the radio up before updating a beacon";
+    return false;
+  }
+  if (!_beacon_active) {
+    err = "no beacon is active on this session — start one first "
+          "(IRadio::UpdateBeaconPayload requires an active beacon)";
+    return false;
+  }
+  try {
+    if (!_radio->UpdateBeaconPayload(beacon.data(), beacon.size())) {
+      err = "the backend refused to update the active beacon";
+      return false;
+    }
+  } catch (const std::exception &e) {
+    err = std::string("UpdateBeaconPayload threw: ") + e.what();
+    return false;
+  }
+  _beacon_frame_bytes = beacon.size();
+  _beacon_mpdu_bytes = beacon_mpdu_bytes(beacon);
+  return true;
+}
+
+bool Session::stop_beacon(bool &was_active, std::string &err) {
+  std::lock_guard<std::recursive_mutex> life(_life_mu);
+  was_active = _beacon_active;
+  if (_radio == nullptr) {
+    err = "session has no radio";
+    return false;
+  }
+  if (!_beacon_active) {
+    /* IRadio::StopBeacon returns false when no beacon was active — the mirror
+     * is what tells that from a failed stop, so this is not an error. */
+    return true;
+  }
+  try {
+    if (!_radio->StopBeacon()) {
+      err = "the backend did not confirm the beacon stopped — the MAC may "
+            "still be airing it. Retry, and power-cycle the adapter if it "
+            "persists.";
+      return false;
+    }
+  } catch (const std::exception &e) {
+    err = std::string("StopBeacon threw: ") + e.what();
+    return false;
+  }
+  _beacon_active = false;
+  _beacon_interval_tu = 0;
+  _beacon_frame_bytes = 0;
+  _beacon_mpdu_bytes = 0;
+  return true;
+}
+
 Json Session::ampdu_json() {
   std::lock_guard<std::recursive_mutex> life(_life_mu);
   Json j;
@@ -1881,6 +2056,17 @@ void Session::close() {
   stop_monitor();
   detach_sink();
   if (_radio != nullptr && _up) {
+    /* A beacon airs autonomously, so silence it before the chip is torn down:
+     * Jaguar2 has no teardown power-down, so an armed beacon would keep airing
+     * until the adapter is re-enumerated. Best-effort — Stop() below powers
+     * down whatever this does not. */
+    if (_beacon_active) {
+      try {
+        if (_radio->StopBeacon())
+          _beacon_active = false;
+      } catch (...) {
+      }
+    }
     /* Clean chip de-init before the interface is dropped, so the adapter
      * re-enumerates instead of hanging its USB core. */
     _radio->Stop();

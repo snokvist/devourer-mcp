@@ -11,6 +11,7 @@ import kotlinx.serialization.json.buildJsonObject
 import org.openipc.devourer.protocol.AckResponder
 import org.openipc.devourer.protocol.AmpduMode
 import org.openipc.devourer.protocol.AmpduState
+import org.openipc.devourer.protocol.Beacon
 import org.openipc.devourer.protocol.CcaGates
 import org.openipc.devourer.protocol.ChannelSpec
 import org.openipc.devourer.protocol.FrameRecord
@@ -192,6 +193,14 @@ public class FakeRadios(radios: List<OpenRadio> = emptyList()) : Radios {
     public var adaptiveGainRequested: Boolean = false
         private set
 
+    /** The per-frame hardware retry limit the last [open] asked for. */
+    public var txRetryLimitRequested: Int = 0
+        private set
+
+    /** The USB TX-aggregation depth the last [open] asked for (0 = off). */
+    public var usbAggMaxRequested: Int = 0
+        private set
+
     /** The tx.report divisor requested at open, per session (0 = off). */
     private val txReportSampling: MutableMap<Int, Int> = ConcurrentHashMap()
 
@@ -207,6 +216,9 @@ public class FakeRadios(radios: List<OpenRadio> = emptyList()) : Radios {
     /** MAC TSF per session, in microseconds. */
     public val tsfBySession: MutableMap<Int, Long> = ConcurrentHashMap()
 
+    /** Armed hardware beacon per session, once one has been started. */
+    public val beaconsBySession: MutableMap<Int, Beacon> = ConcurrentHashMap()
+
     /** Set to throw from the next call to the named op, once. */
     public var failNext: MutableMap<String, Throwable> = mutableMapOf()
 
@@ -217,6 +229,8 @@ public class FakeRadios(radios: List<OpenRadio> = emptyList()) : Radios {
         val count: Int,
         val intervalUs: Int,
         val sequenceOffset: Int,
+        val batch: Boolean = false,
+        val pktPowerDb: Int? = null,
     )
 
     /** What the TX path reports back. Accepting is not transmitting. */
@@ -315,10 +329,16 @@ public class FakeRadios(radios: List<OpenRadio> = emptyList()) : Radios {
         noiseFloor: Boolean,
         adaptiveGain: Boolean,
         txReport: Int,
+        txRetryLimit: Int,
+        txAckTimeoutUs: Int,
+        txRetryFallbackOff: Boolean,
+        usbAggMax: Int,
     ): OpenRadio {
         record("open", "$bus/$address")
         noiseFloorRequested = noiseFloor
         adaptiveGainRequested = adaptiveGain
+        txRetryLimitRequested = txRetryLimit
+        usbAggMaxRequested = usbAggMax
         val r = open.values.firstOrNull { it.device.bus == bus && it.device.address == address }
             ?: throw IllegalArgumentException("no fake radio at bus $bus address $address")
         txReportSampling[r.session] = txReport
@@ -445,13 +465,23 @@ public class FakeRadios(radios: List<OpenRadio> = emptyList()) : Radios {
         count: Int,
         intervalUs: Int,
         sequenceOffset: Int,
+        batch: Boolean,
+        pktPowerDb: Int?,
     ): JsonObject {
-        record("sendProbe", "$session,$mode,n=$count")
+        record("sendProbe", "$session,$mode,n=$count${if (batch) ",batch" else ""}")
         require(count in 1..RadioManager.MAX_TX_COUNT) {
             "count must be 1..${RadioManager.MAX_TX_COUNT}"
         }
+        // Mirror the production boundary, so an experiment test cannot pass a
+        // combination RadioManager would reject on the real path.
+        require(!(batch && intervalUs > 0)) {
+            "batch is a deep unpaced feed; give intervalUs 0 or use the paced path"
+        }
+        require(pktPowerDb == null || pktPowerDb in -128..127) {
+            "pktPowerDb must be -128..127 (an int8 radiotap field)"
+        }
         radio(session)
-        val probe = Probe(session, frameHex, mode, count, intervalUs, sequenceOffset)
+        val probe = Probe(session, frameHex, mode, count, intervalUs, sequenceOffset, batch, pktPowerDb)
         val outcome = onProbe?.invoke(probe) ?: TxOutcome(accepted = count)
         counters(session).txSent += outcome.accepted
         return buildJsonObject {
@@ -459,6 +489,7 @@ public class FakeRadios(radios: List<OpenRadio> = emptyList()) : Radios {
             put("elapsed_ns", JsonPrimitive(outcome.elapsedNs))
             put("late_frames", JsonPrimitive(outcome.lateFrames))
             put("max_late_us", JsonPrimitive(outcome.maxLateUs))
+            put("batch", JsonPrimitive(batch))
         }
     }
 
@@ -904,6 +935,70 @@ public class FakeRadios(radios: List<OpenRadio> = emptyList()) : Radios {
         )
     }
 
+    override suspend fun beacon(session: Int): Beacon {
+        record("beacon", "$session")
+        val radio = radio(session)
+        if (!radio.capabilities.supported) {
+            return Beacon(
+                session = session, supported = false,
+                why = "the backend reports no capability information for this chip",
+            )
+        }
+        return beaconsBySession[session]
+            ?: Beacon(session = session, supported = true, active = false)
+    }
+
+    override suspend fun startBeacon(
+        session: Int,
+        frameHex: String,
+        intervalTu: Int,
+        safety: SafetyLevel,
+    ): Beacon {
+        record("startBeacon", "$session,$intervalTu")
+        RadioSafety.gateBeacon(safety)
+        val radio = radio(session)
+        check(radio.state.broughtUp) { "bring the radio up before arming a beacon" }
+        require(frameHex.isNotBlank() && frameHex.length % 2 == 0) {
+            "frameHex must be a non-empty even-length hex string"
+        }
+        val next = Beacon(
+            session = session, supported = true, active = true,
+            intervalTu = intervalTu, frameBytes = frameHex.length / 2,
+            mpduBytes = frameHex.length / 2,
+            action = "start", started = true,
+        )
+        beaconsBySession[session] = next
+        return next
+    }
+
+    override suspend fun updateBeaconPayload(session: Int, frameHex: String): Beacon {
+        record("updateBeaconPayload", "$session")
+        val radio = radio(session)
+        check(radio.state.broughtUp) { "bring the radio up before updating a beacon" }
+        val current = beaconsBySession[session]
+            ?: throw IllegalStateException(
+                "no beacon is active on this session — start one first",
+            )
+        val next = current.copy(
+            active = true, frameBytes = frameHex.length / 2,
+            mpduBytes = frameHex.length / 2,
+            action = "update", updated = true, started = null, stopped = null,
+        )
+        beaconsBySession[session] = next
+        return next
+    }
+
+    override suspend fun stopBeacon(session: Int): Beacon {
+        record("stopBeacon", "$session")
+        val radio = radio(session)
+        check(radio.state.broughtUp) { "bring the radio up before stopping a beacon" }
+        val existed = beaconsBySession.remove(session) != null
+        return Beacon(
+            session = session, supported = true, active = false,
+            action = "stop", stopped = existed,
+        )
+    }
+
     override suspend fun activeRxPaths(session: Int): JsonObject {
         record("activeRxPaths", "$session")
         // Not implemented on MediaTek. Reporting "unsupported" rather than
@@ -1003,6 +1098,7 @@ public class FakeRadios(radios: List<OpenRadio> = emptyList()) : Radios {
                 features = mapOf(
                     "per_chain_rssi" to true,
                     "hw_rx_timestamp" to true,
+                    "hw_beacon_txtsf" to true,
                     "ack_responder" to true,
                 ),
             ),
@@ -1044,7 +1140,10 @@ public class FakeRadios(radios: List<OpenRadio> = emptyList()) : Radios {
                 tune2g4 = BandRange(true, 2412, 2484),
                 tune5g = BandRange(true, 5180, 5825),
                 tx = TxCapabilities(supported = true, spatialStreams = 2, maxWidthMhz = 80),
-                features = mapOf("per_chain_rssi" to true),
+                features = mapOf(
+                    "per_chain_rssi" to true,
+                    "hw_beacon_txtsf" to true,
+                ),
             ),
             permanentMac = null,
         )

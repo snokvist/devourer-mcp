@@ -16,9 +16,10 @@ The architecture is proven end to end on real hardware:
 LLM ──MCP(stdio)──▶ Kotlin runtime ──UDS──▶ devourer-bridge ──libusb──▶ adapter
 ```
 
-38 MCP tools across DISCOVER / OBSERVE / INSPECT / TRANSMIT / EXPERIMENT /
-CHARACTERIZE / BUILD TOOL. 220 offline tests plus 63 vendored Devourer
-selftests, none of which need hardware. Three hardware tests that refuse to
+39 MCP tools across DISCOVER / OBSERVE / INSPECT / TRANSMIT / EXPERIMENT /
+CHARACTERIZE / BUILD TOOL. 231 offline tests plus 64 native selftests (63
+vendored Devourer selftests and the bridge's radiotap-layout test), none of
+which need hardware. Three hardware tests that refuse to
 pass vacuously: the end-to-end smoke test, a stalled-sink test, and a
 sustained-overload test.
 
@@ -32,7 +33,7 @@ page down with it.
 | Subsystem | State | Notes |
 |---|---|---|
 | Vendored Devourer | done | pinned at `45f4022`, one local RX-gain patch |
-| `devourer-bridge` | done | separate process, protocol v1.11, session ownership |
+| `devourer-bridge` | done | separate process, protocol v1.14, session ownership |
 | Radio discovery + capabilities | done | derived from source, never a hand-kept table |
 | Monitor capture | done | ~1500–3300 frames/s, zero drops |
 | Capture store, query, PCAP | done | radiotap synthesized; raw bytes always reachable |
@@ -61,7 +62,7 @@ Full evidence, including the findings below, is in
 
 ## The big one: `IRadio` coverage
 
-**The bridge calls 31 of `IRadio`'s 55 virtual methods.** That single number is
+**The bridge calls 35 of `IRadio`'s 55 virtual methods.** That single number is
 the most useful measure of what is left, and it is why this does not yet fully
 replace Devourer's own `rxdemo`/`txdemo` as research instruments. Those two are
 thin loops over the same API: 76 bring-up knobs in `DeviceConfig` (77 `env:`
@@ -83,6 +84,7 @@ set. Roughly in value order:
 | `FastRetune` | done | `radio_fast_retune`; 21 ms on the 8822C, full-retune fallback elsewhere. The scan/survey built on it is still open. |
 | `FastSetBandwidth` | done | `radio_fast_bandwidth`; 20<->5/10 narrowband, capability-gated on the adapter's width set. |
 | Channel sweep / spectrum survey | done | `spectrum_sweep` dwells channels with `FastRetune` and reads the frame-free energy per bin; Realtek only, and the quietest channel is a hint not a throughput answer. |
+| Beacons / AP mode | done | Exposed as `radio_beacon` (arm/update/stop; the `IRadio::StartBeacon` family). On both the MT7612U and the RTL8822C (Jaguar3) a second MT7612U decoded the beacon, its 102.4 ms cadence and its live TX-egress TSF stamp, and the updated SSID after `update`; the host MT7922 on its stock kernel driver independently saw the beacon and its TSF. Station association is a separate feature: it needs an AP responder (probe/auth/assoc), not exposed here. |
 | `SetAckResponder` | medium | Required for any bidirectional or associated-link work. |
 | `SetAmpduMode` | medium | Aggregation is observable on RX today but not controllable on TX. |
 | Frequency hopping / FHSS | large | Substantial in both demos, with adaptive policy. Real algorithms, not register access. |
@@ -112,6 +114,49 @@ This gate does **not** promise parity with everything under `examples/`. The
 adaptive hopset, channel migration, TDMA scheduling and fused FEC are
 algorithms, not knob sets; they belong in the experiment engine or in
 scratchpad programs promoted to saved tools, not in a wall of MCP arguments.
+
+### Path to the gate (next steps)
+
+Ordered by what unblocks the most, and by what a demo cannot do — the whole
+point of the comparison. The per-milestone tables in
+[`rxdemo-txdemo-parity.md`](rxdemo-txdemo-parity.md) carry each row's status.
+
+1. **Finish M4: A-MPDU goodput.** The deep feeder is in place (`radio_open
+   usb_agg`, `experiment_link_probe batch:true` over `IRadio::send_packets`,
+   `goodput_bytes_per_sec`). What is missing is QoS probe frames — the MAC needs
+   a TID to aggregate, and `ProbeFrame` builds plain data frames today. Add the
+   QoS form, then measure delivered bytes against an A-MPDU-off baseline on an
+   independent witness at the same PHY rate. This is the last real `txdemo`
+   capability gap.
+2. **M4 loose ends.** Verify STBC decodes on a witness (the mode grammar already
+   carries `/STBC`). Decide and document no-ack semantics; `tx_retry_limit:0`
+   and `AmpduMode.no_ack` already give the no-retry recipe. QoS is subsumed by
+   step 1.
+3. **Multi-witness role in `LinkProbe`.** The two-witness run that settled the
+   carrier-sense question was done by hand at the bridge. Making it first-class
+   both closes a plan item and is the only way to settle the open antenna
+   question (`hardware-evidence.md`, "which MT7612U board has four antennas").
+   A demo cannot do this at all, which is the "strictly better" half of the
+   gate.
+4. **M3 remainders.** Narrowband (5/10 MHz) as an open argument / width path,
+   verified TX+RX on J1/J3 with a witness. The absolute noise floor stays
+   blocked on the bring-up path (`Init` vs `InitWrite`); either move bring-up
+   onto `Init` or keep it recorded as blocked with the reason.
+5. **Run the acceptance matrix.** For each capability, drive `rxdemo`/`txdemo`
+   with the equivalent env knobs and the MCP tool, and compare on the bench.
+   `tools/smoke-test.py` and `tools/mcp-verify.py` are the shape. Where the demo
+   cannot measure it, MCP's witness/verification/capture is the result. This is
+   the artifact that actually declares the gate met, and it stays a documented
+   hardware run, never a unit test.
+6. **Optional: hardware-tagged JUnit.** The `hardware` tag exists but nothing
+   carries it; converting the Python hardware checks would make the parity
+   matrix a gated CI target rather than a set of scripts.
+
+Out of scope, decided: **AP/station association** (needs a probe/auth/assoc
+responder, which the instrument does not expose — see the M6 note above) and
+the **M5 hopping/sensing algorithms** (they belong in the experiment engine or
+the scratchpad, not MCP arguments). **M7** (CSI/LA, beamforming, HE
+trigger/TWT/UL-OFDMA, PCIe) stays `UNAVAILABLE` until hardware exists.
 
 ---
 

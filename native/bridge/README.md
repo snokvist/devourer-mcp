@@ -45,7 +45,7 @@ header.
 |---|---|
 | `hello` | protocol version, vendored devourer commit, compiled backends |
 | `radio.list` | `all:true` also lists devices nothing claims |
-| `radio.open` | `bus`, `address`; opens + claims, does NOT power the chip |
+| `radio.open` | `bus`, `address`; opens + claims, does NOT power the chip. Bring-up knobs read once at CreateRadio: `noise_floor`, `adaptive_gain`, `tx_report`, `tx_retry_limit` (0..63, 0 = no retries; nonzero needed for hardware-ARQ), `tx_ack_timeout_us` (1..255), `tx_retry_fallback` (true = pin retries at the descriptor rate), `usb_agg` (USB TX-aggregation depth for the batch path). |
 | `radio.describe` | AdapterCaps / TxCaps / TxPowerCaps + permanent MAC |
 | `radio.close` | |
 | `radio.channel` | retunes; brings up if needed |
@@ -53,7 +53,7 @@ header.
 | `radio.fast_bandwidth` | bandwidth analogue (`IRadio::FastSetBandwidth`), 20<->5/10 narrowband; capability-gated on the adapter's width set, falls back to a full retune otherwise. |
 | `monitor.start` | `channel`, `width_mhz`, optional `offset`, `band` |
 | `monitor.stop` / `monitor.stats` | |
-| `tx.send` | structured `mode` + `body_hex`, or raw `frame_hex`/`frame_b64`; bounded `count` ≤ 100000 and a 30 s wall-clock budget |
+| `tx.send` | structured `mode` + `body_hex`, or raw `frame_hex`/`frame_b64`; bounded `count` ≤ 100000 and a 30 s wall-clock budget. `batch:true` submits through `IRadio::send_packets` (deep, unpaced; with `usb_agg` packs shared URBs) and `pkt_power_db` attaches a per-frame radiotap `DBM_TX_POWER` on the structured path. |
 | `radio.rx_paths` | live per-chain activity estimate; reports `supported:false` where a backend has not ported it |
 | `radio.tx_stats` | devourer's driver-side `TxStats` — submitted vs failed, i.e. host-side only |
 | `radio.tx_receipts` | per-frame `tx.report` receipts (the CCX C2H account of each transmission): delivery state, hardware retries, final rate, queue time, HalMAC tag. Only when opened with `radio.open`'s `tx_report` (0 = off); drained on read (`clear:false` peeks). The TX-side sensor `tx_stats` cannot be. Jaguar generations only; needs an RX loop. |
@@ -67,6 +67,7 @@ header.
 | `radio.ack_responder` | arm/clear the hardware ACK responder (`IRadio::SetAckResponder`): auto-ACK unicast frames to `mac` with no host involvement, the reliable-unicast enabler. Omit both to read. Unicast only; capability-gated on `AdapterCaps.ack_responder_ok`. Arming is EXPERIMENTAL in the Kotlin layer (it answers others' air); clearing is always allowed and best-effort. |
 | `radio.tsf` | the 64-bit MAC TSF in microseconds (`IRadio::ReadTsf`); `readable:false` says it is not running yet or unwired, rather than a bare 0. MAC-latches each received frame's `tsfl`. |
 | `radio.ampdu` | read/set/clear the A-MPDU TX session mode (`IRadio::SetAmpduMode`). Omit fields to read; `mode` sets; `clear:true` disables. No capability flag and the cleared state equals the unwired default, so the reply's `capability` is supported/unsupported/**unknown** until a set attempt settles it. The goodput gain needs a deep TX feeder this bridge's send path does not provide. |
+| `radio.beacon` | arm/update/stop the hardware beacon (`IRadio::StartBeacon`/`UpdateBeaconPayload`/`StopBeacon`). `action` is `read` (default), `start` (`frame_hex`/`frame_b64` + `interval_tu`), `update` (payload only, requires an active beacon) or `stop`. The chip then airs the beacon at every TBTT, hardware-timed and hardware-TSF-stamped, with no host involvement. `IRadio` has no getter, so `active`/`interval_tu` are the bridge's record of what it asked for, not a chip read. A beacon airs autonomously — a session that ends while one is armed stops it first. `StartBeacon` is ported on Jaguar1/2/3, Kestrel and MT7612U; the RTL8733B has no beacon engine, and Kestrel does not port `StopBeacon`/`UpdateBeaconPayload`, so those refuse honestly rather than faking a stop. The consequence on Kestrel is that a beacon can be ARMED but not silenced through this interface (session teardown's stop is best-effort); no Kestrel on this bench to exercise it — recorded. |
 | `sessions` / `shutdown` | |
 
 ## Two things that are correctness, not style

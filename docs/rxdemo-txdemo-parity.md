@@ -28,13 +28,14 @@ the acceptance test.
 
 ## Where it is now (2026-09-13)
 
-- 38 MCP tools, 27 bridge ops, 31 of 55 `IRadio` methods called.
+- 39 MCP tools, 28 bridge ops, 35 of 55 `IRadio` methods called.
 - **Proven end to end on the current bench**: discover/open/describe; monitor
   RX with per-frame telemetry and raw bytes; capture store/query/PCAP; frame
   inspection; TX structured and raw; split carrier-sense gates; receive-gain
-  clamp; TX-power offset/index/reapply; frame-free channel energy; active RX
-  paths; tx_stats; multi-witness `experiment_link_probe`; characterization DB;
-  scratchpad; dashboard.
+  clamp; TX-power offset/index/reapply and per-packet `pkt_power_db`;
+  frame-free channel energy; active RX paths; tx_stats; per-frame TX receipts;
+  hardware ACK/ARQ; hardware beacon; multi-witness `experiment_link_probe`;
+  characterization DB; scratchpad; dashboard.
 - **TX_VERIFIED**: RTL8812CU (jaguar3) and MT7612U, witnessed independently.
 
 ## Milestones
@@ -66,10 +67,10 @@ what later milestones build on.
 
 | Capability | Demo knobs | Now | Where | Verify |
 |---|---|---|---|---|
-| A-MPDU | `TX_AMPDU`, `TX_AMPDU_MODE` | **Control done**: `radio_ampdu` (capability tri-state, honest about the read ambiguity) | The goodput *axis* is still open: it needs a deep TX feeder this bridge does not have | Goodput at the same PHY rate, payload delivered not occupancy |
-| Hardware ACK / ARQ | `ACK_RESPONDER` | **Partial**: `radio_ack_responder` arms/clears | `TX_RETRY_LIMIT`/`TX_RETRY_FALLBACK` bring-up knobs still open; an ARQ e2e experiment uses the receipts | Per-frame ledger on a witness; ACKed-but-undelivered must be visible |
-| QoS / no-ack / STBC | `TX_QOS_*`, `TX_STBC_TOGGLE` | Mode spec covers some | widen the `TxMode` grammar | Decoded rate/flags on the witness |
-| Per-packet TX power | `TX_PKT_PWR_DB/QDB`, `TX_PKT_OFSET` | Gap | scratchpad/experiment: radiotap `DBM_TX_POWER` per frame | Witness RSSI per rate/frame |
+| A-MPDU | `TX_AMPDU`, `TX_AMPDU_MODE` | **Partial**: `radio_ampdu` control + a deep feeder (`radio_open usb_agg`, `experiment_link_probe batch:true` via `send_packets`) and a `goodput_bytes_per_sec` metric | The probe frames are plain data, not QoS, and A-MPDU needs a TID — QoS probe frames are the missing piece | Goodput at the same PHY rate, payload delivered not occupancy |
+| Hardware ACK / ARQ | `ACK_RESPONDER` | **Done**: `radio_ack_responder` + `radio_open` retry knobs (`tx_retry_limit`, `tx_ack_timeout_us`, `tx_retry_fallback_off`) | — | `tools/tx-retry-arq-test.py`: no responder → retries pinned at the limit, retry-drop; MT responder armed → retries 0/1, delivered |
+| QoS / no-ack / STBC | `TX_QOS_*`, `TX_STBC_TOGGLE` | **Partial**: STBC is in the mode grammar; no-ack is `tx_retry_limit:0` / `AmpduMode.no_ack`; QoS needs a QoS probe frame (see A-MPDU) | widen the `TxMode`/probe grammar | Decoded rate/flags on the witness |
+| Per-packet TX power | `TX_PKT_PWR_DB/QDB`, `TX_PKT_OFSET` | **Done**: `experiment_link_probe pkt_power_db` composes the per-frame radiotap `DBM_TX_POWER` (bit 10), capability-gated on `per_packet_txpower` | — | Witness RSSI tracks the request: 0→43, −6→37, −12→33 (bank floor) on the 8812CU; structured path 0→62, −12→52 |
 
 ### M5 — Hopping and sensing (algorithms, not knobs)
 
@@ -84,7 +85,7 @@ what later milestones build on.
 | Capability | Demo knobs | Now | Where | Verify |
 |---|---|---|---|---|
 | TSF read + adoption | (rx telemetry `tsfl`) | **Read done**, **adoption done** (`radio_tsf`, `set_tsf_us`) | Adoption verified on the 8822C; the MT7612U's `WriteTsf` override is a silent no-op (recorded, upstream fix) | Read advances at wall-clock rate; 8822C write took (+1014us readback) |
-| Beacons | — | Gap | `StartBeacon`/`StopBeacon`/`UpdateBeaconPayload` | A station associates, or a witness decodes the beacon |
+| Beacons | — | **Done**: `radio_beacon` (arm/update/stop via `StartBeacon`/`StopBeacon`/`UpdateBeaconPayload`) | `tools/beacon-test.py` | Both the MT7612U and the RTL8822C (Jaguar3) armed; an independent MT7612U decoded the beacon (102.4 ms cadence, live TX-egress TSF, updated SSID on air, quiet after stop) and the host MT7922 on its stock kernel driver independently saw the beacon and its TSF. Association needs an AP responder and is a separate feature |
 | TDMA / timesync | separate binaries | Gap | experiment engine (`tdma`/`timesync` are not rxdemo/txdemo) | Out of this plan's scope; listed so it is not mistaken for done |
 
 ### M7 — Long tail (large, mostly `UNAVAILABLE` hardware)

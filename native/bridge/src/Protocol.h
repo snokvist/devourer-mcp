@@ -66,8 +66,15 @@ inline constexpr int kProtocolVersionMajor = 1;
  * Additive.
  * 10: new op radio.ampdu — the A-MPDU TX session mode. Additive.
  * 11: new op radio.tsf — read the 64-bit MAC TSF. Additive.
- * 12: radio.tsf also accepts `set_tsf_us` (WriteTsf adoption). Additive. */
-inline constexpr int kProtocolVersionMinor = 12;
+ * 12: radio.tsf also accepts `set_tsf_us` (WriteTsf adoption). Additive.
+ * 13: new op radio.beacon — arm, update or stop the hardware beacon
+ * (StartBeacon/UpdateBeaconPayload/StopBeacon), and read the bridge's record
+ * of it. Additive; an older client never asks for it.
+ * 14: radio.open takes the hardware retry/ARQ + USB-aggregation bring-up knobs
+ * (`tx_retry_limit`, `tx_ack_timeout_us`, `tx_retry_fallback`, `usb_agg`), and
+ * tx.send takes `batch` (deep feed via IRadio::send_packets) and
+ * `pkt_power_db` (per-frame radiotap DBM_TX_POWER). Additive. */
+inline constexpr int kProtocolVersionMinor = 14;
 
 /* 'D','V','R','F' — present on every frame record so a desynchronized reader
  * fails loudly at the next record instead of interpreting payload as a

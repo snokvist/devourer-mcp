@@ -127,7 +127,7 @@ adapter is brought up. Realtek has it from construction.
 
 ```sh
 ./gradlew test                                   # 220 Kotlin tests, no hardware
-ctest --test-dir build/native-bridge             # 63 vendored selftests
+ctest --test-dir build/native-bridge             # 64 native selftests (63 vendored + radiotap layout)
 tools/mcp-verify.py                              # every MCP tool, real requests, artifacts + dashboard
 tools/smoke-test.py                              # RX path, all adapters; never passes vacuously
 tools/rx-gain-cca-test.py                        # receive-gain clamp + split CCA gates
@@ -136,9 +136,11 @@ tools/rx-quality-thermal-test.py                 # fused RX sensor + thermal met
 tools/fast-retune-test.py                        # lean same-band hop + narrowband toggle
 tools/spectrum-sweep-test.py                     # coarse per-channel energy survey
 tools/tx-receipts-test.py                        # per-frame TX reports (needs a Jaguar TX)
+tools/tx-retry-arq-test.py                       # retry-limit knob + hardware ARQ (needs a Jaguar TX)
 tools/ack-responder-test.py                      # hardware ACK responder + safety gate
 tools/ampdu-test.py                              # A-MPDU read/enable/clear + capability tri-state
 tools/tsf-test.py                                # MAC TSF read + adoption
+tools/beacon-test.py                             # hardware beacon, decoded by an independent witness
 tools/stall-test.py / tools/backpressure-test.py # sink stops reading / sustained overload
 
 # A/B a vendor change against a pristine build before proposing it — the
@@ -203,8 +205,8 @@ EDCCA threshold.
 
 ## Picking up (2026-09-13)
 
-State: **38 MCP tools, 27 bridge ops, protocol v1.12, the bridge calls 31 of 55
-`IRadio` methods, 220 Kotlin tests + 63 native selftests.** The current bench is
+State: **39 MCP tools, 28 bridge ops, protocol v1.14, the bridge calls 35 of 55
+`IRadio` methods, 231 Kotlin tests + 64 native selftests.** The current bench is
 an RTL8812CU (Jaguar3) plus two MT7612U; the 8812AU/Jaguar1 results below are
 history. Everything merged in PRs #10–#25.
 
@@ -223,6 +225,7 @@ history. Everything merged in PRs #10–#25.
 | Hardware ACK responder | `radio_ack_responder` | all three arm/clear |
 | A-MPDU control | `radio_ampdu` | 8822C enables; MT refuses honestly |
 | MAC TSF read + adoption | `radio_tsf` (+ `set_tsf_us`) | reads all; write 8822C only |
+| Hardware beacon (arm/update/stop) | `radio_beacon` | MT7612U and RTL8822C (Jaguar3) armed, witnessed by an independent MT7612U (~30 beacons, 102.4 ms cadence, live TX-egress TSF; `update` swapped the SSID on air; quiet after stop) and by the host MT7922 on its stock kernel driver (`iw scan` + monitor capture, TSF delta 102399 µs) |
 | Whole-surface verification | `tools/mcp-verify.py` | 46/46 |
 
 `tools/rxdemo-txdemo-parity.md` is the staged plan; M2 is complete, M3's
@@ -230,17 +233,26 @@ retune/survey primitives are done, M4 is partial, M6 has started.
 
 ### Next
 
-1. **M6 beacons + AP mode** (`StartBeacon`/`StopBeacon`/`UpdateBeaconPayload`):
-   verify with a second adapter decoding the autonomous beacon and its TSF
-   stamp, and a station associating.
-2. **M4 remainders**, each with a known blocker: A-MPDU *goodput* needs a deep
-   TX feeder (`send_packets` with frames in flight); per-packet TX power is
-   raw-path only because `build_stream_radiotap` cannot carry `DBM_TX_POWER`
-   and appending it flips `send_packet`'s length heuristic; TX retry-limit/
-   fallback are bring-up knobs whose effect needs structured unicast.
-3. **Multi-witness role in `LinkProbe`** — the two-witness run that settled the
-   carrier-sense question was done by hand at the bridge; making it a
-   first-class role would also settle the open antenna question.
+The ordered plan lives in
+[`roadmap.md`](roadmap.md) under **"Path to the gate (next steps)"**. Short
+version, and the immediate next action is step 1:
+
+1. **A-MPDU goodput** — add QoS probe frames (a TID) so the MAC aggregates,
+   then measure delivered bytes vs an A-MPDU-off baseline on a witness. The
+   deep feeder and `goodput_bytes_per_sec` are already in place.
+2. M4 loose ends: verify STBC on a witness; decide no-ack semantics.
+3. Multi-witness role in `LinkProbe` (also settles the open antenna question).
+4. M3 remainders: narrowband; the absolute noise floor stays blocked on the
+   `Init` vs `InitWrite` bring-up path.
+5. Run the demo-vs-MCP acceptance matrix on the bench.
+6. Optional: convert the Python hardware checks to the JUnit `hardware` tag.
+
+Already done and independently verified this session: M6 beacons
+(`radio_beacon` + `tools/beacon-test.py`, plus the host MT7922 as an
+independent-generation witness) and the non-A-MPDU half of M4 — hardware ARQ
+(`tools/tx-retry-arq-test.py`) and per-packet TX power (`pkt_power_db`, radiotap
+`DBM_TX_POWER` bit 10). Station *association* and the M5 algorithms are
+deliberately out of scope; the reasons are in the roadmap section above.
 
 ### Open findings (recorded, not fixed — vendored)
 
@@ -258,4 +270,4 @@ retune/survey primitives are done, M4 is partial, M6 has started.
 Derive, don't hardcode. Capability-gate every advanced op; a backend that
 cannot do something must say so. Absent is not zero. Every claim carries its
 evidence. A new bridge op bumps the additive protocol minor; the next one is
-1.12 → 1.13.
+1.14 → 1.15.

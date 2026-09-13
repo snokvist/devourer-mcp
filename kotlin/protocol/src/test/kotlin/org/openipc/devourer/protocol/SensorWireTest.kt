@@ -175,6 +175,37 @@ class SensorWireTest {
     }
 
     @Test
+    fun `an unarmed beacon reply decodes as inactive`() {
+        val json = """
+            {"session":3,"supported":true,"active":false,"interval_tu":0,
+             "frame_bytes":0,"mpdu_bytes":0}
+        """.trimIndent()
+
+        val b = BridgeJson.format.decodeFromString(Beacon.serializer(), json)
+
+        assertTrue(b.supported)
+        assertFalse(b.active)
+        assertEquals(0, b.intervalTu)
+    }
+
+    @Test
+    fun `a beacon start reply decodes the interval and action`() {
+        val json = """
+            {"session":3,"supported":true,"active":true,"interval_tu":100,
+             "frame_bytes":84,"mpdu_bytes":80,"action":"start","started":true}
+        """.trimIndent()
+
+        val b = BridgeJson.format.decodeFromString(Beacon.serializer(), json)
+
+        assertTrue(b.active)
+        assertEquals(100, b.intervalTu)
+        assertEquals(84, b.frameBytes)
+        assertEquals(80, b.mpduBytes)
+        assertEquals("start", b.action)
+        assertTrue(b.started == true)
+    }
+
+    @Test
     fun `a thermal reply decodes every field`() {
         val json = """
             {"session":3,"supported":true,"raw":20,"baseline":18,"delta":2,

@@ -33,6 +33,7 @@ EXPECTED_TOOLS = {
     "radio_fast_retune", "radio_fast_bandwidth",
     "channel_energy", "spectrum_sweep",
     "radio_rx_gain", "radio_cca_gates", "radio_rx_quality", "radio_thermal",
+    "radio_tsf", "radio_ampdu", "radio_ack_responder", "radio_beacon",
     "antenna_check", "capture_summary", "capture_query", "frame_inspect",
     "capture_export_pcap", "radio_tx_power", "radio_tx_receipts", "tx_send",
     "experiment_link_probe", "experiment_status", "experiment_cancel",
@@ -170,6 +171,12 @@ def main():
             receipts = c.tool("radio_tx_receipts", {"session": rt["session"], "clear": False})
             check("radio_tx_receipts is enabled when opened for it",
                   receipts.get("enabled") is True, json.dumps(receipts)[:160])
+
+            # Read-only: arming a beacon is for tools/beacon-test.py, which
+            # witnesses it. This only proves the state read composes.
+            beacon = c.tool("radio_beacon", {"session": rt["session"]})
+            check("radio_beacon read", "active" in beacon and "interval_tu" in beacon,
+                  json.dumps(beacon)[:160])
 
             # --- sweeps / retune -------------------------------------------
             hop = c.tool("radio_fast_retune", {"session": rt["session"], "channel": 1})

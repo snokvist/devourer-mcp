@@ -175,6 +175,20 @@ public data class ExperimentSpec(
     /** The point every unswept axis falls back to. */
     @SerialName("base_point") val basePoint: SweepPoint,
     @SerialName("carrier_sense") val carrierSense: Boolean = true,
+    /**
+     * Submit every burst through the deep, unpaced batched TX path
+     * (`IRadio::send_packets`). The transmitter must be opened with
+     * `usb_agg` > 0 for the USB generations to pack frames into shared URBs.
+     * This is the feed A-MPDU goodput needs; delivery is still measured on an
+     * independent witness, so the result is payload delivered, not occupancy.
+     */
+    @SerialName("batch") val batch: Boolean = false,
+    /**
+     * Per-frame TX power as a signed whole-dB delta against the calibrated
+     * per-rate table (radiotap DBM_TX_POWER), or null for none. Distinct from
+     * the session-wide [Sweep.powerOffsetQdb] axis and composes with it.
+     */
+    @SerialName("pkt_power_db") val pktPowerDb: Int? = null,
     val safety: SafetyLevel = SafetyLevel.NORMAL,
 ) {
     val transmitter: Int
