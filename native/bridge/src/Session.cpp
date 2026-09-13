@@ -914,6 +914,11 @@ Json Session::cca_gates_json() {
   j.set("supported", true)
       .set("primary_cca_disabled", primary)
       .set("edcca_disabled", edcca)
+      /* The combined state has to be here too. The unsupported branch already
+       * carries it, and describe's state does; omitting it from the supported
+       * reply was a real inconsistency a radio with EDCCA off exposed: both
+       * per-gate fields were true, and cca_disabled read false. */
+      .set("cca_disabled", primary || edcca)
       .set("note",
            "primary CCA defers to a DECODABLE PREAMBLE; EDCCA defers to raw "
            "in-band ENERGY. Which one matters is FAMILY-SPECIFIC and the two "

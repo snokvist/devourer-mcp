@@ -123,6 +123,7 @@ adapter is brought up. Realtek has it from construction.
 ./gradlew test                                   # 159 Kotlin tests, no hardware
 ctest --test-dir build/native-bridge             # 63 vendored selftests
 tools/smoke-test.py                              # needs adapters; never passes vacuously
+tools/rx-gain-cca-test.py                        # receive-gain clamp + split CCA gates; needs a Realtek
 tools/stall-test.py                              # needs adapters; a sink that stops reading
 tools/backpressure-test.py                       # needs two adapters; sustained overload
 
@@ -208,7 +209,7 @@ cannot yet do. Start with a bounded TX-power vertical slice (`GetTxPowerCaps`,
 offset/index control, reapply and honest state reporting). `radio.tx_stats` and
 `radio.cca` are the pattern to copy: a bridge op, a `RadioManager` method, an
 MCP tool with a description that says what the result does *not* prove. A new
-bridge op bumps the additive protocol minor from 1.2 to 1.3.
+bridge op bumps the additive protocol minor from 1.3 to 1.4.
 
 After that, multi-witness experiments. The two-witness run that settled the
 carrier-sense question was done by hand against the bridge; making it a first-
