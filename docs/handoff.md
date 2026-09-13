@@ -60,7 +60,7 @@ LLM ──MCP(stdio)──▶ Kotlin runtime ──UDS control + frame stream─
 | `kotlin/characterize/` | Evidence database, one JSON per adapter. |
 | `kotlin/scratchpad/` | Declarative micro-app runtime + live UI. |
 | `kotlin/dashboard/` | The persistent dashboard on `127.0.0.1:8910`. Reads in-process state only; never calls the bridge. |
-| `kotlin/mcp/` | The 33 tools. The only process the model talks to. |
+| `kotlin/mcp/` | The 34 tools. The only process the model talks to. |
 | `var/` | Runtime state: captures, `characterization/`, `scratchpads/`. Gitignored. |
 
 ### Why a separate bridge process
@@ -120,7 +120,7 @@ adapter is brought up. Realtek has it from construction.
 ## Testing
 
 ```sh
-./gradlew test                                   # 192 Kotlin tests, no hardware
+./gradlew test                                   # 196 Kotlin tests, no hardware
 ctest --test-dir build/native-bridge             # 63 vendored selftests
 tools/smoke-test.py                              # needs adapters; never passes vacuously
 tools/rx-gain-cca-test.py                        # receive-gain clamp + split CCA gates; needs a Realtek
@@ -205,12 +205,12 @@ carrier-sense gate is gated on `SafetyLevel.EXPERIMENTAL` through the same
 in the last slice).
 
 The highest-value next step is still closing `IRadio` coverage — the bridge
-calls 24 of 55 methods. M3's `FastRetune` and `FastSetBandwidth` are done
-(`radio_fast_retune`, `radio_fast_bandwidth`); the remaining M3 piece is a
-spectrum/scan sweep built on `FastRetune`. The remaining M2 piece is per-frame
-TX receipts (`tx.report`): the library emits them as JSONL events through a
-shared `FILE*` sink, so the bridge needs an event-capture pipe + parser and a
-`cfg.tx.report` opt-in that sets SPE_RPT in every TX descriptor. The staged
+calls 24 of 55 methods. M3's `FastRetune`, `FastSetBandwidth` and the coarse
+`spectrum_sweep` are done (`radio_fast_retune`, `radio_fast_bandwidth`,
+`spectrum_sweep`). The remaining M2 piece is per-frame TX receipts
+(`tx.report`): the library emits them as JSONL events through a shared `FILE*`
+sink, so the bridge needs an event-capture pipe + parser and a `cfg.tx.report`
+opt-in that sets SPE_RPT in every TX descriptor. The staged
 plan is [`rxdemo-txdemo-parity.md`](rxdemo-txdemo-parity.md). `radio.tx_stats`
 and `radio.cca` are the pattern to copy for a new op: a bridge op, a
 `RadioManager` method, an MCP tool with a description that says what the result

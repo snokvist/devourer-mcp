@@ -16,8 +16,8 @@ The architecture is proven end to end on real hardware:
 LLM ──MCP(stdio)──▶ Kotlin runtime ──UDS──▶ devourer-bridge ──libusb──▶ adapter
 ```
 
-33 MCP tools across DISCOVER / OBSERVE / INSPECT / TRANSMIT / EXPERIMENT /
-CHARACTERIZE / BUILD TOOL. 192 offline tests plus 63 vendored Devourer
+34 MCP tools across DISCOVER / OBSERVE / INSPECT / TRANSMIT / EXPERIMENT /
+CHARACTERIZE / BUILD TOOL. 196 offline tests plus 63 vendored Devourer
 selftests, none of which need hardware. Three hardware tests that refuse to
 pass vacuously: the end-to-end smoke test, a stalled-sink test, and a
 sustained-overload test.
@@ -82,7 +82,7 @@ set. Roughly in value order:
 | TX receipts: per-frame `tx.report` | medium | The TX-side sensor (hardware retry count, final rate, queue time, per-frame correlation). The library emits it as a JSONL *event* through a shared `FILE*` sink, so the bridge needs an event-capture pipe + parser plus a `cfg.tx.report` opt-in that sets SPE_RPT in every TX descriptor. `GetRxQuality` (the RX-side half) is done; this half is its own slice. |
 | `FastRetune` | done | `radio_fast_retune`; 21 ms on the 8822C, full-retune fallback elsewhere. The scan/survey built on it is still open. |
 | `FastSetBandwidth` | done | `radio_fast_bandwidth`; 20<->5/10 narrowband, capability-gated on the adapter's width set. |
-| Channel sweep / spectrum survey | medium | Scanning built on `FastRetune`: dwell per channel, build a coarse picture. Still open. |
+| Channel sweep / spectrum survey | done | `spectrum_sweep` dwells channels with `FastRetune` and reads the frame-free energy per bin; Realtek only, and the quietest channel is a hint not a throughput answer. |
 | `SetAckResponder` | medium | Required for any bidirectional or associated-link work. |
 | `SetAmpduMode` | medium | Aggregation is observable on RX today but not controllable on TX. |
 | Frequency hopping / FHSS | large | Substantial in both demos, with adaptive policy. Real algorithms, not register access. |

@@ -56,6 +56,8 @@ import org.openipc.devourer.radio.OpenRadio
 import org.openipc.devourer.radio.Radios
 import org.openipc.devourer.radio.centerFrequencyMhz
 import org.openipc.devourer.radio.SafetyLevel
+import org.openipc.devourer.radio.SpectrumScanner
+import org.openipc.devourer.radio.SpectrumSweep
 import org.openipc.devourer.radio.VerificationState
 import org.openipc.devourer.capture.CaptureService
 import io.modelcontextprotocol.kotlin.sdk.types.CallToolRequest
@@ -477,6 +479,61 @@ internal class Tools(
                     ),
                 )
             }
+        }
+
+        register(
+            server,
+            name = "spectrum_sweep",
+            description = """
+                Dwell each of several channels on the CURRENT band and read the chip's own
+                frame-free ENERGY at each, then say which looked clearest.
+
+                The single-channel read channel_energy already does, run as a sweep. Hops use
+                the lean retune (radio_fast_retune) where the adapter has it, so a coarse survey
+                is cheap; the starting channel is restored when it finishes.
+
+                This is a CLEAR-CHANNEL survey, not a link-quality one. `cca_total` is the
+                channel-busy count over the dwell and `fa_total` the false alarms; both are
+                energy, not decoded frames, and a receiver that cannot decode reports every
+                channel as quiet. `quietest_channel` is a hint for where to look, never a
+                throughput prediction.
+
+                Realtek only. The radio must be brought up (monitor_start or radio_fast_retune
+                first); a MediaTek reports `supported:false` rather than a picture of zeros.
+            """.trimIndent(),
+            inputSchema = ToolSchema(
+                properties = buildJsonObject {
+                    put("session", schema("integer", "Session id of a brought-up radio."))
+                    put(
+                        "channels",
+                        schema(
+                            "array",
+                            "Channels to dwell, on the current band, e.g. [1,6,11]. " +
+                                "The width/band are kept; only the RF channel moves.",
+                        ),
+                    )
+                    put("dwell_ms", schema("integer", "Dwell per channel. Default 50, 10..10000."))
+                    put("with_nhm", schema("boolean", "Include the 12-bucket power histogram per bin (~2ms each). Default false."))
+                },
+                required = listOf("session", "channels"),
+            ),
+        ) { request ->
+            val session = request.intOr("session", -1)
+            val channels = request.strictIntList("channels").orEmpty()
+            if (channels.isEmpty()) {
+                return@register text(
+                    errorReply("channels is required (an array of channel numbers)"),
+                    isError = true,
+                )
+            }
+            val dwell = request.intOr("dwell_ms", 50).coerceIn(10, 10_000)
+            val result = SpectrumScanner(radios).scan(
+                session = session,
+                channels = channels,
+                dwellMs = dwell,
+                withNhm = request.boolOr("with_nhm", false),
+            )
+            text(json.encodeToString(SpectrumSweep.serializer(), result))
         }
 
         register(

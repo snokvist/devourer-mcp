@@ -782,6 +782,24 @@ That gate was missing in the first draft — the op reported a 5 MHz width the
 MT had not taken, because the width change was the one path not checked
 against the capability report.
 
+## A coarse energy survey
+
+`spectrum_sweep` dwells a list of channels with `radio_fast_retune` and reads
+the chip's frame-free counters at each, naming the quietest. On the 8822C,
+dwelling ch1/6/11 for 150 ms each (`tools/spectrum-sweep-test.py`):
+
+| channel | `cca_total` | `fa_total` |
+|---|---|---|
+| 1 | 128 | 86 |
+| 6 | 172 | 168 |
+| **11** | **31** | **23** |
+
+ch11 came back quietest, and the radio was restored to its starting channel.
+The MT7612U reports `supported:false` (no frame-free counters) rather than a
+picture of zeros. The numbers are channel-busy / false-alarm counts over one
+dwell each — energy, not decoded frames — so this is a "where to look" hint,
+not a throughput prediction.
+
 ## Reproducing
 
 ```sh
@@ -792,6 +810,7 @@ tools/rx-gain-cca-test.py        # receive-gain clamp + split CCA gates, needs a
 tools/tx-power-test.py           # TX-power knobs + a sweep measured on a witness
 tools/rx-quality-thermal-test.py # fused RX sensor + thermal meter
 tools/fast-retune-test.py        # lean same-band hop + narrowband toggle
+tools/spectrum-sweep-test.py     # coarse per-channel energy survey
 tools/stall-test.py              # a sink that stops reading, all adapters
 tools/backpressure-test.py       # sustained overload through a real capture
 tools/host/devourer-mcp          # MCP on stdio; dashboard on 127.0.0.1:8910

@@ -108,6 +108,13 @@ public class FakeRadios(radios: List<OpenRadio> = emptyList()) : Radios {
     /** What [rxEnergy] reports for a Realtek session, keyed by session. */
     public val energy: MutableMap<Int, RxEnergy> = ConcurrentHashMap()
 
+    /**
+     * Per-CHANNEL energy, keyed by channel number. Takes precedence over
+     * [energy] when the radio is tuned to that channel, so a spectrum scan can
+     * be given a different reading per bin.
+     */
+    public val energyByChannel: MutableMap<Int, RxEnergy> = ConcurrentHashMap()
+
     /** What [rxQuality] reports for a Realtek session, keyed by session. */
     public val quality: MutableMap<Int, RxQuality> = ConcurrentHashMap()
 
@@ -654,11 +661,14 @@ public class FakeRadios(radios: List<OpenRadio> = emptyList()) : Radios {
                     "(IRtlRadio::GetRxEnergy); this backend is not a Realtek radio",
             )
         }
-        val e = energy[session] ?: RxEnergy(session = session, supported = true)
+        val tuned = radio.channel?.channel ?: -1
+        val e = energyByChannel[tuned]
+            ?: energy[session]
+            ?: RxEnergy(session = session, supported = true)
         return e.copy(
             session = session,
             supported = true,
-            channel = radio.channel?.channel ?: 0,
+            channel = if (tuned >= 0) tuned else 0,
             nhm = if (withNhm) e.nhm else null,
             validNhm = withNhm && e.validNhm,
         )
