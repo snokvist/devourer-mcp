@@ -17,7 +17,7 @@ LLM ──MCP(stdio)──▶ Kotlin runtime ──UDS──▶ devourer-bridge 
 ```
 
 39 MCP tools across DISCOVER / OBSERVE / INSPECT / TRANSMIT / EXPERIMENT /
-CHARACTERIZE / BUILD TOOL. 231 offline tests plus 64 native selftests (63
+CHARACTERIZE / BUILD TOOL. 247 offline tests plus 64 native selftests (63
 vendored Devourer selftests and the bridge's radiotap-layout test), none of
 which need hardware. Three hardware tests that refuse to
 pass vacuously: the end-to-end smoke test, a stalled-sink test, and a
@@ -121,13 +121,12 @@ Ordered by what unblocks the most, and by what a demo cannot do — the whole
 point of the comparison. The per-milestone tables in
 [`rxdemo-txdemo-parity.md`](rxdemo-txdemo-parity.md) carry each row's status.
 
-1. **Finish M4: A-MPDU goodput.** The deep feeder is in place (`radio_open
-   usb_agg`, `experiment_link_probe batch:true` over `IRadio::send_packets`,
-   `goodput_bytes_per_sec`). What is missing is QoS probe frames — the MAC needs
-   a TID to aggregate, and `ProbeFrame` builds plain data frames today. Add the
-   QoS form, then measure delivered bytes against an A-MPDU-off baseline on an
-   independent witness at the same PHY rate. This is the last real `txdemo`
-   capability gap.
+1. **M4 A-MPDU goodput — done.** `ProbeFrame` builds the QoS Data form the
+   MAC needs a TID for, and `tools/ampdu-goodput-test.py` measures delivered
+   payload against both A-MPDU-off controls with an independent witness:
+   **+33.8% at MCS7/20** (6.54 vs 4.89 MB/s), no gain at MCS0/20 as expected.
+   The result also records the transmitter's `ampdu` state and labels a
+   non-aggregated QoS run as single-MPDU (see `hardware-evidence.md`).
 2. **M4 loose ends.** Verify STBC decodes on a witness (the mode grammar already
    carries `/STBC`). Decide and document no-ack semantics; `tx_retry_limit:0`
    and `AmpduMode.no_ack` already give the no-retry recipe. QoS is subsumed by

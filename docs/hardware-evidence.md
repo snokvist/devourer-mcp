@@ -971,14 +971,30 @@ That is the ARQ loop closed in hardware — a nonzero `tx_retry_limit` plus the
 ACK responder — and the receipts tier is what makes it visible; no host-side
 counter can see hardware retries.
 
-**The deep feeder is built but A-MPDU goodput is not yet shown.**
-`radio_open` now takes `usb_agg` (USB TX aggregation) and `experiment_link_probe`
-takes `batch:true`, which submits through `IRadio::send_packets` instead of a
-per-frame loop; the experiment also reports `goodput_bytes_per_sec` (delivered
-payload over the burst). But the probe frames the experiment builds are plain
-data frames, not QoS data, and A-MPDU formation needs a TID/QoS frame — so
-arming `radio_ampdu` with this feeder showed no goodput gain. QoS probe frames
-are the missing piece.
+**A-MPDU goodput is now shown, with QoS probe frames and an honest label.**
+`ProbeFrame` builds a QoS Data form whose QoS control field names the TID the
+A-MPDU engine aggregates under (and the tag/counter move with the header, which
+is parsed from the frame's own control field). `tools/ampdu-goodput-test.py`
+arms `radio_ampdu` (tid 0, max 16) on an RTL8822C, then runs the deep feeder
+(`usb_agg 16`, `experiment_link_probe batch:true`, 2000 frames x 1000 B) at two
+PHY rates and compares delivered payload against both A-MPDU-off controls —
+plain data frames and QoS frames with the mode cleared — with an independent
+MT7612U as the witness:
+
+- MCS7/20: plain 4.89 MB/s, QoS-not-aggregated 4.85 MB/s, A-MPDU 6.54 MB/s —
+  **+33.8%** over the best control, matching the vendor's ~+30% at high MCS.
+- MCS0/20: 0.79 / 0.79 / 0.73 MB/s — no gain, as expected: per-MPDU airtime
+  dominates at a low rate, so preamble amortization has little to win. The
+  script reports this rather than requiring a gain at every rate.
+- Delivery was 1.000 in every condition at MCS7; RSSI ~62 dBm.
+- The run's self-description is itself verified: the armed run reports
+  `capability=supported, enabled=true, tid=0` with no caveat, and the
+  A-MPDU-off control carries the "NOT aggregated ... single-MPDU figure"
+  caveat. That labelling is load-bearing — the same goodput number means
+  different things aggregated and not, and `LinkProbe` now reads
+  `radios.ampdu()` at run start so a result can never imply aggregation that
+  was not armed. A QoS run with no armed mode is still valid; it is just
+  labelled a single-MPDU measurement.
 
 **Per-packet TX power works — after a radiotap presence-bit bug was fixed.**
 `experiment_link_probe` accepts the per-frame radiotap `DBM_TX_POWER`
@@ -1006,6 +1022,7 @@ tools/host/bridge-ctl.sh start
 tools/mcp-verify.py              # every tool, real requests, artifacts + dashboard
 tools/ack-responder-test.py      # hardware ACK responder arm/clear + safety gate
 tools/ampdu-test.py              # A-MPDU read/enable/clear + capability tri-state
+tools/ampdu-goodput-test.py      # QoS probe frames, A-MPDU goodput vs A-MPDU-off
 tools/tsf-test.py                # MAC TSF read + rate
 tools/beacon-test.py             # hardware beacon, decoded by an independent witness
 tools/smoke-test.py              # RX path, all adapters

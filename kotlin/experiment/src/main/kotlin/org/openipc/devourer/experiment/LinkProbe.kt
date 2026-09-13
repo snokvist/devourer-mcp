@@ -13,6 +13,7 @@ import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import org.openipc.devourer.protocol.AmpduState
 import org.openipc.devourer.protocol.ChannelSpec
 import org.openipc.devourer.protocol.FrameRecord
 import org.openipc.devourer.protocol.RxEnergy
@@ -61,6 +62,31 @@ public class LinkProbe(
 
         if (!tx.capabilities.tx.supported) {
             throw ExperimentException("${tx.label} reports no TX capability")
+        }
+
+        // A QoS frame gives the A-MPDU engine a TID to aggregate under, but the
+        // mode itself is armed by radio_ampdu, not here. Read the state this run
+        // inherits and say plainly whether aggregation was actually on: goodput
+        // from a single-MPDU run is a different fact from an aggregated one, and
+        // a result that did not distinguish them could not be used as evidence.
+        val ampduAtStart: AmpduState? = if (spec.qosTid == null) {
+            null
+        } else {
+            val state = runCatching { radios.ampdu(spec.transmitter) }.getOrNull()
+            val aggregated = state != null && state.capability == "supported" &&
+                state.enabled && state.tid == spec.qosTid
+            if (!aggregated) {
+                val how = state?.let {
+                    "the transmitter reports capability=${it.capability}, " +
+                        "enabled=${it.enabled}, tid=${it.tid}"
+                } ?: "the transmitter's A-MPDU state could not be read"
+                caveats += "qos_tid ${spec.qosTid} was requested, but this run was NOT " +
+                    "aggregated: $how. The delivery ratio is real, but " +
+                    "goodput_bytes_per_sec is a single-MPDU QoS figure, not an A-MPDU " +
+                    "one. Arm radio_ampdu with tid ${spec.qosTid} (after bringing the " +
+                    "radio up) and re-run to measure aggregation."
+            }
+            state
         }
 
         // The power envelope is family-specific, so validate every requested
@@ -264,7 +290,7 @@ public class LinkProbe(
             }
         }
 
-        return conclude(id, started, tx, witnesses, spec, points, results, caveats, truncated)
+        return conclude(id, started, tx, witnesses, spec, points, results, caveats, truncated, ampduAtStart)
     }
 
     /**
@@ -348,14 +374,16 @@ public class LinkProbe(
         powerApplied: Int?,
     ): PointResult {
         witnesses.forEach { it.reset() }
-        val frameHex = ProbeFrame.toHex(ProbeFrame.build(runId, point.frameBytes))
+        val frameHex = ProbeFrame.toHex(
+            ProbeFrame.build(runId, point.frameBytes, spec.qosTid),
+        )
         val txResult: JsonObject = radios.sendProbe(
             session = spec.transmitter,
             frameHex = frameHex,
             mode = point.mode,
             count = spec.bounds.framesPerPoint,
             intervalUs = point.intervalUs,
-            sequenceOffset = ProbeFrame.SEQUENCE_OFFSET,
+            sequenceOffset = ProbeFrame.sequenceOffset(spec.qosTid),
             batch = spec.batch,
             pktPowerDb = spec.pktPowerDb,
         )
@@ -416,6 +444,7 @@ public class LinkProbe(
         points: List<PointResult>,
         caveats: MutableList<String>,
         truncated: Boolean,
+        ampdu: AmpduState?,
     ): ExperimentResult {
         val measured = points.filter { it.deliveryRatio != null }
         val best = measured.maxByOrNull { it.deliveryRatio ?: 0.0 }
@@ -492,6 +521,8 @@ public class LinkProbe(
             caveats = caveats,
             truncated = truncated,
             carrierSenseEnabled = spec.carrierSense,
+            qosTid = spec.qosTid,
+            ampdu = ampdu,
         )
     }
 

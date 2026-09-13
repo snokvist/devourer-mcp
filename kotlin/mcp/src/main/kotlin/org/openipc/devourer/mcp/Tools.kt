@@ -1522,86 +1522,23 @@ internal class Tools(
                                 "per_packet_txpower. Omit for none.",
                         ),
                     )
+                    put(
+                        "qos_tid",
+                        schema(
+                            "integer",
+                            "When set (0..7), every probe frame is QoS Data carrying this TID — " +
+                                "the frame shape the MAC's A-MPDU engine aggregates. Use with " +
+                                "radio_ampdu (same tid) and batch:true to measure A-MPDU goodput; " +
+                                "without it, plain data frames give the aggregation engine no TID " +
+                                "and each PPDU carries one MPDU.",
+                        ),
+                    )
                 },
                 required = listOf("tx_session", "rx_session"),
             ),
         ) { request ->
             try {
-                val modes = request.stringList("modes").ifEmpty { listOf("6M") }
-                val baseChannel = ChannelSpec(
-                    channel = request.intOr("channel", -1),
-                    width = ChannelWidth.ofMhz(request.intOr("width_mhz", 20)),
-                    band = request.intOr("band", 0),
-                )
-                val sweepChannels = request.stringList("sweep_channels")
-                if (sweepChannels.isEmpty() && baseChannel.channel < 0) {
-                    throw ExperimentException("give either channel or sweep_channels")
-                }
-                // The batch path is a deep, unpaced feed. `interval_us` defaults
-                // to 1000, which would make {batch:true} alone fail deep in the
-                // send call; force 0 unless the caller explicitly asked for a
-                // nonzero spacing, which is contradictory.
-                val batch = request.boolOr("batch", false)
-                val intervalArg = request.optionalInt("interval_us")
-                if (batch && intervalArg != null && intervalArg != 0) {
-                    throw ExperimentException(
-                        "batch is a deep unpaced feed; omit interval_us or set it to 0",
-                    )
-                }
-                val intervalUs = if (batch) 0 else (intervalArg ?: 1_000)
-                val bounds = ExperimentBounds(
-                    maxDurationMs = request.longOr("max_duration_ms", 60_000),
-                    framesPerPoint = request.intOr("frames_per_point", 200),
-                    intervalUs = intervalUs,
-                )
-                // Strict: a malformed power axis must fail, not silently vanish
-                // and leave a "power sweep" that swept nothing.
-                val sweepPower = request.strictIntList("sweep_power_qdb") ?: emptyList()
-                val witnessRoles = listOf(RadioRole.MONITOR, RadioRole.MONITOR_2)
-                val extra = request.intList("witness_sessions")
-                if (extra.size > witnessRoles.size) {
-                    throw ExperimentException(
-                        "at most ${witnessRoles.size} extra witnesses (roles " +
-                            "${witnessRoles.joinToString()}); got ${extra.size}",
-                    )
-                }
-                // The interval sweep is the other way a nonzero spacing could
-                // reach a batch point; reject it rather than let it fail deep
-                // in the send call.
-                val sweepInterval = request.intList("sweep_interval_us")
-                if (batch && sweepInterval.any { it != 0 }) {
-                    throw ExperimentException(
-                        "batch is a deep unpaced feed; sweep_interval_us must be " +
-                            "empty or all zeros",
-                    )
-                }
-                val spec = ExperimentSpec(
-                    roles = buildMap {
-                        put(RadioRole.TX_PEER, request.intOr("tx_session", -1))
-                        put(RadioRole.RX_PEER, request.intOr("rx_session", -1))
-                        extra.forEachIndexed { i, s -> put(witnessRoles[i], s) }
-                    },
-                    sweep = Sweep(
-                        modes = modes,
-                        channels = sweepChannels,
-                        frameBytes = request.intList("sweep_frame_bytes"),
-                        intervalUs = if (batch) emptyList() else sweepInterval,
-                        powerOffsetQdb = sweepPower,
-                    ),
-                    bounds = bounds,
-                    basePoint = SweepPoint(
-                        mode = modes.first(),
-                        channel = sweepChannels.firstOrNull()?.let { ChannelLabel(it) }
-                            ?: ChannelLabel.of(baseChannel),
-                        frameBytes = request.intOr("frame_bytes", 200),
-                        intervalUs = intervalUs,
-                        powerOffsetQdb = sweepPower.firstOrNull(),
-                    ),
-                    carrierSense = request.boolOr("carrier_sense", true),
-                    batch = batch,
-                    pktPowerDb = request.optionalInt("pkt_power_db"),
-                    safety = SafetyLevel.parse(request.stringOr("safety_level", "")),
-                )
+                val spec = linkProbeSpec(request)
                 val points = spec.sweep.expand(spec.basePoint).size
                 val id = "exp-${System.currentTimeMillis().toString(36)}"
                 val probe = LinkProbe(radios, scope)
@@ -2204,6 +2141,90 @@ internal class Tools(
         put("type", JsonPrimitive(type))
         put("description", JsonPrimitive(description))
     }
+}
+
+/**
+ * The `experiment_link_probe` arguments as an [ExperimentSpec].
+ *
+ * Separate from the tool handler so the argument-to-spec wiring — every sweep
+ * axis, the batch/interval contradiction, the `qos_tid` that gives A-MPDU a TID
+ * to aggregate under — can be tested without a radios stack or hardware. The
+ * handler is then only the part that runs it.
+ */
+internal fun linkProbeSpec(request: CallToolRequest): ExperimentSpec {
+    val modes = request.stringList("modes").ifEmpty { listOf("6M") }
+    val baseChannel = ChannelSpec(
+        channel = request.intOr("channel", -1),
+        width = ChannelWidth.ofMhz(request.intOr("width_mhz", 20)),
+        band = request.intOr("band", 0),
+    )
+    val sweepChannels = request.stringList("sweep_channels")
+    if (sweepChannels.isEmpty() && baseChannel.channel < 0) {
+        throw ExperimentException("give either channel or sweep_channels")
+    }
+    // The batch path is a deep, unpaced feed. `interval_us` defaults to 1000,
+    // which would make {batch:true} alone fail deep in the send call; force 0
+    // unless the caller explicitly asked for a nonzero spacing.
+    val batch = request.boolOr("batch", false)
+    val intervalArg = request.optionalInt("interval_us")
+    if (batch && intervalArg != null && intervalArg != 0) {
+        throw ExperimentException(
+            "batch is a deep unpaced feed; omit interval_us or set it to 0",
+        )
+    }
+    val intervalUs = if (batch) 0 else (intervalArg ?: 1_000)
+    val bounds = ExperimentBounds(
+        maxDurationMs = request.longOr("max_duration_ms", 60_000),
+        framesPerPoint = request.intOr("frames_per_point", 200),
+        intervalUs = intervalUs,
+    )
+    // Strict: a malformed power axis must fail, not silently vanish and leave
+    // a "power sweep" that swept nothing.
+    val sweepPower = request.strictIntList("sweep_power_qdb") ?: emptyList()
+    val witnessRoles = listOf(RadioRole.MONITOR, RadioRole.MONITOR_2)
+    val extra = request.intList("witness_sessions")
+    if (extra.size > witnessRoles.size) {
+        throw ExperimentException(
+            "at most ${witnessRoles.size} extra witnesses (roles " +
+                "${witnessRoles.joinToString()}); got ${extra.size}",
+        )
+    }
+    // The interval sweep is the other way a nonzero spacing could reach a
+    // batch point; reject it rather than let it fail deep in the send call.
+    val sweepInterval = request.intList("sweep_interval_us")
+    if (batch && sweepInterval.any { it != 0 }) {
+        throw ExperimentException(
+            "batch is a deep unpaced feed; sweep_interval_us must be empty or all zeros",
+        )
+    }
+    return ExperimentSpec(
+        roles = buildMap {
+            put(RadioRole.TX_PEER, request.intOr("tx_session", -1))
+            put(RadioRole.RX_PEER, request.intOr("rx_session", -1))
+            extra.forEachIndexed { i, s -> put(witnessRoles[i], s) }
+        },
+        sweep = Sweep(
+            modes = modes,
+            channels = sweepChannels,
+            frameBytes = request.intList("sweep_frame_bytes"),
+            intervalUs = if (batch) emptyList() else sweepInterval,
+            powerOffsetQdb = sweepPower,
+        ),
+        bounds = bounds,
+        basePoint = SweepPoint(
+            mode = modes.first(),
+            channel = sweepChannels.firstOrNull()?.let { ChannelLabel(it) }
+                ?: ChannelLabel.of(baseChannel),
+            frameBytes = request.intOr("frame_bytes", 200),
+            intervalUs = intervalUs,
+            powerOffsetQdb = sweepPower.firstOrNull(),
+        ),
+        carrierSense = request.boolOr("carrier_sense", true),
+        batch = batch,
+        pktPowerDb = request.optionalInt("pkt_power_db"),
+        qosTid = request.optionalInt("qos_tid"),
+        safety = SafetyLevel.parse(request.stringOr("safety_level", "")),
+    )
 }
 
 /** Reads arguments defensively: a missing or wrong-typed field falls back. */

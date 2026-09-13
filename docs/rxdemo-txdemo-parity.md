@@ -67,9 +67,9 @@ what later milestones build on.
 
 | Capability | Demo knobs | Now | Where | Verify |
 |---|---|---|---|---|
-| A-MPDU | `TX_AMPDU`, `TX_AMPDU_MODE` | **Partial**: `radio_ampdu` control + a deep feeder (`radio_open usb_agg`, `experiment_link_probe batch:true` via `send_packets`) and a `goodput_bytes_per_sec` metric | The probe frames are plain data, not QoS, and A-MPDU needs a TID — QoS probe frames are the missing piece | Goodput at the same PHY rate, payload delivered not occupancy |
+| A-MPDU | `TX_AMPDU`, `TX_AMPDU_MODE` | **Done**: `radio_ampdu` control, QoS probe frames (`ProbeFrame` TID form), deep feeder (`radio_open usb_agg`, `experiment_link_probe batch:true`) and `goodput_bytes_per_sec`; the result records the transmitter's `ampdu` state and labels a non-aggregated QoS run single-MPDU | — | `tools/ampdu-goodput-test.py`: **+33.8%** at MCS7/20 (6.54 vs 4.89 MB/s) vs both A-MPDU-off controls on an independent MT7612U witness; no gain at MCS0/20, as expected |
 | Hardware ACK / ARQ | `ACK_RESPONDER` | **Done**: `radio_ack_responder` + `radio_open` retry knobs (`tx_retry_limit`, `tx_ack_timeout_us`, `tx_retry_fallback_off`) | — | `tools/tx-retry-arq-test.py`: no responder → retries pinned at the limit, retry-drop; MT responder armed → retries 0/1, delivered |
-| QoS / no-ack / STBC | `TX_QOS_*`, `TX_STBC_TOGGLE` | **Partial**: STBC is in the mode grammar; no-ack is `tx_retry_limit:0` / `AmpduMode.no_ack`; QoS needs a QoS probe frame (see A-MPDU) | widen the `TxMode`/probe grammar | Decoded rate/flags on the witness |
+| QoS / no-ack / STBC | `TX_QOS_*`, `TX_STBC_TOGGLE` | **Partial**: QoS probe frames carry a TID (`experiment_link_probe qos_tid`, see A-MPDU); no-ack is `tx_retry_limit:0` / `AmpduMode.no_ack`; STBC is in the mode grammar | Verify STBC on a witness; document no-ack semantics | Decoded rate/flags on the witness |
 | Per-packet TX power | `TX_PKT_PWR_DB/QDB`, `TX_PKT_OFSET` | **Done**: `experiment_link_probe pkt_power_db` composes the per-frame radiotap `DBM_TX_POWER` (bit 10), capability-gated on `per_packet_txpower` | — | Witness RSSI tracks the request: 0→43, −6→37, −12→33 (bank floor) on the 8812CU; structured path 0→62, −12→52 |
 
 ### M5 — Hopping and sensing (algorithms, not knobs)

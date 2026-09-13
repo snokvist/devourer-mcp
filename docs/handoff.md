@@ -126,7 +126,7 @@ adapter is brought up. Realtek has it from construction.
 ## Testing
 
 ```sh
-./gradlew test                                   # 220 Kotlin tests, no hardware
+./gradlew test                                   # 247 Kotlin tests, no hardware
 ctest --test-dir build/native-bridge             # 64 native selftests (63 vendored + radiotap layout)
 tools/mcp-verify.py                              # every MCP tool, real requests, artifacts + dashboard
 tools/smoke-test.py                              # RX path, all adapters; never passes vacuously
@@ -139,6 +139,7 @@ tools/tx-receipts-test.py                        # per-frame TX reports (needs a
 tools/tx-retry-arq-test.py                       # retry-limit knob + hardware ARQ (needs a Jaguar TX)
 tools/ack-responder-test.py                      # hardware ACK responder + safety gate
 tools/ampdu-test.py                              # A-MPDU read/enable/clear + capability tri-state
+tools/ampdu-goodput-test.py                      # A-MPDU goodput vs both controls, measured on a witness
 tools/tsf-test.py                                # MAC TSF read + adoption
 tools/beacon-test.py                             # hardware beacon, decoded by an independent witness
 tools/stall-test.py / tools/backpressure-test.py # sink stops reading / sustained overload
@@ -206,7 +207,7 @@ EDCCA threshold.
 ## Picking up (2026-09-13)
 
 State: **39 MCP tools, 28 bridge ops, protocol v1.14, the bridge calls 35 of 55
-`IRadio` methods, 231 Kotlin tests + 64 native selftests.** The current bench is
+`IRadio` methods, 247 Kotlin tests + 64 native selftests.** The current bench is
 an RTL8812CU (Jaguar3) plus two MT7612U; the 8812AU/Jaguar1 results below are
 history. Everything merged in PRs #10–#25.
 
@@ -224,22 +225,27 @@ history. Everything merged in PRs #10–#25.
 | Energy survey | `spectrum_sweep` | quietest channel on ch1/6/11 |
 | Hardware ACK responder | `radio_ack_responder` | all three arm/clear |
 | A-MPDU control | `radio_ampdu` | 8822C enables; MT refuses honestly |
+| A-MPDU goodput | `ProbeFrame` QoS form + `experiment_link_probe qos_tid` | +33.8% at MCS7/20 vs A-MPDU-off, independent witness; result records the armed state |
 | MAC TSF read + adoption | `radio_tsf` (+ `set_tsf_us`) | reads all; write 8822C only |
 | Hardware beacon (arm/update/stop) | `radio_beacon` | MT7612U and RTL8822C (Jaguar3) armed, witnessed by an independent MT7612U (~30 beacons, 102.4 ms cadence, live TX-egress TSF; `update` swapped the SSID on air; quiet after stop) and by the host MT7922 on its stock kernel driver (`iw scan` + monitor capture, TSF delta 102399 µs) |
 | Whole-surface verification | `tools/mcp-verify.py` | 46/46 |
 
 `tools/rxdemo-txdemo-parity.md` is the staged plan; M2 is complete, M3's
-retune/survey primitives are done, M4 is partial, M6 has started.
+retune/survey primitives are done, M4's A-MPDU goodput and hardware ARQ are
+measured (STBC verification and no-ack documentation remain), M6 has started.
 
 ### Next
 
 The ordered plan lives in
 [`roadmap.md`](roadmap.md) under **"Path to the gate (next steps)"**. Short
-version, and the immediate next action is step 1:
+version; the immediate next action is step 2:
 
-1. **A-MPDU goodput** — add QoS probe frames (a TID) so the MAC aggregates,
-   then measure delivered bytes vs an A-MPDU-off baseline on a witness. The
-   deep feeder and `goodput_bytes_per_sec` are already in place.
+1. **A-MPDU goodput — done.** `ProbeFrame` builds the QoS Data form (a TID for
+   the aggregator), and `tools/ampdu-goodput-test.py` measured delivered
+   payload against both A-MPDU-off controls: **+33.8% at MCS7/20**, no gain at
+   MCS0/20 as expected, on an independent MT7612U witness. `LinkProbe` now
+   records the transmitter's `ampdu` state and labels a non-aggregated QoS run
+   single-MPDU. See `hardware-evidence.md`.
 2. M4 loose ends: verify STBC on a witness; decide no-ack semantics.
 3. Multi-witness role in `LinkProbe` (also settles the open antenna question).
 4. M3 remainders: narrowband; the absolute noise floor stays blocked on the

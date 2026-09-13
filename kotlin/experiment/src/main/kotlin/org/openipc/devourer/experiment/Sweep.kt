@@ -189,6 +189,13 @@ public data class ExperimentSpec(
      * the session-wide [Sweep.powerOffsetQdb] axis and composes with it.
      */
     @SerialName("pkt_power_db") val pktPowerDb: Int? = null,
+    /**
+     * When set, every probe frame is QoS Data carrying this TID (0..7) — the
+     * shape the MAC's A-MPDU engine aggregates. Null keeps plain data frames.
+     * A-MPDU itself is a session state (see the `radio_ampdu` tool); this only
+     * gives the frames a TID to aggregate under.
+     */
+    @SerialName("qos_tid") val qosTid: Int? = null,
     val safety: SafetyLevel = SafetyLevel.NORMAL,
 ) {
     val transmitter: Int
@@ -209,6 +216,12 @@ public data class ExperimentSpec(
             ?: throw ExperimentException(
                 "no TX_PEER assigned: an experiment with nothing transmitting has no stimulus",
             )
+        if (qosTid != null && qosTid !in 0..7) {
+            throw ExperimentException(
+                "qos_tid must be 0..7 — the A-MPDU engine aggregates by the TID in the " +
+                    "QoS control field; got $qosTid",
+            )
+        }
         if (witnesses.isEmpty()) {
             throw ExperimentException(
                 "no witness assigned. A transmitter cannot witness itself — assign at least " +

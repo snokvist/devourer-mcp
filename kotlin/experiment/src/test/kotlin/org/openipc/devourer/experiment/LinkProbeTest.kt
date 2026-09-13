@@ -9,7 +9,9 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.test.runTest
+import org.openipc.devourer.protocol.AmpduMode
 import org.openipc.devourer.protocol.ChannelSpec
+import org.openipc.devourer.protocol.ChannelWidth
 import org.openipc.devourer.protocol.RxEnergy
 import org.openipc.devourer.radio.CapabilityException
 import org.openipc.devourer.radio.FakeRadios
@@ -57,6 +59,7 @@ class LinkProbeTest {
         safety: SafetyLevel = SafetyLevel.NORMAL,
         batch: Boolean = false,
         pktPowerDb: Int? = null,
+        qosTid: Int? = null,
         bounds: ExperimentBounds = ExperimentBounds(
             framesPerPoint = 100,
             intervalUs = if (batch) 0 else 100,
@@ -69,6 +72,7 @@ class LinkProbeTest {
         carrierSense = carrierSense,
         batch = batch,
         pktPowerDb = pktPowerDb,
+        qosTid = qosTid,
         safety = safety,
     )
 
@@ -102,6 +106,88 @@ class LinkProbeTest {
         // The witness records the strongest reporting chain, not a chain average.
         assertEquals(70.0, point.rssiMean)
         assertTrue("TX_VERIFIED" in result.conclusion)
+    }
+
+    @Test
+    fun `a QoS probe is stamped and matched at its own offsets`() = runTest {
+        // If LinkProbe handed the bridge the plain-data sequence offset for a
+        // QoS frame, the stamp would land inside the tag and the witness would
+        // count zero — the same silent failure the offset round-trip guards.
+        val radios = fake()
+        radios.onProbe = { p ->
+            assertEquals(ProbeFrame.QOS_SEQUENCE_OFFSET, p.sequenceOffset)
+            assertEquals(0x88, p.frameHex.take(2).toInt(16), "QoS Data")
+            assertEquals(4, p.frameHex.substring(48, 50).toInt(16) and 0x0f, "TID 4")
+            radios.deliverTo(p, to = 2, frames = 80)
+            FakeRadios.TxOutcome(accepted = p.count)
+        }
+
+        val result = LinkProbe(radios, backgroundScope).run(spec(qosTid = 4))
+
+        assertEquals(VerificationState.TX_VERIFIED, result.verification)
+        assertEquals(80, result.points.single().framesReceived)
+    }
+
+    @Test
+    fun `a QoS run with no A-MPDU armed says so instead of implying aggregation`() = runTest {
+        val radios = fake()
+        radios.onProbe = { p ->
+            radios.deliverTo(p, to = 2, frames = 80)
+            FakeRadios.TxOutcome(accepted = p.count)
+        }
+
+        val result = LinkProbe(radios, backgroundScope).run(spec(qosTid = 4))
+
+        // The frames are still QoS and the delivery ratio is real; what must
+        // not pass silently is that this goodput is single-MPDU.
+        assertEquals(4, result.qosTid)
+        assertEquals(VerificationState.TX_VERIFIED, result.verification)
+        assertTrue(
+            result.caveats.any { "NOT aggregated" in it },
+            "expected an aggregation caveat, got ${result.caveats}",
+        )
+        assertEquals("unknown", result.ampdu?.capability)
+    }
+
+    @Test
+    fun `a QoS run with a matching A-MPDU armed records it and raises no caveat`() = runTest {
+        val radios = fake()
+        radios.retune(1, ChannelSpec(channel = 6, width = ChannelWidth.ofMhz(20)))
+        radios.setAmpdu(1, AmpduMode(enabled = true, tid = 4))
+        radios.onProbe = { p ->
+            radios.deliverTo(p, to = 2, frames = 90)
+            FakeRadios.TxOutcome(accepted = p.count)
+        }
+
+        val result = LinkProbe(radios, backgroundScope).run(spec(qosTid = 4))
+
+        assertEquals(4, result.qosTid)
+        assertEquals("supported", result.ampdu?.capability)
+        assertEquals(true, result.ampdu?.enabled)
+        assertEquals(4, result.ampdu?.tid)
+        assertFalse(
+            result.caveats.any { "NOT aggregated" in it },
+            "an armed run must not carry the aggregation caveat: ${result.caveats}",
+        )
+    }
+
+    @Test
+    fun `a QoS run whose A-MPDU state cannot be read is labelled, not guessed`() = runTest {
+        val radios = fake()
+        radios.failNext["ampdu"] = IllegalStateException("the bridge fell over")
+        radios.onProbe = { p ->
+            radios.deliverTo(p, to = 2, frames = 70)
+            FakeRadios.TxOutcome(accepted = p.count)
+        }
+
+        val result = LinkProbe(radios, backgroundScope).run(spec(qosTid = 4))
+
+        assertEquals(VerificationState.TX_VERIFIED, result.verification)
+        assertNull(result.ampdu, "an unreadable state is absent, never a fabricated one")
+        assertTrue(
+            result.caveats.any { "NOT aggregated" in it && "could not be read" in it },
+            "a failed read must be labelled as such, got ${result.caveats}",
+        )
     }
 
     @Test
