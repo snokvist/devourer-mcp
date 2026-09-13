@@ -24,6 +24,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -161,6 +162,26 @@ public:
    * the supported envelope, not the initial window; callers that need to
    * restore state must remember the initial rx_gain_json() range. */
   bool set_rx_gain(int min, int max, std::string &err);
+
+  /* Runtime TX power, as the index/offset model IRadio documents (TxPower.h),
+   * never as dBm: the caps and state both carry `step_qdb`, and `step_measured`
+   * is what decides whether a power sweep is evidence or just numbers.
+   *
+   * Vendor-neutral (IRadio), so this covers every backend that wired the API
+   * and reports supported=false for those that did not. The mechanism differs
+   * by family: a TXAGC index model (Jaguar/Kestrel) versus an absolute dBm
+   * limit with no index (`index_max == 0` — MT7612U, RTL8733B), which is why
+   * the caps carry `step_qdb` and `index_max` rather than a single scale. */
+  Json tx_power_json();
+
+  /* Apply the TX-power knobs. Each argument is optional; absent leaves that
+   * knob alone. `index_override` >= 0 forces a flat index, < 0 clears back to
+   * the per-rate table. `reapply` forces a re-apply at the current channel
+   * without moving a knob (the register-level check). Returns false only for
+   * a hard failure — an unsupported backend reports that through the returned
+   * JSON, since a read must still work there. */
+  bool set_tx_power(std::optional<int> offset_qdb, std::optional<int> index_override,
+                    bool reapply, std::string &err);
 
   /* Frame-free RX energy: what the chip's own PHY thinks is on the channel,
    * without decoding anything.

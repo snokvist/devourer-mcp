@@ -17,6 +17,7 @@ import org.openipc.devourer.protocol.RadioListResult
 import org.openipc.devourer.protocol.RxEnergy
 import org.openipc.devourer.protocol.RxGain
 import org.openipc.devourer.protocol.SyntheticFrames
+import org.openipc.devourer.protocol.TxPower
 import org.openipc.devourer.protocol.UsbDevice
 
 /**
@@ -112,8 +113,38 @@ public class FakeRadios(radios: List<OpenRadio> = emptyList()) : Radios {
      */
     public val gain: MutableMap<Int, RxGain> = ConcurrentHashMap()
 
+    /** The TX-power knob state per session, keyed by session. */
+    public val txPowerState: MutableMap<Int, TxPower> = ConcurrentHashMap()
+
     /** The split gates per session: `first` = primary CCA, `second` = EDCCA. */
     private val gates: MutableMap<Int, Pair<Boolean, Boolean>> = ConcurrentHashMap()
+
+    private fun defaultTxPower(session: Int, radio: OpenRadio): TxPower {
+        val caps = radio.capabilities.txPower
+        return TxPower(
+            session = session,
+            supported = true,
+            indexMax = caps.indexMax,
+            stepQdb = caps.stepQdb,
+            stepMeasured = caps.stepMeasured,
+            offsetMinQdb = caps.offsetMinQdb,
+            offsetMaxQdb = caps.offsetMaxQdb,
+            rateDiffs = caps.rateDiffs,
+            rateDiffsHwTable = true,
+            rateDiffsMeasured = caps.rateDiffsMeasured,
+            valid = radio.state.broughtUp,
+            flatIndex = -1,
+            offsetQdb = 0,
+            offsetSteps = 0,
+            saturatedLow = false,
+            saturatedHigh = false,
+            cckIndex = 0x30,
+            ofdmIndex = 0x2e,
+            mcs7Index = 0x34,
+            hwReadback = true,
+            rateDiffsCustom = false,
+        )
+    }
 
     private fun defaultGain(session: Int): RxGain = RxGain(
         session = session,
@@ -471,6 +502,79 @@ public class FakeRadios(radios: List<OpenRadio> = emptyList()) : Radios {
         )
     }
 
+    override suspend fun txPower(session: Int): TxPower {
+        record("txPower", "$session")
+        val radio = radio(session)
+        if (!radio.capabilities.txPower.supported) {
+            return TxPower(
+                session = session,
+                supported = false,
+                why = "this backend does not wire the runtime TX-power knobs",
+            )
+        }
+        return txPowerState[session] ?: defaultTxPower(session, radio)
+    }
+
+    override suspend fun setTxPower(
+        session: Int,
+        offsetQdb: Int?,
+        indexOverride: Int?,
+        reapply: Boolean,
+    ): TxPower {
+        record(
+            "setTxPower",
+            "$session,offset=$offsetQdb,index=$indexOverride,reapply=$reapply",
+        )
+        val radio = radio(session)
+        val caps = radio.capabilities.txPower
+        if (!caps.supported) {
+            throw CapabilityException(
+                "set TX power", radio.label, "the backend does not wire the knobs",
+            )
+        }
+        require(offsetQdb != null || indexOverride != null || reapply) {
+            "name at least one knob or reapply"
+        }
+        if (indexOverride != null) {
+            require(indexOverride == -1 || indexOverride in 0..caps.indexMax) {
+                "indexOverride must be -1 (clear) or 0..${caps.indexMax}"
+            }
+        }
+        if (offsetQdb != null) {
+            require(offsetQdb in caps.offsetMinQdb..caps.offsetMaxQdb) {
+                "offsetQdb must be ${caps.offsetMinQdb}..${caps.offsetMaxQdb}"
+            }
+        }
+        if (reapply && !radio.state.broughtUp) {
+            error("unsupported: the chip is not brought up")
+        }
+        val cur = txPowerState[session] ?: defaultTxPower(session, radio)
+        val flat = when {
+            indexOverride == null -> cur.flatIndex
+            indexOverride < 0 -> -1
+            else -> indexOverride
+        }
+        // Match devourer's quantize_offset_qdb: round to nearest step, ties away
+        // from zero, so a request that vanishes on the hardware vanishes here
+        // too rather than the fake reporting an offset the chip never took.
+        val requested = offsetQdb ?: cur.offsetQdb ?: 0
+        val steps = if (caps.stepQdb > 0) {
+            val q = requested.toDouble() / caps.stepQdb
+            val rounded = if (q >= 0) kotlin.math.floor(q + 0.5) else kotlin.math.ceil(q - 0.5)
+            rounded.toInt()
+        } else {
+            0
+        }
+        val next = cur.copy(
+            valid = radio.state.broughtUp,
+            flatIndex = flat,
+            offsetQdb = steps * caps.stepQdb,
+            offsetSteps = steps,
+        )
+        txPowerState[session] = next
+        return next
+    }
+
     /**
      * Frame-free energy, on the Realtek fake only.
      *
@@ -582,6 +686,7 @@ public class FakeRadios(radios: List<OpenRadio> = emptyList()) : Radios {
                 tx = TxCapabilities(supported = true, spatialStreams = 2, maxWidthMhz = 80),
                 txPower = TxPowerCapabilities(
                     supported = true, indexMax = 63, stepQdb = 2, stepMeasured = false,
+                    offsetMinQdb = -32, offsetMaxQdb = 16, rateDiffs = true,
                 ),
                 features = mapOf("per_chain_rssi" to true, "hw_rx_timestamp" to true),
             ),

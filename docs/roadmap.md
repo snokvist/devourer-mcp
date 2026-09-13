@@ -16,8 +16,8 @@ The architecture is proven end to end on real hardware:
 LLM ──MCP(stdio)──▶ Kotlin runtime ──UDS──▶ devourer-bridge ──libusb──▶ adapter
 ```
 
-28 MCP tools across DISCOVER / OBSERVE / INSPECT / TRANSMIT / EXPERIMENT /
-CHARACTERIZE / BUILD TOOL. 159 offline tests plus 63 vendored Devourer
+29 MCP tools across DISCOVER / OBSERVE / INSPECT / TRANSMIT / EXPERIMENT /
+CHARACTERIZE / BUILD TOOL. 169 offline tests plus 63 vendored Devourer
 selftests, none of which need hardware. Three hardware tests that refuse to
 pass vacuously: the end-to-end smoke test, a stalled-sink test, and a
 sustained-overload test.
@@ -61,7 +61,7 @@ Full evidence, including the findings below, is in
 
 ## The big one: `IRadio` coverage
 
-**The bridge calls 14 of `IRadio`'s 55 virtual methods.** That single number is
+**The bridge calls 19 of `IRadio`'s 55 virtual methods.** That single number is
 the most useful measure of what is left, and it is why this does not yet fully
 replace Devourer's own `rxdemo`/`txdemo` as research instruments. Those two are
 thin loops over the same API: 76 bring-up knobs in `DeviceConfig` (77 `env:`
@@ -74,7 +74,8 @@ set. Roughly in value order:
 
 | Gap | Effort | Why it matters |
 |---|---|---|
-| TX power: `SetTxPower`, `SetTxPowerOffsetQdb`, `GetTxPowerState` | small | Turns link probes into power sweeps. Note `step_measured=false` on most families — the slope is uncalibrated, and results must say so. |
+| TX power: offset / flat index / reapply / state | done | Exposed as `radio_tx_power`. Note `step_measured=false` on most families — the slope is uncalibrated, and results must say so. |
+| TX power: per-rate `SetTxPowerRateDiffs` and a `link_probe` power axis | medium | The two pieces that turn the knob into a *power sweep*. Rate diffs are structured and only the 8822E honours them; the sweep axis is what produces delivery-vs-power evidence with an independent witness. |
 | `GetRxQuality` / `LinkHealth` | small | Windowed link aggregates Devourer already computes, plus its fused verdict; today we recompute a weaker version from frames. Subsumes `GetRxEnergy`, which `channel_energy` already exposes. |
 | `GetThermalStatus` | small | Long experiments drift thermally and nothing currently notices. |
 | `FastRetune` + channel sweep | medium | Scanning and survey. `FastRetune` is the lean path Devourer added for dwell loops; a naive `SetMonitorChannel` per dwell costs ~130 ms. |

@@ -12,6 +12,7 @@ import org.openipc.devourer.protocol.MonitorStats
 import org.openipc.devourer.protocol.RadioListResult
 import org.openipc.devourer.protocol.RxEnergy
 import org.openipc.devourer.protocol.RxGain
+import org.openipc.devourer.protocol.TxPower
 
 /**
  * [Radios] over the real bridge.
@@ -188,6 +189,35 @@ public class RadioManager(private val bridge: BridgeClient) : Radios {
             },
         )
         return BridgeJson.format.decodeFromJsonElement(CcaGates.serializer(), result)
+    }
+
+    override suspend fun txPower(session: Int): TxPower {
+        val result = bridge.call(
+            "radio.tx_power",
+            buildJsonObject { put("session", JsonPrimitive(session)) },
+        )
+        return BridgeJson.format.decodeFromJsonElement(TxPower.serializer(), result)
+    }
+
+    override suspend fun setTxPower(
+        session: Int,
+        offsetQdb: Int?,
+        indexOverride: Int?,
+        reapply: Boolean,
+    ): TxPower {
+        require(offsetQdb != null || indexOverride != null || reapply) {
+            "name at least one of offsetQdb, indexOverride or reapply; use txPower() to read"
+        }
+        val result = bridge.call(
+            "radio.tx_power",
+            buildJsonObject {
+                put("session", JsonPrimitive(session))
+                offsetQdb?.let { put("offset_qdb", JsonPrimitive(it)) }
+                indexOverride?.let { put("index_override", JsonPrimitive(it)) }
+                if (reapply) put("reapply", JsonPrimitive(true))
+            },
+        )
+        return BridgeJson.format.decodeFromJsonElement(TxPower.serializer(), result)
     }
 
     override suspend fun rxEnergy(session: Int, withNhm: Boolean): RxEnergy {

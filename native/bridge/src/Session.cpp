@@ -1058,6 +1058,106 @@ bool Session::set_rx_gain(int min, int max, std::string &err) {
   return true;
 }
 
+Json Session::tx_power_json() {
+  std::lock_guard<std::recursive_mutex> life(_life_mu);
+  Json j;
+  j.set("session", _id);
+  if (_radio == nullptr) {
+    j.set("supported", false).set("why", "session has no radio");
+    return j;
+  }
+  const auto caps = _radio->GetTxPowerCaps();
+  j.set("supported", caps.supported);
+  if (!caps.supported) {
+    j.set("why",
+          "this backend does not wire the runtime TX-power knobs "
+          "(IRadio::GetTxPowerCaps is optional and not ported here)");
+    return j;
+  }
+  /* The caps travel with the state: index_max is the clamp on the flat index,
+   * the offset range is in qdB, and step_qdb/step_measured are what decide
+   * whether a sweep here produces evidence or just indices. */
+  j.set("index_max", caps.index_max)
+      .set("step_qdb", caps.step_qdb)
+      .set("step_measured", caps.step_measured)
+      .set("offset_min_qdb", caps.offset_min_qdb)
+      .set("offset_max_qdb", caps.offset_max_qdb)
+      .set("rate_diffs", caps.rate_diffs)
+      .set("rate_diffs_hw_table", caps.rate_diffs_hw_table)
+      .set("rate_diffs_measured", caps.rate_diffs_measured);
+
+  const auto st = _radio->GetTxPowerState();
+  j.set("valid", st.valid);
+  if (!st.valid) {
+    j.set("why",
+          "the chip is not brought up yet — bring the radio up (retune or "
+          "start a monitor) before reading the applied state");
+    return j;
+  }
+  j.set("flat_index", st.flat_index)
+      .set("offset_qdb", st.offset_qdb)
+      .set("offset_steps", st.offset_steps)
+      .set("saturated_low", st.saturated_low)
+      .set("saturated_high", st.saturated_high)
+      .set("cck_index", st.cck_index)
+      .set("ofdm_index", st.ofdm_index)
+      .set("mcs7_index", st.mcs7_index)
+      .set("hw_readback", st.hw_readback)
+      .set("rate_diffs_custom", st.rate_diffs_custom);
+  if (!caps.step_measured)
+    j.set("note",
+          "step_measured is false: this family's dB-per-step slope has not "
+          "been validated on air, so a power change here moves the index by a "
+          "documented amount, not a measured one. Treat relative index "
+          "comparisons as real and absolute dBm claims as extrapolated.");
+  else if (!st.hw_readback)
+    j.set("note",
+          "hw_readback is false: the representative indices are the driver's "
+          "software shadow, not a register readback (this family's TXAGC port "
+          "is write-only).");
+  return j;
+}
+
+bool Session::set_tx_power(std::optional<int> offset_qdb,
+                           std::optional<int> index_override, bool reapply,
+                           std::string &err) {
+  std::lock_guard<std::recursive_mutex> life(_life_mu);
+  if (_radio == nullptr) {
+    err = "session has no radio";
+    return false;
+  }
+  const auto caps = _radio->GetTxPowerCaps();
+  if (!caps.supported) {
+    err = "this backend does not wire the runtime TX-power knobs";
+    return false;
+  }
+  /* Applied in the order the model composes: the flat index sets the
+   * baseline, the offset folds onto it, and a reapply forces the result at the
+   * current channel. A refused reapply is the one hard failure — it is false
+   * when the chip is not brought up. */
+  if (index_override) {
+    if (*index_override >= 0 && *index_override > caps.index_max) {
+      err = "index_override must be -1 (clear) or 0.." +
+            std::to_string(caps.index_max);
+      return false;
+    }
+    _radio->SetTxPowerIndexOverride(*index_override);
+  }
+  if (offset_qdb) {
+    if (*offset_qdb < caps.offset_min_qdb || *offset_qdb > caps.offset_max_qdb) {
+      err = "offset_qdb must be " + std::to_string(caps.offset_min_qdb) + ".." +
+            std::to_string(caps.offset_max_qdb);
+      return false;
+    }
+    _radio->SetTxPowerOffsetQdb(*offset_qdb);
+  }
+  if (reapply && !_radio->ReApplyTxPower()) {
+    err = "the backend refused to re-apply TX power — is the chip brought up?";
+    return false;
+  }
+  return true;
+}
+
 Json Session::rx_energy_json(bool with_nhm) {
   std::lock_guard<std::recursive_mutex> life(_life_mu);
   Json j;

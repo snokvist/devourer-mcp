@@ -33,6 +33,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -522,6 +523,40 @@ Json op_radio_rx_gain(const Json &req) {
   return ok(s->rx_gain_json());
 }
 
+Json op_radio_tx_power(const Json &req) {
+  std::string err;
+  auto s = find_session(req, err);
+  if (!s)
+    return fail("no_session", err);
+  if (Json bad = unknown_field(req, {"offset_qdb", "index_override", "reapply"});
+      !bad.is_null())
+    return bad;
+  /* Presence decides whether this is a write, and a present-but-wrong-typed
+   * field is rejected rather than skipped — the same rule radio.rx_gain had to
+   * learn: a request that does nothing must not come back as success. */
+  for (const char *k : {"offset_qdb", "index_override"}) {
+    const Json &v = req.at(k);
+    if (!v.is_null() && !v.is_number())
+      return fail("bad_request", std::string(k) + " must be an integer");
+  }
+  if (!req.at("reapply").is_null() && req.at("reapply").type() != Json::Type::Bool)
+    return fail("bad_request", "reapply must be a boolean");
+
+  const bool has_offset = !req.at("offset_qdb").is_null();
+  const bool has_index = !req.at("index_override").is_null();
+  const bool reapply = req.at("reapply").boolean(false);
+  if (has_offset || has_index || reapply) {
+    std::optional<int> offset, index;
+    if (has_offset)
+      offset = static_cast<int>(req.at("offset_qdb").integer(0));
+    if (has_index)
+      index = static_cast<int>(req.at("index_override").integer(-1));
+    if (!s->set_tx_power(offset, index, reapply, err))
+      return fail("unsupported", err);
+  }
+  return ok(s->tx_power_json());
+}
+
 Json op_radio_rx_energy(const Json &req) {
   std::string err;
   auto s = find_session(req, err);
@@ -796,6 +831,8 @@ Json dispatch(const Json &req) {
     return op_radio_rx_energy(req);
   if (op == "radio.rx_gain")
     return op_radio_rx_gain(req);
+  if (op == "radio.tx_power")
+    return op_radio_tx_power(req);
   if (op == "radio.cca_gates")
     return op_radio_cca_gates(req);
   if (op == "radio.cca")
