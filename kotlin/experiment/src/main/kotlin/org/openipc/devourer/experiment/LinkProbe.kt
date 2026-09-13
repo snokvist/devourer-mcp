@@ -61,6 +61,34 @@ public class LinkProbe(
         if (!tx.capabilities.tx.supported) {
             throw ExperimentException("${tx.label} reports no TX capability")
         }
+
+        // The power envelope is family-specific, so validate every requested
+        // offset against the adapter's caps before anything transmits — the
+        // same reason channels are checked up front rather than on point 9.
+        val powerOffsets = points.mapNotNull { it.powerOffsetQdb }.distinct()
+        val initialPowerOffset: Int? = if (powerOffsets.isEmpty()) {
+            null
+        } else {
+            val caps = radios.txPower(spec.transmitter)
+            if (!caps.supported) {
+                throw ExperimentException(
+                    "${tx.label} cannot sweep TX power: the backend does not wire the " +
+                        "runtime TX-power knobs",
+                )
+            }
+            powerOffsets.forEach { q ->
+                if (q < caps.offsetMinQdb || q > caps.offsetMaxQdb) {
+                    throw ExperimentException(
+                        "power offset ${q}qdB is outside ${tx.label}'s " +
+                            "${caps.offsetMinQdb}..${caps.offsetMaxQdb}qdB envelope",
+                    )
+                }
+            }
+            // What to restore when the run ends. Unreadable before bring-up, in
+            // which case 0 is the documented fallback and a caveat says so.
+            runCatching { radios.txPower(spec.transmitter).offsetQdb }.getOrNull()
+        }
+
         // Check every channel the sweep will visit, on every radio, before
         // transmitting anything. Discovering on point 9 of 12 that a witness
         // cannot tune ch149 wastes the run and leaves it half-comparable.
@@ -110,10 +138,21 @@ public class LinkProbe(
                     channelEnergy[point.channel.text] = idleEnergy(spec.transmitter)
                 }
 
+                // Apply this point's power before its burst. Only touched when
+                // the axis is present, so a run without it never moves the
+                // transmitter's power.
+                var appliedPower: Int? = null
+                if (point.powerOffsetQdb != null) {
+                    appliedPower = radios.setTxPower(
+                        spec.transmitter,
+                        offsetQdb = point.powerOffsetQdb,
+                    ).offsetQdb
+                }
+
                 val measured = try {
                     withTimeout(spec.bounds.pointTimeoutMs) {
                         measure(spec, point, runId, witnesses,
-                            channelEnergy[point.channel.text])
+                            channelEnergy[point.channel.text], appliedPower)
                     }
                 } catch (e: TimeoutCancellationException) {
                     truncated = true
@@ -127,6 +166,7 @@ public class LinkProbe(
                         framesSent = spec.bounds.framesPerPoint,
                         framesReceived = null,
                         deliveryRatio = null,
+                        powerOffsetQdb = point.powerOffsetQdb,
                         note = "timed out after ${spec.bounds.pointTimeoutMs}ms. NOT a " +
                             "measurement: the transmit call never returned, so nothing " +
                             "about delivery at this point is known.",
@@ -166,6 +206,34 @@ public class LinkProbe(
                 if (!spec.carrierSense) {
                     runCatching { radios.setCarrierSense(spec.transmitter, enabled = true) }
                 }
+                // A swept run must not leave the transmitter at the last
+                // point's power. Restore the pre-run offset, or 0 when it was
+                // never readable.
+                if (powerOffsets.isNotEmpty()) {
+                    runCatching {
+                        radios.setTxPower(spec.transmitter, offsetQdb = initialPowerOffset ?: 0)
+                    }
+                    if (initialPowerOffset == null) {
+                        caveats += "The transmitter's TX-power offset before this run was " +
+                            "not readable, so it was restored to 0. If it was not 0, set " +
+                            "it again."
+                    }
+                }
+            }
+        }
+
+        if (powerOffsets.isNotEmpty()) {
+            caveats += "This run swept TX power with offsets RELATIVE to the adapter's " +
+                "calibrated per-rate table, in quarter-dB. Whether that is a measured dB " +
+                "depends on the family's step_measured flag (see radio_tx_power): treat " +
+                "the shape as real and any absolute dB as uncalibrated unless it is true."
+            val inexact = results.filter {
+                it.powerOffsetQdb != null && it.powerAppliedQdb != it.powerOffsetQdb
+            }
+            if (inexact.isNotEmpty()) {
+                caveats += "${inexact.size} point(s) did not take the requested offset " +
+                    "exactly (quantized to the family step or clamped at a rail); " +
+                    "power_applied_qdb says what was actually used."
             }
         }
 
@@ -250,6 +318,7 @@ public class LinkProbe(
         runId: Int,
         witnesses: List<Witness>,
         channelEnergy: RxEnergy?,
+        powerApplied: Int?,
     ): PointResult {
         witnesses.forEach { it.reset() }
         val frameHex = ProbeFrame.toHex(ProbeFrame.build(runId, point.frameBytes))
@@ -293,6 +362,8 @@ public class LinkProbe(
             txMaxLateUs = txResult.long("max_late_us"),
             witnesses = perWitness,
             channelEnergy = channelEnergy,
+            powerOffsetQdb = point.powerOffsetQdb,
+            powerAppliedQdb = powerApplied,
             note = if (accepted < sent) "TX path accepted only $accepted of $sent" else null,
         )
     }

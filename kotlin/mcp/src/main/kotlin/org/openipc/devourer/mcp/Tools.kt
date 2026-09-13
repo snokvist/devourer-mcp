@@ -946,6 +946,18 @@ internal class Tools(
                     put("sweep_channels", schema("array", "Channels to sweep, as text: [\"ch1\",\"ch6/40\"]. Overrides channel."))
                     put("sweep_frame_bytes", schema("array", "Probe MPDU sizes to sweep, 40..1500."))
                     put("sweep_interval_us", schema("array", "Frame spacings to sweep, 0..1000000."))
+                    put(
+                        "sweep_power_qdb",
+                        schema(
+                            "array",
+                            "TX-power offsets to sweep, in quarter-dB relative to the " +
+                                "adapter's calibrated per-rate table (a single value pins it). " +
+                                "The envelope is the adapter's; an out-of-range request is " +
+                                "refused before anything transmits. This is what produces " +
+                                "delivery-vs-power; the shape is real, the absolute dB needs " +
+                                "radio_tx_power's step_measured.",
+                        ),
+                    )
                     put("frames_per_point", schema("integer", "Frames transmitted per point. Default 200."))
                     put("interval_us", schema("integer", "Spacing between frames. Default 1000."))
                     put("frame_bytes", schema("integer", "Probe MPDU size. Default 200."))
@@ -1004,6 +1016,7 @@ internal class Tools(
                         channels = sweepChannels,
                         frameBytes = request.intList("sweep_frame_bytes"),
                         intervalUs = request.intList("sweep_interval_us"),
+                        powerOffsetQdb = request.intList("sweep_power_qdb"),
                     ),
                     bounds = bounds,
                     basePoint = SweepPoint(
@@ -1012,6 +1025,7 @@ internal class Tools(
                             ?: ChannelLabel.of(baseChannel),
                         frameBytes = request.intOr("frame_bytes", 200),
                         intervalUs = intervalUs,
+                        powerOffsetQdb = request.intList("sweep_power_qdb").firstOrNull(),
                     ),
                     carrierSense = request.boolOr("carrier_sense", true),
                     safety = SafetyLevel.parse(request.stringOr("safety_level", "")),

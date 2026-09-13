@@ -120,7 +120,7 @@ adapter is brought up. Realtek has it from construction.
 ## Testing
 
 ```sh
-./gradlew test                                   # 172 Kotlin tests, no hardware
+./gradlew test                                   # 176 Kotlin tests, no hardware
 ctest --test-dir build/native-bridge             # 63 vendored selftests
 tools/smoke-test.py                              # needs adapters; never passes vacuously
 tools/rx-gain-cca-test.py                        # receive-gain clamp + split CCA gates; needs a Realtek
@@ -205,14 +205,16 @@ rest of the tree uses. The gain and gate ops already existed (no protocol
 change); `radio.tx_power` is new and, with the per-rate diff table, took the minor from 1.3 to 1.5.
 
 The highest-value next step is still closing `IRadio` coverage — the bridge
-calls 20 of 55 methods. The remaining TX-power work is a `link_probe`
-power-sweep axis, which turns the knob into delivery-vs-power evidence with an
-independent witness; the staged plan for TX-power and everything else on the
-demo-parity path is [`rxdemo-txdemo-parity.md`](rxdemo-txdemo-parity.md).
-`radio.tx_stats` and `radio.cca` are the pattern to copy for a new op: a bridge
-op, a `RadioManager` method, an MCP tool with a description that says what the
-result does *not* prove. A new bridge op bumps the additive protocol minor from
-1.5 to 1.6.
+calls 20 of 55 methods. TX power is now complete: offset/index/reapply, per-rate
+diffs, and a `sweep_power_qdb` axis that produces delivery-vs-power with an
+independent witness in one experiment. The staged plan for everything else on
+the demo-parity path is
+[`rxdemo-txdemo-parity.md`](rxdemo-txdemo-parity.md); the next untouched
+milestones are M2's TX receipts/thermal, then M3 (`FastRetune`,
+`FastSetBandwidth`, spectrum sweep). `radio.tx_stats` and `radio.cca` are the
+pattern to copy for a new op: a bridge op, a `RadioManager` method, an MCP tool
+with a description that says what the result does *not* prove. A new bridge op
+bumps the additive protocol minor from 1.5 to 1.6.
 
 After that, multi-witness experiments. The two-witness run that settled the
 carrier-sense question was done by hand against the bridge; making it a first-

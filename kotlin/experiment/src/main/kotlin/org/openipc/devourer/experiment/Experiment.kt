@@ -159,6 +159,14 @@ public data class PointResult(
      * exposes the counters, and a zero would be a fabricated reading.
      */
     @SerialName("channel_energy") val channelEnergy: RxEnergy? = null,
+    /**
+     * The TX-power offset this point requested, in quarter-dB, when the sweep
+     * had a power axis. [powerAppliedQdb] is what the radio actually took after
+     * quantization and rail clamps — they differ when a request fell between
+     * steps or hit a rail.
+     */
+    @SerialName("power_offset_qdb") val powerOffsetQdb: Int? = null,
+    @SerialName("power_applied_qdb") val powerAppliedQdb: Int? = null,
     val note: String? = null,
 )
 

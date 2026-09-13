@@ -47,7 +47,7 @@ what later milestones build on.
 | Capability | Demo knobs | Now | Where | Verify |
 |---|---|---|---|---|
 | Per-rate power diffs | `TX_RATE_DIFFS` | Gap | bridge `radio.tx_power` gains a structured `rate_diffs` body; 8822C/E + J1/J2/Kestrel report `rate_diffs` | Clamp a rate, watch that rate's RSSI move on a witness; other rates stay put |
-| Power sweep axis | `TX_PWR_START/STEP/STOP/STEP_MS`, `TX_PWR_OFFSET_QDB` | Offset settable, sweep manual | `link_probe` axis: sweep `offset_qdb`, channel outermost, capture `rssi_mean`/delivery per point | Delivery/RSSI vs power curve on the 8812CU, witnessed by an MT7612U |
+| Power sweep axis | `TX_PWR_START/STEP/STOP/STEP_MS`, `TX_PWR_OFFSET_QDB` | **Done**: `sweep_power_qdb` in `experiment_link_probe` | Axes bounded by the adapter caps, checked up front; per-point requested/applied qdB recorded; pre-run offset restored | Delivery/RSSI vs power curve on the 8812CU, witnessed by an MT7612U (52.0 / 62.0 / 80.1 dBm at −64/0/+64 qdB) |
 | TX receipts | `TX_RECEIPTS`, `TX_REPORT` | Host-side `tx_stats` only | surface `tx.report` / `GetRxQuality` | Compare host `submitted` to on-air witness count |
 | Thermal status | `THERMAL_POLL_MS`, `THERMAL_WARN_DELTA` | Gap | bridge `radio.thermal` (`GetThermalStatus`) | Read the meter, note it is telemetry, not a degradation predictor |
 

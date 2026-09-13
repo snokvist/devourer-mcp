@@ -320,6 +320,40 @@ class LinkProbeTest {
     }
 
     @Test
+    fun `a power sweep sets each point's offset and restores the pre-run value`() = runTest {
+        val radios = fake()
+        val result = LinkProbe(radios, backgroundScope).run(
+            spec(sweep = Sweep(modes = listOf("6M"), powerOffsetQdb = listOf(-16, 16))),
+        )
+
+        assertEquals(2, result.points.size)
+        assertEquals(listOf(-16, 16), result.points.map { it.powerOffsetQdb })
+        assertEquals(listOf(-16, 16), result.points.map { it.powerAppliedQdb })
+
+        val sets = radios.calls.filter { it.startsWith("setTxPower(1,") }
+        assertTrue(sets.any { "offset=-16" in it }, sets.toString())
+        assertTrue(sets.any { "offset=16" in it }, sets.toString())
+        // The run leaves the transmitter where it found it, not on the last point.
+        assertTrue(sets.last().contains("offset=0"), sets.toString())
+        assertTrue(result.caveats.any { "RELATIVE" in it }, result.caveats.toString())
+    }
+
+    @Test
+    fun `a request to sweep power on a radio without the knobs is refused up front`() = runTest {
+        val radios = fake()
+        // The MediaTek fixture cannot move its power, so a power sweep on it
+        // must fail before any burst rather than silently measuring one level.
+        assertFailsWith<ExperimentException> {
+            LinkProbe(radios, backgroundScope).run(
+                spec(
+                    roles = mapOf(RadioRole.TX_PEER to 2, RadioRole.RX_PEER to 1),
+                    sweep = Sweep(modes = listOf("6M"), powerOffsetQdb = listOf(-16, 16)),
+                ),
+            )
+        }
+    }
+
+    @Test
     fun `the simple two-radio form still works`() = runTest {
         val radios = fake()
         radios.onProbe = { p ->
