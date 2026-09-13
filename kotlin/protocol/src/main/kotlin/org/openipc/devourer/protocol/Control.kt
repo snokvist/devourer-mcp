@@ -253,6 +253,49 @@ public data class CcaGates(
     val warning: String? = null,
 )
 
+/**
+ * Runtime TX power: the caps and the applied state of the index/offset model.
+ *
+ * Never dBm. [indexMax] and [stepQdb] describe the knob in hardware index
+ * steps, and [stepMeasured] is the field that decides whether a power sweep is
+ * evidence or just indices: when false the dB-per-step slope was never
+ * validated on air for this family.
+ *
+ * [valid] false with [supported] true means the chip is not up yet. When it is
+ * true, [flatIndex] is -1 for the efuse per-rate baseline or the forced flat
+ * index otherwise; [offsetQdb]/[offsetSteps] are what was actually applied
+ * after quantization; and [saturatedLow]/[saturatedHigh] say the last apply hit
+ * a rail, which is how a controller learns the knob ran out of travel.
+ * [hwReadback] false means the representative indices are the driver's
+ * software shadow, not a register read.
+ */
+@Serializable
+public data class TxPower(
+    val session: Int = 0,
+    val supported: Boolean = false,
+    val why: String? = null,
+    @SerialName("index_max") val indexMax: Int = 0,
+    @SerialName("step_qdb") val stepQdb: Int = 0,
+    @SerialName("step_measured") val stepMeasured: Boolean = false,
+    @SerialName("offset_min_qdb") val offsetMinQdb: Int = 0,
+    @SerialName("offset_max_qdb") val offsetMaxQdb: Int = 0,
+    val rateDiffs: Boolean = false,
+    @SerialName("rate_diffs_hw_table") val rateDiffsHwTable: Boolean = false,
+    @SerialName("rate_diffs_measured") val rateDiffsMeasured: Boolean = false,
+    val valid: Boolean = false,
+    @SerialName("flat_index") val flatIndex: Int? = null,
+    @SerialName("offset_qdb") val offsetQdb: Int? = null,
+    @SerialName("offset_steps") val offsetSteps: Int? = null,
+    @SerialName("saturated_low") val saturatedLow: Boolean? = null,
+    @SerialName("saturated_high") val saturatedHigh: Boolean? = null,
+    @SerialName("cck_index") val cckIndex: Int? = null,
+    @SerialName("ofdm_index") val ofdmIndex: Int? = null,
+    @SerialName("mcs7_index") val mcs7Index: Int? = null,
+    @SerialName("hw_readback") val hwReadback: Boolean? = null,
+    @SerialName("rate_diffs_custom") val rateDiffsCustom: Boolean? = null,
+    val note: String? = null,
+)
+
 /** Channel width in MHz. The bridge takes MHz; the enum keeps callers honest. */
 public enum class ChannelWidth(public val mhz: Int) {
     W5(5), W10(10), W20(20), W40(40), W80(80), W160(160),

@@ -11,6 +11,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.int
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.openipc.devourer.capture.CaptureSummary
@@ -43,6 +44,7 @@ import org.openipc.devourer.protocol.ChannelWidth
 import org.openipc.devourer.protocol.FrameAddresses
 import org.openipc.devourer.protocol.RxEnergy
 import org.openipc.devourer.protocol.RxGain
+import org.openipc.devourer.protocol.TxPower
 import org.openipc.devourer.radio.CapabilityException
 import org.openipc.devourer.radio.OpenRadio
 import org.openipc.devourer.radio.Radios
@@ -773,6 +775,60 @@ internal class Tools(
     // ---------------------------------------------------------------- TRANSMIT
 
     private fun registerTransmit(server: Server) {
+        register(
+            server,
+            name = "radio_tx_power",
+            description = """
+                Read and set the runtime TX-power knobs on an open radio.
+
+                An INDEX/OFFSET model, never dBm. `step_qdb` and `step_measured` describe the
+                knob: when `step_measured` is false the dB-per-step slope has not been validated
+                on air for this family, so an absolute dBm claim built on it is an extrapolation.
+                Relative index comparisons remain real.
+
+                Omit all arguments to read. To set:
+
+                  offset_qdb         relative to the efuse-calibrated per-rate table, preserving
+                                     its shape. This is the closed-loop controller's knob.
+                  index_override     >= 0 forces one flat absolute index for every rate; -1
+                                     reverts to the per-rate table.
+                  reapply            re-program at the current channel without moving a knob.
+
+                `flat_index` reads -1 for the calibrated baseline; `saturated_low`/`saturated_high`
+                say the last apply hit a rail, i.e. the knob is out of travel in that direction.
+                `hw_readback` false means the indices are the driver's shadow, not a register read.
+
+                Nothing here is regulatory-clamped — compliance is the operator's. On Realtek the
+                receive gain and the EDCCA threshold are coupled, so transmit power and
+                carrier-sense sensitivity are not fully independent.
+            """.trimIndent(),
+            inputSchema = ToolSchema(
+                properties = buildJsonObject {
+                    put("session", schema("integer", "Session id from radio_open."))
+                    put("offset_qdb", schema("integer", "Relative power offset in quarter-dB. Omit to leave unchanged."))
+                    put("index_override", schema("integer", "Flat absolute TXAGC index (>= 0), or -1 to clear. Omit to leave unchanged."))
+                    put("reapply", schema("boolean", "Re-program TX power at the current channel. Needs the chip brought up."))
+                },
+                required = listOf("session"),
+            ),
+        ) { request ->
+            val session = request.intOr("session", -1)
+            val offset = request.optionalInt("offset_qdb")
+            val index = request.optionalInt("index_override")
+            val reapply = request.boolOr("reapply", false)
+            val result = if (offset == null && index == null && !reapply) {
+                radios.txPower(session)
+            } else {
+                radios.setTxPower(
+                    session,
+                    offsetQdb = offset,
+                    indexOverride = index,
+                    reapply = reapply,
+                )
+            }
+            text(json.encodeToString(TxPower.serializer(), result))
+        }
+
         register(
             server,
             name = "tx_send",
@@ -1553,6 +1609,25 @@ internal fun io.modelcontextprotocol.kotlin.sdk.types.CallToolRequest.boolOr(key
 
 internal fun io.modelcontextprotocol.kotlin.sdk.types.CallToolRequest.stringOr(key: String, default: String): String =
     runCatching { params.arguments?.get(key)?.jsonPrimitive?.content }.getOrNull() ?: default
+
+/**
+ * A present argument as an Int, or null when it is absent.
+ *
+ * Throws when the value is present but not an integer. The lenient [intOr] must
+ * not be used for a field whose PRESENCE means "write": a quoted `"4"` or a
+ * boolean would fall back to a default, the write would proceed with a value
+ * the caller never named, and the reply would read as success. That is the
+ * silent-success failure this project keeps having to remove, and the bridge's
+ * own wrong-type guards cannot see it because the coercion happens here.
+ */
+internal fun io.modelcontextprotocol.kotlin.sdk.types.CallToolRequest.optionalInt(key: String): Int? {
+    val element = params.arguments?.get(key) ?: return null
+    val primitive = element as? JsonPrimitive
+    if (primitive == null || primitive.isString || primitive.intOrNull == null) {
+        throw IllegalArgumentException("$key must be an integer")
+    }
+    return primitive.intOrNull
+}
 
 internal fun io.modelcontextprotocol.kotlin.sdk.types.CallToolRequest.intList(key: String): List<Int> =
     runCatching {

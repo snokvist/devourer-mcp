@@ -12,6 +12,7 @@ import org.openipc.devourer.protocol.MonitorStats
 import org.openipc.devourer.protocol.RadioListResult
 import org.openipc.devourer.protocol.RxEnergy
 import org.openipc.devourer.protocol.RxGain
+import org.openipc.devourer.protocol.TxPower
 import org.openipc.devourer.protocol.UsbDevice
 
 /** The channel a radio is currently tuned to, as the bridge reports it. */
@@ -202,6 +203,37 @@ public interface Radios {
         edccaDisabled: Boolean? = null,
         safety: SafetyLevel = SafetyLevel.NORMAL,
     ): CcaGates
+
+    /**
+     * The runtime TX-power knobs: the caps and the applied state.
+     *
+     * An index/offset model, never dBm. [TxPower.stepMeasured] is what decides
+     * whether a power sweep is evidence or just numbers; `valid = false` with
+     * `supported = true` means the chip is not up yet. Read-only and ungated.
+     */
+    public suspend fun txPower(session: Int): TxPower
+
+    /**
+     * Apply the TX-power knobs. Each argument is optional; an absent one leaves
+     * that knob alone.
+     *
+     * [offsetQdb] is RELATIVE to the efuse-calibrated per-rate table and
+     * preserves its shape (the closed-loop controller's knob). [indexOverride]
+     * >= 0 forces a flat absolute index for every rate; -1 reverts to the
+     * per-rate table. [reapply] re-programs at the current channel without
+     * moving a knob, and needs the chip brought up.
+     *
+     * None of this is regulatory-clamped — compliance is the operator's, exactly
+     * as the README says — and on Realtek the receive gain interacts with the
+     * EDCCA threshold, so changing power and carrier-sense sensitivity are not
+     * entirely independent.
+     */
+    public suspend fun setTxPower(
+        session: Int,
+        offsetQdb: Int? = null,
+        indexOverride: Int? = null,
+        reapply: Boolean = false,
+    ): TxPower
 
     /**
      * What this radio's own PHY sees on the channel, without decoding a frame.

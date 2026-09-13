@@ -4,6 +4,7 @@ import kotlinx.serialization.json.JsonObject
 import org.openipc.devourer.protocol.CcaGates
 import org.openipc.devourer.protocol.ChannelSpec
 import org.openipc.devourer.protocol.RxGain
+import org.openipc.devourer.protocol.TxPower
 import org.openipc.devourer.radio.OpenRadio
 import org.openipc.devourer.radio.Radios
 import org.openipc.devourer.radio.SafetyLevel
@@ -75,6 +76,15 @@ public class RecordingRadios(
         safety: SafetyLevel,
     ): CcaGates = delegate
         .setCcaGates(session, primaryCcaDisabled, edccaDisabled, safety)
+        .also { refresh(session) }
+
+    override suspend fun setTxPower(
+        session: Int,
+        offsetQdb: Int?,
+        indexOverride: Int?,
+        reapply: Boolean,
+    ): TxPower = delegate
+        .setTxPower(session, offsetQdb, indexOverride, reapply)
         .also { refresh(session) }
 
     /** Best effort: a stale page is a nuisance, a failed radio op is not. */

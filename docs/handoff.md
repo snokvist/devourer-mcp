@@ -60,7 +60,7 @@ LLM ──MCP(stdio)──▶ Kotlin runtime ──UDS control + frame stream─
 | `kotlin/characterize/` | Evidence database, one JSON per adapter. |
 | `kotlin/scratchpad/` | Declarative micro-app runtime + live UI. |
 | `kotlin/dashboard/` | The persistent dashboard on `127.0.0.1:8910`. Reads in-process state only; never calls the bridge. |
-| `kotlin/mcp/` | The 28 tools. The only process the model talks to. |
+| `kotlin/mcp/` | The 29 tools. The only process the model talks to. |
 | `var/` | Runtime state: captures, `characterization/`, `scratchpads/`. Gitignored. |
 
 ### Why a separate bridge process
@@ -120,7 +120,7 @@ adapter is brought up. Realtek has it from construction.
 ## Testing
 
 ```sh
-./gradlew test                                   # 159 Kotlin tests, no hardware
+./gradlew test                                   # 167 Kotlin tests, no hardware
 ctest --test-dir build/native-bridge             # 63 vendored selftests
 tools/smoke-test.py                              # needs adapters; never passes vacuously
 tools/rx-gain-cca-test.py                        # receive-gain clamp + split CCA gates; needs a Realtek
@@ -196,20 +196,22 @@ the rebased RX-gain patch found and fixed the repin's own gaps: `radio.rx_gain`
 let a wrong-typed value skip the write and return the unchanged state as
 success, and three docs counted a stale `IRadio` ratio.
 
-The receive-gain clamp and the split carrier-sense gates are now exposed end to
-end: `radio.rx_gain`/`radio.cca_gates` in the bridge, `rxGain`/`clampRxGain`/
-`ccaGates`/`setCcaGates` on `Radios`, and the `radio_rx_gain` /
-`radio_cca_gates` MCP tools. Disabling either gate is gated on
-`SafetyLevel.EXPERIMENTAL` through the same `RadioSafety` the rest of the tree
-uses. No protocol change was needed — the ops already existed.
+The receive-gain clamp, the split carrier-sense gates, and the first TX-power
+slice are exposed end to end: `radio.rx_gain`/`radio.cca_gates`/`radio.tx_power`
+in the bridge, matching `Radios` methods, and the `radio_rx_gain` /
+`radio_cca_gates` / `radio_tx_power` MCP tools. Disabling either carrier-sense
+gate is gated on `SafetyLevel.EXPERIMENTAL` through the same `RadioSafety` the
+rest of the tree uses. The gain and gate ops already existed (no protocol
+change); `radio.tx_power` is new and took the minor from 1.3 to 1.4.
 
 The highest-value next step is still closing `IRadio` coverage — the bridge
-calls 14 of 55 methods, and that single number explains most of what this
-cannot yet do. Start with a bounded TX-power vertical slice (`GetTxPowerCaps`,
-offset/index control, reapply and honest state reporting). `radio.tx_stats` and
-`radio.cca` are the pattern to copy: a bridge op, a `RadioManager` method, an
-MCP tool with a description that says what the result does *not* prove. A new
-bridge op bumps the additive protocol minor from 1.3 to 1.4.
+calls 19 of 55 methods. The two halves of TX power that remain are per-rate
+`SetTxPowerRateDiffs` and a `link_probe` power-sweep axis; the axis is what
+turns the knob into delivery-vs-power evidence with an independent witness.
+`radio.tx_stats` and `radio.cca` are the pattern to copy for a new op: a bridge
+op, a `RadioManager` method, an MCP tool with a description that says what the
+result does *not* prove. A new bridge op bumps the additive protocol minor from
+1.4 to 1.5.
 
 After that, multi-witness experiments. The two-witness run that settled the
 carrier-sense question was done by hand against the bridge; making it a first-

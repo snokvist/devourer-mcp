@@ -673,6 +673,47 @@ MCS3, MCS5 and MCS7** on the RX peer (94.5–97.5% on the monitor witness). That
 is the current bench's `TX_VERIFIED` for jaguar3, and it was obtained entirely
 through MCP.
 
+## Runtime TX power, measured on an independent receiver
+
+`radio_tx_power` exposes the index/offset model (`TxPower.h`), and
+`tools/tx-power-test.py` drives it through MCP. This is the one knob where the
+register claim and the radiated result are easy to confuse, so the check ends
+by changing the knob and reading a *different* adapter's RSSI.
+
+**Caps first, because they are not uniform.** On the 2026-09-13 bench:
+
+| Adapter | `index_max` | `step_qdb` | `step_measured` | offset range | model |
+|---|---|---|---|---|---|
+| RTL8812CU (jaguar3) | 127 | 1 (0.25 dB) | **true** | ±127 qdB | TXAGC index |
+| MT7612U | 0 | 4 (1 dB) | false | −80..+40 qdB | absolute dBm limit |
+
+The MT7612U result is the surprise: it **does** wire runtime TX power, as an
+absolute whole-dBm actuator with no TXAGC index (`index_max == 0`), not as
+`supported:false`. The expectation going in — that the MediaTek had no such
+knob — was wrong, and only the caps report said so.
+
+**The sweep**, RTL8812CU transmitting, MT7612U as the independent witness,
+ch6/20, 6M, 300 frames a point, carrier sense on:
+
+| TX offset | witness RSSI | delivery |
+|---|---|---|
+| −64 qdB (−16 dB) | 52.7 dBm | 99.7% |
+| 0 | 63.0 dBm | 100% |
+| +64 qdB (+16 dB) | 81.1 dBm | 100% |
+
+A 128 qdB request is 32 dB nominal and moved the witness RSSI by 28.4 dB —
+about 0.89 of nominal, with the shortfall at the top consistent with near-field
+AGC compression (the two adapters are inches apart) and a stepped PA. Direction
+and magnitude are unambiguous, and `step_measured=true` on this family means
+those 0.25 dB steps are the slope devourer already validated on air.
+
+**What the knob test also caught.** A quoted `"4"` for `offset_qdb` reached
+neither the radio nor an error: the MCP argument reader coerced it to the
+default 0 and the write reported success. The bridge's own wrong-type guards
+never saw it. Fixed with a strict `optionalInt` in the tool layer, so a
+present-but-wrong-typed knob is refused before the request is built — the same
+class as the `radio.rx_gain` fix, one layer up.
+
 ## Reproducing
 
 ```sh
@@ -680,6 +721,7 @@ tools/host/bridge-ctl.sh start
 ./gradlew :mcp:installDist
 tools/smoke-test.py          # RX path, all adapters
 tools/rx-gain-cca-test.py    # receive-gain clamp + split CCA gates, needs a Realtek
+tools/tx-power-test.py       # TX-power knobs + a sweep measured on a witness
 tools/stall-test.py          # a sink that stops reading, all adapters
 tools/backpressure-test.py   # sustained overload through a real capture
 tools/host/devourer-mcp      # MCP on stdio; dashboard on 127.0.0.1:8910

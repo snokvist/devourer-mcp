@@ -49,8 +49,11 @@ inline constexpr int kProtocolVersionMajor = 1;
  * alongside the two per-gate fields. Additive and ignorable by an older
  * client, but the reply shape changed, so the minor says so. The unsupported
  * reply and describe's state already had it; the hardware test caught that a
- * radio with EDCCA off read `cca_disabled:false` without it. */
-inline constexpr int kProtocolVersionMinor = 3;
+ * radio with EDCCA off read `cca_disabled:false` without it.
+ * 4: new op radio.tx_power — read the caps and applied state, and set the
+ * offset/index knobs or force a re-apply. Additive; an older client simply
+ * never asks for it. */
+inline constexpr int kProtocolVersionMinor = 4;
 
 /* 'D','V','R','F' — present on every frame record so a desynchronized reader
  * fails loudly at the next record instead of interpreting payload as a
