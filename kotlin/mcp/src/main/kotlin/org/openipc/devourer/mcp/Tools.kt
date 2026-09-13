@@ -45,6 +45,8 @@ import org.openipc.devourer.protocol.ChannelWidth
 import org.openipc.devourer.protocol.FrameAddresses
 import org.openipc.devourer.protocol.RxEnergy
 import org.openipc.devourer.protocol.RxGain
+import org.openipc.devourer.protocol.RxQuality
+import org.openipc.devourer.protocol.Thermal
 import org.openipc.devourer.protocol.TxPower
 import org.openipc.devourer.protocol.TxRateDiffs
 import org.openipc.devourer.radio.CapabilityException
@@ -521,6 +523,86 @@ internal class Tools(
                 )
             }
             text(json.encodeToString(CcaGates.serializer(), result))
+        }
+
+        register(
+            server,
+            name = "radio_rx_quality",
+            description = """
+                The fused, windowed RX link-quality snapshot for one radio: the per-frame
+                RSSI/SNR/EVM aggregate, a passive noise-floor estimate, the frame-free
+                FA/CCA energy, and a plain-language `verdict` with `cause`/`fix`.
+
+                One read that would otherwise be assembled from the frame store — and one the
+                device computes over the window since the PREVIOUS read, so it DRAINS. To
+                measure an interval: call once and discard, wait, call again.
+
+                The saturation tell is EVM, not SNR: strong RSSI with a poor EVM means back
+                power OFF, the opposite of the weak-link response. `snr_valid`/`evm_valid` say
+                whether those were actually measured rather than zero.
+
+                Realtek only. A MediaTek reports `supported:false` with a reason rather than a
+                fabricated NO_SIGNAL. Do not poll this and channel_energy on the same cadence:
+                on Realtek they consume the same hardware counters.
+            """.trimIndent(),
+            inputSchema = ToolSchema(
+                properties = buildJsonObject {
+                    put("session", schema("integer", "Session id from radio_open."))
+                    put("dwell_ms", schema("integer", "Measurement window. Default 500, max 10000."))
+                },
+                required = listOf("session"),
+            ),
+        ) { request ->
+            val session = request.intOr("session", -1)
+            val dwell = request.longOr("dwell_ms", 500).coerceIn(10, 10_000)
+            // The window drains on read, so the first call clears whatever
+            // accumulated before the caller asked; the second is the window.
+            val first = radios.rxQuality(session)
+            if (!first.supported) {
+                text(json.encodeToString(RxQuality.serializer(), first))
+            } else {
+                kotlinx.coroutines.delay(dwell)
+                val measured = radios.rxQuality(session)
+                text(
+                    json.encodeToString(
+                        JsonObject.serializer(),
+                        buildJsonObject {
+                            put("dwell_ms", JsonPrimitive(dwell))
+                            put(
+                                "quality",
+                                json.encodeToJsonElement(RxQuality.serializer(), measured),
+                            )
+                        },
+                    ),
+                )
+            }
+        }
+
+        register(
+            server,
+            name = "radio_thermal",
+            description = """
+                Read the chip's thermal meter (RF 0x42).
+
+                `raw` is in thermal units (~1.5-2 C each), NOT absolute degrees; `delta` is
+                raw minus the baseline and is the heat signal; `bucket` is the coarse
+                cool/warm/hot/critical label. `valid:false` means no baseline is available, so
+                only `raw` is meaningful.
+
+                This is TELEMETRY, not a validated degradation predictor. Delivery has been
+                measured drifting with no relation to this meter, and a reading beside a rate
+                ceiling is a companion, never the cause. `supported:false` means no meter is
+                wired on this backend — not that the chip is cool.
+            """.trimIndent(),
+            inputSchema = ToolSchema(
+                properties = buildJsonObject {
+                    put("session", schema("integer", "Session id from radio_open."))
+                },
+                required = listOf("session"),
+            ),
+        ) { request ->
+            val result = radios.thermal(request.intOr("session", -1))
+            text(json.encodeToString(Thermal.serializer(), result))
         }
 
         register(

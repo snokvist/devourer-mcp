@@ -16,8 +16,8 @@ The architecture is proven end to end on real hardware:
 LLM ──MCP(stdio)──▶ Kotlin runtime ──UDS──▶ devourer-bridge ──libusb──▶ adapter
 ```
 
-29 MCP tools across DISCOVER / OBSERVE / INSPECT / TRANSMIT / EXPERIMENT /
-CHARACTERIZE / BUILD TOOL. 176 offline tests plus 63 vendored Devourer
+31 MCP tools across DISCOVER / OBSERVE / INSPECT / TRANSMIT / EXPERIMENT /
+CHARACTERIZE / BUILD TOOL. 184 offline tests plus 63 vendored Devourer
 selftests, none of which need hardware. Three hardware tests that refuse to
 pass vacuously: the end-to-end smoke test, a stalled-sink test, and a
 sustained-overload test.
@@ -61,7 +61,7 @@ Full evidence, including the findings below, is in
 
 ## The big one: `IRadio` coverage
 
-**The bridge calls 20 of `IRadio`'s 55 virtual methods.** That single number is
+**The bridge calls 22 of `IRadio`'s 55 virtual methods.** That single number is
 the most useful measure of what is left, and it is why this does not yet fully
 replace Devourer's own `rxdemo`/`txdemo` as research instruments. Those two are
 thin loops over the same API: 76 bring-up knobs in `DeviceConfig` (77 `env:`
@@ -77,8 +77,9 @@ set. Roughly in value order:
 | TX power: offset / flat index / reapply / state | done | Exposed as `radio_tx_power`. Note `step_measured=false` on most families — the slope is uncalibrated, and results must say so. |
 | TX power: per-rate `SetTxPowerRateDiffs` | done | `radio_tx_power` takes a structured `{cck, legacy, mcs[8]}` table, or `clear_rate_diffs`. Jaguar1/2/3 (both dies) and Kestrel honour it; MT7612U/RTL8733B refuse it. |
 | TX power: a `link_probe` power axis | done | `sweep_power_qdb` produces a point per offset in one experiment, records requested vs applied qdB, and restores the pre-run offset. Delivery-vs-power with an independent witness is now first-class. |
-| `GetRxQuality` / `LinkHealth` | small | Windowed link aggregates Devourer already computes, plus its fused verdict; today we recompute a weaker version from frames. Subsumes `GetRxEnergy`, which `channel_energy` already exposes. |
-| `GetThermalStatus` | small | Long experiments drift thermally and nothing currently notices. |
+| `GetRxQuality` / `LinkHealth` | done | Exposed as `radio_rx_quality`. Subsumes `GetRxEnergy`; do not poll both on one cadence (shared counters). |
+| `GetThermalStatus` | done | Exposed as `radio_thermal`. Telemetry only, not a degradation predictor. |
+| TX receipts: per-frame `tx.report` | medium | The TX-side sensor (hardware retry count, final rate, queue time, per-frame correlation). The library emits it as a JSONL *event* through a shared `FILE*` sink, so the bridge needs an event-capture pipe + parser plus a `cfg.tx.report` opt-in that sets SPE_RPT in every TX descriptor. `GetRxQuality` (the RX-side half) is done; this half is its own slice. |
 | `FastRetune` + channel sweep | medium | Scanning and survey. `FastRetune` is the lean path Devourer added for dwell loops; a naive `SetMonitorChannel` per dwell costs ~130 ms. |
 | `SetAckResponder` | medium | Required for any bidirectional or associated-link work. |
 | `SetAmpduMode` | medium | Aggregation is observable on RX today but not controllable on TX. |

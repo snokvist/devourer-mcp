@@ -12,6 +12,8 @@ import org.openipc.devourer.protocol.MonitorStats
 import org.openipc.devourer.protocol.RadioListResult
 import org.openipc.devourer.protocol.RxEnergy
 import org.openipc.devourer.protocol.RxGain
+import org.openipc.devourer.protocol.RxQuality
+import org.openipc.devourer.protocol.Thermal
 import org.openipc.devourer.protocol.TxPower
 import org.openipc.devourer.protocol.TxRateDiffs
 import org.openipc.devourer.protocol.UsbDevice
@@ -256,6 +258,25 @@ public interface Radios {
      * adds a 12-bucket in-band power histogram and costs about 2ms.
      */
     public suspend fun rxEnergy(session: Int, withNhm: Boolean = false): RxEnergy
+
+    /**
+     * The fused, windowed RX link-quality snapshot: [Radios.rxEnergy] plus the
+     * per-frame aggregate, a passive noise floor, and the LinkHealth verdict.
+     * The window DRAINS on each call, so to measure an interval, read once and
+     * discard, wait, read again.
+     *
+     * Realtek only; a non-Realtek reports `supported = false` rather than a
+     * fabricated `NO_SIGNAL`.
+     */
+    public suspend fun rxQuality(session: Int): RxQuality
+
+    /**
+     * The chip's thermal meter. Telemetry, not a calibrated temperature and
+     * not a validated degradation predictor. [Thermal.supported] false means
+     * the backend has no meter wired, which is different from a meter that
+     * exists but has no baseline ([Thermal.valid] false).
+     */
+    public suspend fun thermal(session: Int): Thermal
 
     public suspend fun txStats(session: Int): JsonObject
 

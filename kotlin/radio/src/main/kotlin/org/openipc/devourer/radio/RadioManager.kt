@@ -13,6 +13,8 @@ import org.openipc.devourer.protocol.MonitorStats
 import org.openipc.devourer.protocol.RadioListResult
 import org.openipc.devourer.protocol.RxEnergy
 import org.openipc.devourer.protocol.RxGain
+import org.openipc.devourer.protocol.RxQuality
+import org.openipc.devourer.protocol.Thermal
 import org.openipc.devourer.protocol.TxPower
 import org.openipc.devourer.protocol.TxRateDiffs
 
@@ -245,6 +247,22 @@ public class RadioManager(private val bridge: BridgeClient) : Radios {
             },
         )
         return BridgeJson.format.decodeFromJsonElement(RxEnergy.serializer(), result)
+    }
+
+    override suspend fun rxQuality(session: Int): RxQuality {
+        val result = bridge.call(
+            "radio.rx_quality",
+            buildJsonObject { put("session", JsonPrimitive(session)) },
+        )
+        return BridgeJson.format.decodeFromJsonElement(RxQuality.serializer(), result)
+    }
+
+    override suspend fun thermal(session: Int): Thermal {
+        val result = bridge.call(
+            "radio.thermal",
+            buildJsonObject { put("session", JsonPrimitive(session)) },
+        )
+        return BridgeJson.format.decodeFromJsonElement(Thermal.serializer(), result)
     }
 
     override suspend fun txStats(session: Int): JsonObject =

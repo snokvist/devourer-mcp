@@ -16,7 +16,9 @@ import org.openipc.devourer.protocol.MonitorStats
 import org.openipc.devourer.protocol.RadioListResult
 import org.openipc.devourer.protocol.RxEnergy
 import org.openipc.devourer.protocol.RxGain
+import org.openipc.devourer.protocol.RxQuality
 import org.openipc.devourer.protocol.SyntheticFrames
+import org.openipc.devourer.protocol.Thermal
 import org.openipc.devourer.protocol.TxPower
 import org.openipc.devourer.protocol.TxRateDiffs
 import org.openipc.devourer.protocol.UsbDevice
@@ -105,6 +107,12 @@ public class FakeRadios(radios: List<OpenRadio> = emptyList()) : Radios {
 
     /** What [rxEnergy] reports for a Realtek session, keyed by session. */
     public val energy: MutableMap<Int, RxEnergy> = ConcurrentHashMap()
+
+    /** What [rxQuality] reports for a Realtek session, keyed by session. */
+    public val quality: MutableMap<Int, RxQuality> = ConcurrentHashMap()
+
+    /** What [thermal] reports for a Realtek session, keyed by session. */
+    public val thermalBySession: MutableMap<Int, Thermal> = ConcurrentHashMap()
 
     /**
      * What [rxGain] reports for a Realtek session, keyed by session.
@@ -617,6 +625,59 @@ public class FakeRadios(radios: List<OpenRadio> = emptyList()) : Radios {
             channel = radio.channel?.channel ?: 0,
             nhm = if (withNhm) e.nhm else null,
             validNhm = withNhm && e.validNhm,
+        )
+    }
+
+    override suspend fun rxQuality(session: Int): RxQuality {
+        record("rxQuality", "$session")
+        val radio = radio(session)
+        if (radio.capabilities.generation !in REALTEK_GENERATIONS) {
+            return RxQuality(
+                session = session,
+                supported = false,
+                why = "the fused windowed link-quality feed is a Realtek phy facility",
+            )
+        }
+        return quality[session] ?: RxQuality(
+            session = session,
+            supported = true,
+            valid = true,
+            frames = 100,
+            rssiMeanDbm = -40,
+            rssiMaxDbm = -38,
+            snrMeanDb = 30.0,
+            snrMinDb = 25.0,
+            snrValid = true,
+            evmMeanDb = -30.0,
+            evmValid = true,
+            noiseFloorDbm = -70.0,
+            nfValid = true,
+            energyValid = true,
+            igiValid = true,
+            igi = 0x1c,
+            verdict = "HEALTHY",
+            label = "HEALTHY",
+        )
+    }
+
+    override suspend fun thermal(session: Int): Thermal {
+        record("thermal", "$session")
+        val radio = radio(session)
+        if (radio.capabilities.generation !in REALTEK_GENERATIONS) {
+            return Thermal(
+                session = session,
+                supported = false,
+                why = "this backend does not wire GetThermalStatus",
+            )
+        }
+        return thermalBySession[session] ?: Thermal(
+            session = session,
+            supported = true,
+            raw = 20,
+            baseline = 18,
+            delta = 2,
+            valid = true,
+            bucket = "cool",
         )
     }
 

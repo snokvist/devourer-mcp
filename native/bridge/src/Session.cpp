@@ -1170,6 +1170,124 @@ bool Session::set_tx_power(std::optional<int> offset_qdb,
   return true;
 }
 
+namespace {
+const char *link_verdict_name(devourer::LinkVerdict v) {
+  switch (v) {
+  case devourer::LinkVerdict::NoSignal: return "NO_SIGNAL";
+  case devourer::LinkVerdict::Saturated: return "SATURATED";
+  case devourer::LinkVerdict::Interference: return "INTERFERENCE";
+  case devourer::LinkVerdict::Weak: return "WEAK";
+  case devourer::LinkVerdict::Marginal: return "MARGINAL";
+  case devourer::LinkVerdict::Healthy: return "HEALTHY";
+  }
+  return "UNKNOWN";
+}
+} // namespace
+
+Json Session::rx_quality_json() {
+  std::lock_guard<std::recursive_mutex> life(_life_mu);
+  Json j;
+  j.set("session", _id);
+  if (_radio == nullptr) {
+    j.set("supported", false).set("why", "session has no radio");
+    return j;
+  }
+  /* Only the IRtlRadio backends override GetRxQuality; the IRadio default is
+   * an all-invalid snapshot that would read as a genuine NO_SIGNAL. */
+  if (dynamic_cast<IRtlRadio *>(_radio) == nullptr) {
+    j.set("supported", false)
+        .set("why",
+             "the fused windowed link-quality feed is a Realtek phy facility "
+             "(GetRxQuality is only overridden on IRtlRadio backends); this "
+             "backend is not a Realtek radio")
+        .set("fallback",
+             "capture_summary and antenna_check read the decoded frames "
+             "instead — a different quantity, but honest about what this "
+             "silicon can report");
+    return j;
+  }
+  const auto q = _radio->GetRxQuality();
+  j.set("supported", true)
+      .set("valid", q.valid)
+      .set("frames", q.frames)
+      .set("rssi_mean_dbm", q.rssi_mean_dbm)
+      .set("rssi_max_dbm", q.rssi_max_dbm)
+      .set("snr_mean_db", q.snr_mean_db)
+      .set("snr_min_db", q.snr_min_db)
+      .set("snr_valid", q.snr_valid)
+      .set("evm_mean_db", q.evm_mean_db)
+      .set("evm_valid", q.evm_valid)
+      .set("noise_floor_dbm", q.noise_floor_dbm)
+      .set("nf_valid", q.nf_valid)
+      .set("abs_noise_floor_dbm", q.abs_noise_floor_dbm)
+      .set("abs_nf_valid", q.abs_nf_valid)
+      .set("energy_valid", q.energy_valid)
+      .set("fa_ofdm", q.fa_ofdm)
+      .set("cca_ofdm", q.cca_ofdm)
+      .set("igi_valid", q.igi_valid)
+      .set("igi", q.igi)
+      .set("verdict", link_verdict_name(q.verdict))
+      .set("label", q.label ? q.label : "")
+      .set("cause", q.cause ? q.cause : "")
+      .set("fix", q.fix ? q.fix : "")
+      .set("igi_at_floor", q.igi_at_floor)
+      .set("igi_at_ceiling", q.igi_at_ceiling);
+  if (!q.valid)
+    j.set("why",
+          "no frames were decoded in this window; read again after a dwell. "
+          "The window DRAINS on every read, so this is the interval since the "
+          "previous one.");
+  /* The per-frame PWDB is documented as raw 0..127 (dBm -110..17). A peak
+   * above that means the parser folded a value outside the field's range into
+   * the window — measured on the 8822C, where some frames report raw RSSI up
+   * to 247 — and the fused verdict is then built on a bad sample. Say so
+   * rather than let a plausible-looking SATURATED stand. */
+  else if (q.rssi_max_dbm > 20 || q.rssi_mean_dbm > 20)
+    j.set("note",
+          "the window's RSSI is outside the documented PWDB range (raw 0..127 "
+          "-> -110..17 dBm), so at least one frame reported a signal value the "
+          "parser should not produce. The peak and any verdict derived from it "
+          "are suspect; this is a known parser class on 8822C silicon, not a "
+          "real 130 dBm signal and not necessarily front-end saturation.");
+  return j;
+}
+
+Json Session::thermal_json() {
+  std::lock_guard<std::recursive_mutex> life(_life_mu);
+  Json j;
+  j.set("session", _id);
+  if (_radio == nullptr) {
+    j.set("supported", false).set("why", "session has no radio");
+    return j;
+  }
+  const auto t = _radio->GetThermalStatus();
+  /* A real meter reading is never raw 0 with no baseline: raw 0 is not a
+   * plausible RF 0x42 value, so that pair means the backend did not wire
+   * GetThermalStatus at all. A backend with a meter but no baseline reports
+   * supported with valid=false, because raw is still meaningful there. */
+  const bool supported = t.valid || t.raw != 0;
+  j.set("supported", supported);
+  if (!supported) {
+    j.set("why",
+          "this backend returned no thermal reading (raw 0, no baseline); it "
+          "may not wire GetThermalStatus (only the Jaguar backends override "
+          "it) — this is not a claim that the chip is cool");
+    return j;
+  }
+  j.set("raw", t.raw)
+      .set("baseline", t.baseline)
+      .set("delta", t.delta)
+      .set("valid", t.valid)
+      .set("bucket", devourer::ThermalBucket(t));
+  j.set("note",
+        "raw is RF 0x42 thermal units (roughly 1.5-2 C each), NOT absolute "
+        "degrees; delta is raw minus the baseline (on the 8822C, which wires "
+        "no efuse baseline, that is since the first read). Telemetry, not a "
+        "validated degradation predictor — read it beside a rate ceiling, "
+        "never as the cause of one.");
+  return j;
+}
+
 Json Session::rx_energy_json(bool with_nhm) {
   std::lock_guard<std::recursive_mutex> life(_life_mu);
   Json j;

@@ -28,7 +28,7 @@ the acceptance test.
 
 ## Where it is now (2026-09-13)
 
-- 29 MCP tools, 19 bridge ops, 20 of 55 `IRadio` methods called.
+- 31 MCP tools, 21 bridge ops, 22 of 55 `IRadio` methods called.
 - **Proven end to end on the current bench**: discover/open/describe; monitor
   RX with per-frame telemetry and raw bytes; capture store/query/PCAP; frame
   inspection; TX structured and raw; split carrier-sense gates; receive-gain
@@ -48,8 +48,9 @@ what later milestones build on.
 |---|---|---|---|---|
 | Per-rate power diffs | `TX_RATE_DIFFS` | Gap | bridge `radio.tx_power` gains a structured `rate_diffs` body; 8822C/E + J1/J2/Kestrel report `rate_diffs` | Clamp a rate, watch that rate's RSSI move on a witness; other rates stay put |
 | Power sweep axis | `TX_PWR_START/STEP/STOP/STEP_MS`, `TX_PWR_OFFSET_QDB` | **Done**: `sweep_power_qdb` in `experiment_link_probe` | Axes bounded by the adapter caps, checked up front; per-point requested/applied qdB recorded; pre-run offset restored | Delivery/RSSI vs power curve on the 8812CU, witnessed by an MT7612U (52.0 / 62.0 / 80.1 dBm at −64/0/+64 qdB) |
-| TX receipts | `TX_RECEIPTS`, `TX_REPORT` | Host-side `tx_stats` only | surface `tx.report` / `GetRxQuality` | Compare host `submitted` to on-air witness count |
-| Thermal status | `THERMAL_POLL_MS`, `THERMAL_WARN_DELTA` | Gap | bridge `radio.thermal` (`GetThermalStatus`) | Read the meter, note it is telemetry, not a degradation predictor |
+| RX link health | `RXQUALITY`, `LINKHEALTH`, `RX_ENERGY_MS` | **Done**: `radio_rx_quality` (fused verdict) | — | Verdict/cause/fix beside frame telemetry; drains, so read-dwell-read |
+| TX receipts | `TX_RECEIPTS`, `TX_REPORT` | Host-side `tx_stats` only | bridge event capture of `tx.report` (shared JSONL `FILE*` sink -> pipe+parser) + a `cfg.tx.report` opt-in that sets SPE_RPT in every descriptor. Its own slice | Compare host `submitted` to witness count; per-frame retries/rate/queue time |
+| Thermal status | `THERMAL_POLL_MS`, `THERMAL_WARN_DELTA` | **Done**: `radio_thermal` (`GetThermalStatus`) | — | Read the meter; telemetry, not a degradation predictor |
 
 ### M3 — Retune and survey
 
