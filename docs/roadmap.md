@@ -94,20 +94,15 @@ set. Roughly in value order:
 ## Acceptance gate: replacing `rxdemo`/`txdemo`
 
 The instrument exists to make Devourer's two demo binaries unnecessary, so the
-gate is parity plus what a demo cannot do. Through MCP alone:
+gate is parity plus what a demo cannot do. The staged plan, the capability
+matrix and the per-milestone acceptance tests are in
+[`rxdemo-txdemo-parity.md`](rxdemo-txdemo-parity.md); the coverage table above
+is its effort estimate.
 
-- **RX** — a capture runs, frames decode, raw bytes stay reachable, and the
-  per-frame signal telemetry `rxdemo` prints is available.
-- **TX** — a bounded burst is aired and an *independent* receiver decodes it.
-  `txdemo` cannot show this at all; it has no witness.
-- **The knob set** — every `DeviceConfig` bring-up knob and runtime setter the
-  demos use is reachable, or its absence is explicit with a reason.
-
-The core loop meets this today on jaguar3 and mt7612u (see
-`hardware-evidence.md`); the coverage table above is the rest of the checklist.
-Beyond the demos, the same MCP surface already carries the verification ladder,
-multi-witness counting, persistent capture/query/PCAP, capability gating and
-the experiment engine.
+The core RX/TX loop meets the gate today on jaguar3 and mt7612u (see
+`hardware-evidence.md`). Beyond the demos, the same MCP surface already carries
+the verification ladder, multi-witness counting, persistent capture/query/PCAP,
+capability gating and the experiment engine.
 
 This gate does **not** promise parity with everything under `examples/`. The
 adaptive hopset, channel migration, TDMA scheduling and fused FEC are
