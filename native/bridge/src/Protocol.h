@@ -61,8 +61,10 @@ inline constexpr int kProtocolVersionMajor = 1;
  * 7: new ops radio.fast_retune and radio.fast_bandwidth — the lean retune
  * paths the demos' dwell loops use. Additive.
  * 8: new op radio.tx_receipts, and radio.open takes `tx_report` (the
- * per-frame CCX report divisor). Additive. */
-inline constexpr int kProtocolVersionMinor = 8;
+ * per-frame CCX report divisor). Additive.
+ * 9: new op radio.ack_responder — arm/clear the hardware ACK responder.
+ * Additive. */
+inline constexpr int kProtocolVersionMinor = 9;
 
 /* 'D','V','R','F' — present on every frame record so a desynchronized reader
  * fails loudly at the next record instead of interpreting payload as a

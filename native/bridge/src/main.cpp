@@ -640,6 +640,31 @@ Json op_radio_thermal(const Json &req) {
   return ok(s->thermal_json());
 }
 
+Json op_radio_ack_responder(const Json &req) {
+  std::string err;
+  auto s = find_session(req, err);
+  if (!s)
+    return fail("no_session", err);
+  if (Json bad = unknown_field(req, {"mac", "clear"}); !bad.is_null())
+    return bad;
+  const bool has_mac = !req.at("mac").is_null();
+  if (has_mac && !req.at("mac").is_string())
+    return fail("bad_request", "mac must be a string like aa:bb:cc:dd:ee:ff");
+  if (!req.at("clear").is_null() && req.at("clear").type() != Json::Type::Bool)
+    return fail("bad_request", "clear must be a boolean");
+  const bool clear = req.at("clear").boolean(false);
+  if (has_mac && clear)
+    return fail("bad_request", "give `mac` to arm or `clear:true` to disarm, not both");
+  if (has_mac) {
+    if (!s->set_ack_responder(req.at("mac").str(), err))
+      return fail("unsupported", err);
+  } else if (clear) {
+    if (!s->clear_ack_responder(err))
+      return fail("unsupported", err);
+  }
+  return ok(s->ack_responder_json());
+}
+
 Json op_radio_rx_energy(const Json &req) {
   std::string err;
   auto s = find_session(req, err);
@@ -983,6 +1008,8 @@ Json dispatch(const Json &req) {
     return op_radio_rx_quality(req);
   if (op == "radio.thermal")
     return op_radio_thermal(req);
+  if (op == "radio.ack_responder")
+    return op_radio_ack_responder(req);
   if (op == "radio.cca_gates")
     return op_radio_cca_gates(req);
   if (op == "radio.cca")

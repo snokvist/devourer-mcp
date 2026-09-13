@@ -457,6 +457,25 @@ public data class TxReceipts(
     val note: String? = null,
 )
 
+/**
+ * The hardware ACK responder: whether this adapter can be made to auto-ACK
+ * unicast frames addressed to a chosen MAC, and whether it is armed.
+ *
+ * [supported] false means the backend does not report
+ * `AdapterCaps.ack_responder_ok`. [armed] is the bridge's record of what it
+ * armed — `IRadio` has no getter, so this is not a chip read. Clearing is best
+ * effort and does not promise silence (see `IRadio::SetAckResponder`).
+ */
+@Serializable
+public data class AckResponder(
+    val session: Int = 0,
+    val supported: Boolean = false,
+    val armed: Boolean = false,
+    val mac: String? = null,
+    val why: String? = null,
+    val note: String? = null,
+)
+
 /** Channel width in MHz. The bridge takes MHz; the enum keeps callers honest. */
 public enum class ChannelWidth(public val mhz: Int) {
     W5(5), W10(10), W20(20), W40(40), W80(80), W160(160),
