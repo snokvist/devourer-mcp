@@ -1531,7 +1531,18 @@ internal class Tools(
                 if (sweepChannels.isEmpty() && baseChannel.channel < 0) {
                     throw ExperimentException("give either channel or sweep_channels")
                 }
-                val intervalUs = request.intOr("interval_us", 1_000)
+                // The batch path is a deep, unpaced feed. `interval_us` defaults
+                // to 1000, which would make {batch:true} alone fail deep in the
+                // send call; force 0 unless the caller explicitly asked for a
+                // nonzero spacing, which is contradictory.
+                val batch = request.boolOr("batch", false)
+                val intervalArg = request.optionalInt("interval_us")
+                if (batch && intervalArg != null && intervalArg != 0) {
+                    throw ExperimentException(
+                        "batch is a deep unpaced feed; omit interval_us or set it to 0",
+                    )
+                }
+                val intervalUs = if (batch) 0 else (intervalArg ?: 1_000)
                 val bounds = ExperimentBounds(
                     maxDurationMs = request.longOr("max_duration_ms", 60_000),
                     framesPerPoint = request.intOr("frames_per_point", 200),
@@ -1571,7 +1582,7 @@ internal class Tools(
                         powerOffsetQdb = sweepPower.firstOrNull(),
                     ),
                     carrierSense = request.boolOr("carrier_sense", true),
-                    batch = request.boolOr("batch", false),
+                    batch = batch,
                     pktPowerDb = request.optionalInt("pkt_power_db"),
                     safety = SafetyLevel.parse(request.stringOr("safety_level", "")),
                 )

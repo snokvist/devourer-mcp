@@ -28,7 +28,7 @@ the acceptance test.
 
 ## Where it is now (2026-09-13)
 
-- 39 MCP tools, 28 bridge ops, 34 of 55 `IRadio` methods called.
+- 39 MCP tools, 28 bridge ops, 35 of 55 `IRadio` methods called.
 - **Proven end to end on the current bench**: discover/open/describe; monitor
   RX with per-frame telemetry and raw bytes; capture store/query/PCAP; frame
   inspection; TX structured and raw; split carrier-sense gates; receive-gain
@@ -69,7 +69,7 @@ what later milestones build on.
 | A-MPDU | `TX_AMPDU`, `TX_AMPDU_MODE` | **Partial**: `radio_ampdu` control + a deep feeder (`radio_open usb_agg`, `experiment_link_probe batch:true` via `send_packets`) and a `goodput_bytes_per_sec` metric | The probe frames are plain data, not QoS, and A-MPDU needs a TID — QoS probe frames are the missing piece | Goodput at the same PHY rate, payload delivered not occupancy |
 | Hardware ACK / ARQ | `ACK_RESPONDER` | **Done**: `radio_ack_responder` + `radio_open` retry knobs (`tx_retry_limit`, `tx_ack_timeout_us`, `tx_retry_fallback_off`) | — | `tools/tx-retry-arq-test.py`: no responder → retries pinned at the limit, retry-drop; MT responder armed → retries 0/1, delivered |
 | QoS / no-ack / STBC | `TX_QOS_*`, `TX_STBC_TOGGLE` | **Partial**: STBC is in the mode grammar; no-ack is `tx_retry_limit:0` / `AmpduMode.no_ack`; QoS needs a QoS probe frame (see A-MPDU) | widen the `TxMode`/probe grammar | Decoded rate/flags on the witness |
-| Per-packet TX power | `TX_PKT_PWR_DB/QDB`, `TX_PKT_OFSET` | **Plumbed, inert**: `pkt_power_db` composes a correct radiotap `DBM_TX_POWER`, but on the 8812CU it moved no witness RSSI (0/−6/−12/−24/−40 dB) — the bank selector needs `SetTxPacketPowerOffsetQdb`, which `IRadio` does not expose | vendored interface gap (or a tester harness against the concrete backend) | Witness RSSI per rate/frame |
+| Per-packet TX power | `TX_PKT_PWR_DB/QDB`, `TX_PKT_OFSET` | **Done**: `experiment_link_probe pkt_power_db` composes the per-frame radiotap `DBM_TX_POWER` (bit 10), capability-gated on `per_packet_txpower` | — | Witness RSSI tracks the request: 0→43, −6→37, −12→33 (bank floor) on the 8812CU; structured path 0→62, −12→52 |
 
 ### M5 — Hopping and sensing (algorithms, not knobs)
 

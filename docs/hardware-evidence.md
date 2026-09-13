@@ -931,7 +931,10 @@ released it, with an MT7612U as witness: `tools/beacon-test.py
 Every receiver above is an MT7612U. The host's MT7922 (11ax / `mt7921e`) is a
 different generation — and, running its stock kernel driver with nothing
 unbound and no devourer involved, an independent witness in the strongest
-sense. It saw the MT7612U's beacon:
+sense. It is also the internal adapter the bench rules mark off limits because
+it can carry the host's own connectivity; it was used here only with the
+operator's say-so, the host uplink is Ethernet, and its rfkill/managed state
+was restored afterwards. It saw the MT7612U's beacon:
 
 - Managed-mode `iw scan` listed the AP: `SSID: devourer-m6`, BSSID
   `02:42:75:05:d6:00`, `beacon interval: 100 TUs`, `capability: ESS (0x0001)`,
@@ -977,16 +980,23 @@ data frames, not QoS data, and A-MPDU formation needs a TID/QoS frame — so
 arming `radio_ampdu` with this feeder showed no goodput gain. QoS probe frames
 are the missing piece.
 
-**Per-packet TX power is inert through `IRadio`.** `radio_open` and
-`experiment_link_probe` now accept the per-frame radiotap `DBM_TX_POWER`
-(`pkt_power_db`), and the bridge composes a correctly ordered radiotap with it.
-But on the 8812CU, sending the same burst at 0 / −6 / −12 / −24 / −40 dB left
-the MT7612U witness RSSI unchanged (~44 every time, both the raw path and the
-structured one). The J3 descriptor field is only a *bank selector*; the power
-banks are programmed by `SetTxPacketPowerOffsetQdb`, which is not on `IRadio`
-(`RtlJaguar3Device` only). So the plumbing is real but the effect needs an
-interface addition — the same shape as the crypto-key gap: a capability the
-concrete backend has and the vendor-neutral interface does not.
+**Per-packet TX power works — after a radiotap presence-bit bug was fixed.**
+`experiment_link_probe` accepts the per-frame radiotap `DBM_TX_POWER`
+(`pkt_power_db`). The first implementation wrote the field under presence bit
+**5**, which is `DBM_ANTSIGNAL`; the consumer matches `DBM_TX_POWER`, which is
+bit **10** (`vendor/devourer/src/ieee80211_radiotap.h:471`), so the field was
+silently discarded and the feature looked inert on every backend. With the bit
+fixed, an independent MT7612U witness tracks the request on the 8812CU:
+
+- raw radiotap path: 0 dB → RSSI ~43; −6 dB → ~37; −12 dB → ~33; −24/−40 dB →
+  ~33 (the bank floor; it stops moving past about −12 dB).
+- structured `experiment_link_probe pkt_power_db`: 0 dB → ~62; −12 dB → ~52.
+
+`LinkProbe` now refuses `pkt_power_db` up front on an adapter whose caps do not
+report `per_packet_txpower`, so a backend with no descriptor field cannot air
+the frame at full power while the reply reads as success. (The `LinkProbeTest`
+fixture for this adds the capability explicitly, because the 8812AU fixture
+models a part that does not have it.)
 
 ## Reproducing
 

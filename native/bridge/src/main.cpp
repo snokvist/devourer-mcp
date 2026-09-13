@@ -287,8 +287,22 @@ bool ranged(const Json &req, const char *key, int64_t lo, int64_t hi,
   return true;
 }
 
+/* Defined further down with the other field guards; declared here because
+ * op_radio_open validates its options too. */
+Json unknown_field(const Json &req, std::initializer_list<const char *> known);
+
 Json op_radio_open(const Json &req) {
   OpenOptions o;
+  /* A misspelled bring-up option would otherwise be ignored and the session
+   * would come up on defaults while the reply read as success — the same
+   * silent-no-op failure the other ops guard against. */
+  if (Json bad = unknown_field(
+          req, {"bus", "address", "reset", "noise_floor", "adaptive_gain",
+                "tx_report", "tx_retry_limit", "tx_ack_timeout_us",
+                "tx_retry_fallback", "usb_agg", "buffer_bytes",
+                "max_frame_bytes"});
+      !bad.is_null())
+    return bad;
   if (!req.at("bus").is_number() || !req.at("address").is_number())
     return fail("bad_request", "bus and address are required");
   std::string err;
@@ -1029,11 +1043,14 @@ Json op_radio_fast_bandwidth(const Json &req) {
  *               byte for byte. The escape hatch for development and for shapes
  *               the builder cannot express. Never the normal interface.
  */
-/* Insert a radiotap DBM_TX_POWER field (present bit 5) into a header produced
- * by devourer::build_stream_radiotap. The field must appear in bit order —
- * BEFORE TX_FLAGS (bit 15) — so appending it would be out of order and a
- * strict parser rejects that; each of the builder's four layouts is known
- * exactly, so this rebuilds the header with the field in place.
+/* Insert a radiotap DBM_TX_POWER field (present bit 10 — NOT 5, which is
+ * DBM_ANTSIGNAL) into a header produced by devourer::build_stream_radiotap.
+ * The field must appear in bit order — bit 10 is below TX_FLAGS (bit 15) — so
+ * appending it would be out of order and a strict parser rejects that; each of
+ * the builder's four layouts is known exactly, so this rebuilds the header
+ * with the field in place. Getting the bit wrong is silent: the consumer
+ * matches DBM_TX_POWER and sees nothing, and the byte is discarded as
+ * DBM_ANTSIGNAL.
  *
  * `db` is a signed whole-dB delta against the calibrated per-rate table (the
  * radiotap convention the backends parse; a backend multiplies by 4 to reach
@@ -1054,14 +1071,14 @@ bool insert_dbm_tx_power(std::vector<uint8_t> &rt, int db, std::string &err) {
   const uint32_t present =
       static_cast<uint32_t>(rt[4]) | (static_cast<uint32_t>(rt[5]) << 8) |
       (static_cast<uint32_t>(rt[6]) << 16) | (static_cast<uint32_t>(rt[7]) << 24);
-  constexpr uint32_t kRate = 1u << 2, kDbm = 1u << 5, kTxFlags = 1u << 15;
+  constexpr uint32_t kRate = 1u << 2, kDbm = 1u << 10, kTxFlags = 1u << 15;
   constexpr uint32_t kMcs = 1u << 19, kVht = 1u << 21, kHe = 1u << 23;
   if (present & kDbm)
     return true; /* already present */
   const uint8_t d = static_cast<uint8_t>(static_cast<int8_t>(db));
   std::vector<uint8_t> out;
   if ((present & kMcs) || (present & kVht) || (present & kHe)) {
-    /* HT / VHT / HE all carry TX_FLAGS first; DBM (bit 5) goes ahead of it,
+    /* HT / VHT / HE all carry TX_FLAGS first; DBM (bit 10) goes ahead of it,
      * with a pad so TX_FLAGS stays 2-byte aligned. */
     out.reserve(rt.size() + 2);
     out.insert(out.end(), rt.begin(), rt.begin() + 8);

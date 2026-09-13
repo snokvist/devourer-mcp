@@ -16,6 +16,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import org.openipc.devourer.protocol.ChannelSpec
 import org.openipc.devourer.protocol.FrameRecord
 import org.openipc.devourer.protocol.RxEnergy
+import org.openipc.devourer.radio.CapabilityException
 import org.openipc.devourer.radio.OpenRadio
 import org.openipc.devourer.radio.Radios
 import org.openipc.devourer.radio.SafetyLevel
@@ -87,6 +88,28 @@ public class LinkProbe(
             // What to restore when the run ends. Unreadable before bring-up, in
             // which case 0 is the documented fallback and a caveat says so.
             runCatching { radios.txPower(spec.transmitter).offsetQdb }.getOrNull()
+        }
+
+        // Per-frame power is a distinct capability from the session offset. A
+        // backend with no descriptor field would air the frame at full power
+        // while the reply said the request was accepted — the plausible fake
+        // result the capability rule exists to prevent — so refuse up front.
+        spec.pktPowerDb?.let { db ->
+            if (!tx.capabilities.hasFeature("per_packet_txpower")) {
+                throw CapabilityException(
+                    "set per-frame TX power", tx.label,
+                    "its capability report does not advertise per_packet_txpower",
+                )
+            }
+            val qdb = db * 4
+            val lo = tx.capabilities.parameter("per_packet_txpower_min_qdb")
+            val hi = tx.capabilities.parameter("per_packet_txpower_max_qdb")
+            if (lo != null && hi != null && (qdb < lo || qdb > hi)) {
+                throw ExperimentException(
+                    "pkt_power_db $db (${qdb}qdB) is outside ${tx.label}'s " +
+                        "per-packet envelope ${lo}..${hi}qdB",
+                )
+            }
         }
 
         // Check every channel the sweep will visit, on every radio, before

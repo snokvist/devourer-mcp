@@ -17,7 +17,7 @@ LLM ──MCP(stdio)──▶ Kotlin runtime ──UDS──▶ devourer-bridge 
 ```
 
 39 MCP tools across DISCOVER / OBSERVE / INSPECT / TRANSMIT / EXPERIMENT /
-CHARACTERIZE / BUILD TOOL. 229 offline tests plus 63 vendored Devourer
+CHARACTERIZE / BUILD TOOL. 231 offline tests plus 63 vendored Devourer
 selftests, none of which need hardware. Three hardware tests that refuse to
 pass vacuously: the end-to-end smoke test, a stalled-sink test, and a
 sustained-overload test.
@@ -32,7 +32,7 @@ page down with it.
 | Subsystem | State | Notes |
 |---|---|---|
 | Vendored Devourer | done | pinned at `45f4022`, one local RX-gain patch |
-| `devourer-bridge` | done | separate process, protocol v1.13, session ownership |
+| `devourer-bridge` | done | separate process, protocol v1.14, session ownership |
 | Radio discovery + capabilities | done | derived from source, never a hand-kept table |
 | Monitor capture | done | ~1500–3300 frames/s, zero drops |
 | Capture store, query, PCAP | done | radiotap synthesized; raw bytes always reachable |
@@ -61,7 +61,7 @@ Full evidence, including the findings below, is in
 
 ## The big one: `IRadio` coverage
 
-**The bridge calls 34 of `IRadio`'s 55 virtual methods.** That single number is
+**The bridge calls 35 of `IRadio`'s 55 virtual methods.** That single number is
 the most useful measure of what is left, and it is why this does not yet fully
 replace Devourer's own `rxdemo`/`txdemo` as research instruments. Those two are
 thin loops over the same API: 76 bring-up knobs in `DeviceConfig` (77 `env:`

@@ -205,8 +205,8 @@ EDCCA threshold.
 
 ## Picking up (2026-09-13)
 
-State: **39 MCP tools, 28 bridge ops, protocol v1.14, the bridge calls 34 of 55
-`IRadio` methods, 230 Kotlin tests + 63 native selftests.** The current bench is
+State: **39 MCP tools, 28 bridge ops, protocol v1.14, the bridge calls 35 of 55
+`IRadio` methods, 231 Kotlin tests + 63 native selftests.** The current bench is
 an RTL8812CU (Jaguar3) plus two MT7612U; the 8812AU/Jaguar1 results below are
 history. Everything merged in PRs #10–#25.
 
@@ -245,15 +245,14 @@ retune/survey primitives are done, M4 is partial, M6 has started.
 2. **M4.** Hardware ARQ is done and verified (`tools/tx-retry-arq-test.py`):
    the new `radio_open` retry knobs (`tx_retry_limit`/`tx_ack_timeout_us`/
    `tx_retry_fallback_off`) plus `radio_ack_responder` give retries 0/1 and
-   delivered receipts where no responder gave retries at the limit. The deep
-   feeder is built (`radio_open usb_agg`, `experiment_link_probe batch:true`
-   over `send_packets`, `goodput_bytes_per_sec`), but A-MPDU goodput is not
-   shown yet because the probe frames are not QoS. Still open:
-   (a) **A-MPDU goodput** — needs QoS probe frames (a TID) before the MAC will
-   aggregate; (b) **per-packet TX power** — `pkt_power_db` composes a valid
-   radiotap `DBM_TX_POWER` but is inert on the 8812CU; the bank selector needs
-   `SetTxPacketPowerOffsetQdb`, which is concrete-backend-only, so this is an
-   `IRadio` interface gap (or a tester harness against the concrete class).
+   delivered receipts where no responder gave retries at the limit.
+   Per-packet TX power is done and verified too: `experiment_link_probe
+   pkt_power_db` sets the per-frame radiotap `DBM_TX_POWER` (bit 10) and the
+   witness RSSI tracks it (0→43, −6→37, −12→33 on the 8812CU). The deep feeder
+   is built (`radio_open usb_agg`, `experiment_link_probe batch:true` over
+   `send_packets`, `goodput_bytes_per_sec`), but **A-MPDU goodput is still
+   open**: the probe frames are plain data, not QoS, so the MAC has no TID to
+   aggregate. QoS probe frames are the missing piece.
 3. **Multi-witness role in `LinkProbe`** — the two-witness run that settled the
    carrier-sense question was done by hand at the bridge; making it a
    first-class role would also settle the open antenna question.

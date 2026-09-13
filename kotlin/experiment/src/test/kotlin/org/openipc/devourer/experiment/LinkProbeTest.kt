@@ -11,6 +11,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.test.runTest
 import org.openipc.devourer.protocol.ChannelSpec
 import org.openipc.devourer.protocol.RxEnergy
+import org.openipc.devourer.radio.CapabilityException
 import org.openipc.devourer.radio.FakeRadios
 import org.openipc.devourer.radio.SafetyLevel
 import org.openipc.devourer.radio.SafetyLevelException
@@ -31,6 +32,23 @@ class LinkProbeTest {
     private val rx2 = FakeRadios.mediatek(session = 3, bus = 5, address = 7)
 
     private fun fake() = FakeRadios(listOf(tx, rx, rx2))
+
+    /**
+     * The realtek fixture is an 8812AU, which has no per-packet descriptor
+     * field; add the capability for the tests that exercise per-frame power.
+     */
+    private fun fakeWithPerPacketPower(): FakeRadios {
+        val capable = tx.copy(
+            capabilities = tx.capabilities.copy(
+                features = tx.capabilities.features + ("per_packet_txpower" to true),
+                parameters = tx.capabilities.parameters + mapOf(
+                    "per_packet_txpower_min_qdb" to -256,
+                    "per_packet_txpower_max_qdb" to 252,
+                ),
+            ),
+        )
+        return FakeRadios(listOf(capable, rx, rx2))
+    }
 
     private fun spec(
         roles: Map<RadioRole, Int> = mapOf(RadioRole.TX_PEER to 1, RadioRole.RX_PEER to 2),
@@ -358,8 +376,17 @@ class LinkProbeTest {
     }
 
     @Test
+    fun `per-frame power on an adapter without the capability is refused`() = runTest {
+        // The 8812AU fixture has no per-packet field; accepting the request
+        // would air at full power while reporting success.
+        assertFailsWith<CapabilityException> {
+            LinkProbe(fake(), backgroundScope).run(spec(pktPowerDb = -12))
+        }
+    }
+
+    @Test
     fun `batch and per-frame power reach the transmitter and yield goodput`() = runTest {
-        val radios = fake()
+        val radios = fakeWithPerPacketPower()
         var seen: FakeRadios.Probe? = null
         radios.onProbe = { p ->
             seen = p
