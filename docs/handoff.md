@@ -122,6 +122,7 @@ adapter is brought up. Realtek has it from construction.
 ```sh
 ./gradlew test                                   # 201 Kotlin tests, no hardware
 ctest --test-dir build/native-bridge             # 63 vendored selftests
+tools/mcp-verify.py                              # every MCP tool, real requests, artifacts + dashboard
 tools/smoke-test.py                              # needs adapters; never passes vacuously
 tools/rx-gain-cca-test.py                        # receive-gain clamp + split CCA gates; needs a Realtek
 tools/stall-test.py                              # needs adapters; a sink that stops reading
@@ -210,10 +211,14 @@ offset/index/reapply + per-rate diffs + sweep axis, fused RX quality, thermal,
 per-frame TX receipts) and the M3 retune/survey primitives are done
 (`radio_fast_retune`, `radio_fast_bandwidth`, `spectrum_sweep`).
 
-The next step, as requested, is a functional verification pass over the whole
-MCP surface — every tool exercised against the bench, its request and its
-artifact checked — before starting M4 (A-MPDU, hardware ACK/ARQ) or M6
-(time/beacons). The staged plan is
+The whole MCP surface is now functionally verified on hardware by
+`tools/mcp-verify.py` (46/46): every tool driven with a real request, the
+negative paths exercised, and the artifacts (PCAP, characterization DB,
+promoted scratchpad, dashboard) confirmed. That pass found and fixed one real
+gap — `characterize_run` failed when a capture was already running.
+
+The next slices on the parity plan are M4 (A-MPDU, hardware ACK/ARQ,
+per-packet TX power) and M6 (TSF/beacons/AP mode); the staged plan is
 [`rxdemo-txdemo-parity.md`](rxdemo-txdemo-parity.md). `radio.tx_stats` and
 `radio.cca` are the pattern to copy for a new op: a bridge op, a `RadioManager`
 method, an MCP tool with a description that says what the result does *not*

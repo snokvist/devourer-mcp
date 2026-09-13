@@ -817,11 +817,26 @@ The MT7612U accepts the divisor and reports nothing: the CCX report is a
 HalMAC/Jaguar facility, so `enabled:true` means the capture is configured,
 not that the silicon will emit. The reply's note says so.
 
+## The MCP surface, verified end to end
+
+`tools/mcp-verify.py` drives every tool in the server's inventory with a real
+request through the real MCP transport, checks the reply's shape and content,
+exercises the negative paths (unknown session, wrong-typed argument, capability
+refusal, double monitor_start), and confirms the artifacts a caller depends on:
+the PCAP export, the characterization DB, a promoted scratchpad, and the
+dashboard. 46/46 checks pass on the 2026-09-13 bench.
+
+It earned its keep on the first run by finding a real gap: `characterize_run`
+started a monitor without stopping a pre-existing one, so a characterization
+failed with "already monitoring" whenever the caller had a capture open.
+`LinkProbe` already defended against this; `Characterizer` now does too.
+
 ## Reproducing
 
 ```sh
 tools/host/bridge-ctl.sh start
 ./gradlew :mcp:installDist
+tools/mcp-verify.py              # every tool, real requests, artifacts + dashboard
 tools/smoke-test.py              # RX path, all adapters
 tools/rx-gain-cca-test.py        # receive-gain clamp + split CCA gates, needs a Realtek
 tools/tx-power-test.py           # TX-power knobs + a sweep measured on a witness
