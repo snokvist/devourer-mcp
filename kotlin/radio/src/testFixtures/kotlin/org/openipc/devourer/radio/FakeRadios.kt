@@ -22,6 +22,7 @@ import org.openipc.devourer.protocol.RxGain
 import org.openipc.devourer.protocol.RxQuality
 import org.openipc.devourer.protocol.SyntheticFrames
 import org.openipc.devourer.protocol.Thermal
+import org.openipc.devourer.protocol.Tsf
 import org.openipc.devourer.protocol.TxReceipt
 import org.openipc.devourer.protocol.TxReceipts
 import org.openipc.devourer.protocol.TxPower
@@ -202,6 +203,9 @@ public class FakeRadios(radios: List<OpenRadio> = emptyList()) : Radios {
 
     /** A-MPDU state per session, once a mode has been set. */
     public val ampduStates: MutableMap<Int, AmpduState> = ConcurrentHashMap()
+
+    /** MAC TSF per session, in microseconds. */
+    public val tsfBySession: MutableMap<Int, Long> = ConcurrentHashMap()
 
     /** Set to throw from the next call to the named op, once. */
     public var failNext: MutableMap<String, Throwable> = mutableMapOf()
@@ -872,6 +876,21 @@ public class FakeRadios(radios: List<OpenRadio> = emptyList()) : Radios {
         val next = AmpduState(session = session, capability = "supported", enabled = false)
         ampduStates[session] = next
         return next
+    }
+
+    override suspend fun tsf(session: Int): Tsf {
+        record("tsf", "$session")
+        val radio = radio(session)
+        if (!radio.state.broughtUp) {
+            return Tsf(
+                session = session, supported = true, readable = false,
+                why = "the radio is not brought up",
+            )
+        }
+        return Tsf(
+            session = session, supported = true, readable = true,
+            tsfUs = tsfBySession[session] ?: 1_000L,
+        )
     }
 
     override suspend fun activeRxPaths(session: Int): JsonObject {

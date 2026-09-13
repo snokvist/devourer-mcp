@@ -60,7 +60,7 @@ LLM ──MCP(stdio)──▶ Kotlin runtime ──UDS control + frame stream─
 | `kotlin/characterize/` | Evidence database, one JSON per adapter. |
 | `kotlin/scratchpad/` | Declarative micro-app runtime + live UI. |
 | `kotlin/dashboard/` | The persistent dashboard on `127.0.0.1:8910`. Reads in-process state only; never calls the bridge. |
-| `kotlin/mcp/` | The 37 tools. The only process the model talks to. |
+| `kotlin/mcp/` | The 38 tools. The only process the model talks to. |
 | `var/` | Runtime state: captures, `characterization/`, `scratchpads/`. Gitignored. |
 
 ### Why a separate bridge process
@@ -120,7 +120,7 @@ adapter is brought up. Realtek has it from construction.
 ## Testing
 
 ```sh
-./gradlew test                                   # 213 Kotlin tests, no hardware
+./gradlew test                                   # 217 Kotlin tests, no hardware
 ctest --test-dir build/native-bridge             # 63 vendored selftests
 tools/mcp-verify.py                              # every MCP tool, real requests, artifacts + dashboard
 tools/smoke-test.py                              # needs adapters; never passes vacuously
@@ -222,12 +222,14 @@ M4 is under way: `radio_ack_responder` arms/clears the hardware ACK responder
 with an honest capability tri-state. Remaining M4: the A-MPDU *goodput*
 measurement (needs a deep TX feeder, which the structured send path does not
 have), TX retry-limit/fallback bring-up knobs, and per-packet TX power
-(radiotap `DBM_TX_POWER`, reachable through the raw path today but not a
-structured option). Then M6 (TSF/beacons/AP mode); the staged plan is
+(radiotap `DBM_TX_POWER` — `build_stream_radiotap` cannot carry it and
+appending it flips `send_packet`'s length heuristic, so it stays raw-path
+only). M6 has started: `radio_tsf` reads the MAC clock. Next: `WriteTsf`
+adoption, then beacons/AP mode. The staged plan is
 [`rxdemo-txdemo-parity.md`](rxdemo-txdemo-parity.md). `radio.tx_stats` and
 `radio.cca` are the pattern to copy for a new op: a bridge op, a `RadioManager`
 method, an MCP tool with a description that says what the result does *not*
-prove. A new bridge op bumps the additive protocol minor from 1.10 to 1.11.
+prove. A new bridge op bumps the additive protocol minor from 1.11 to 1.12.
 
 After that, multi-witness experiments. The two-witness run that settled the
 carrier-sense question was done by hand against the bridge; making it a first-

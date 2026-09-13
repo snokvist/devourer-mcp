@@ -51,6 +51,7 @@ import org.openipc.devourer.protocol.RxEnergy
 import org.openipc.devourer.protocol.RxGain
 import org.openipc.devourer.protocol.RxQuality
 import org.openipc.devourer.protocol.Thermal
+import org.openipc.devourer.protocol.Tsf
 import org.openipc.devourer.protocol.TxPower
 import org.openipc.devourer.protocol.TxRateDiffs
 import org.openipc.devourer.protocol.TxReceipts
@@ -551,6 +552,31 @@ internal class Tools(
                 withNhm = request.boolOr("with_nhm", false),
             )
             text(json.encodeToString(SpectrumSweep.serializer(), result))
+        }
+
+        register(
+            server,
+            name = "radio_tsf",
+            description = """
+                Read the radio's 64-bit MAC TSF, in microseconds — the free-running MAC clock
+                that is MAC-latched into every received frame's `tsfl`. The primitive for any
+                timing work: the timebase a beacon stamps, and what a slave would adopt to align
+                onto a master.
+
+                It requires a brought-up radio. `readable:false` says the clock is not running
+                yet or the backend does not wire it — distinct from a bare `tsf_us:0`, which
+                would read as a timestamp. NOT synchronized to any external clock on its own.
+                Two radios have two unrelated TSFs until a timing protocol aligns them.
+            """.trimIndent(),
+            inputSchema = ToolSchema(
+                properties = buildJsonObject {
+                    put("session", schema("integer", "Session id of a brought-up radio."))
+                },
+                required = listOf("session"),
+            ),
+        ) { request ->
+            val result = radios.tsf(request.intOr("session", -1))
+            text(json.encodeToString(Tsf.serializer(), result))
         }
 
         register(

@@ -9,6 +9,7 @@ import org.openipc.devourer.protocol.AmpduMode
 import org.openipc.devourer.protocol.AmpduState
 import org.openipc.devourer.protocol.CcaGates
 import org.openipc.devourer.protocol.ChannelSpec
+import org.openipc.devourer.protocol.Tsf
 import org.openipc.devourer.protocol.ChannelWidth
 import org.openipc.devourer.protocol.FrameRecord
 import org.openipc.devourer.protocol.MonitorStats
@@ -369,6 +370,13 @@ public interface Radios {
 
     /** Disable A-MPDU. Always allowed. */
     public suspend fun clearAmpdu(session: Int): AmpduState
+
+    /**
+     * The 64-bit MAC TSF in microseconds. [Tsf.readable] false says the clock is
+     * not running yet or the backend does not wire it, rather than returning a
+     * bare 0 that reads as a timestamp.
+     */
+    public suspend fun tsf(session: Int): Tsf
 
     public suspend fun activeRxPaths(session: Int): JsonObject
 

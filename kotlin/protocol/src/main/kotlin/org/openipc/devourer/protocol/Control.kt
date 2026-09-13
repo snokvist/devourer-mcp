@@ -525,6 +525,24 @@ public data class AmpduState(
     val note: String? = null,
 )
 
+/**
+ * The 64-bit MAC TSF in microseconds (`IRadio::ReadTsf`): the free-running MAC
+ * clock, MAC-latched into each received frame's `tsfl`.
+ *
+ * [readable] false with [supported] true means the clock is not running yet
+ * (the radio is not brought up) or the read returned 0; [why] says which as far
+ * as the bridge can tell. Not synchronized to any external clock on its own.
+ */
+@Serializable
+public data class Tsf(
+    val session: Int = 0,
+    val supported: Boolean = false,
+    val readable: Boolean = false,
+    @SerialName("tsf_us") val tsfUs: Long = 0,
+    val why: String? = null,
+    val note: String? = null,
+)
+
 /** Channel width in MHz. The bridge takes MHz; the enum keeps callers honest. */
 public enum class ChannelWidth(public val mhz: Int) {
     W5(5), W10(10), W20(20), W40(40), W80(80), W160(160),

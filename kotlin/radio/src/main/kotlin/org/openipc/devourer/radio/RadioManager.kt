@@ -12,6 +12,7 @@ import org.openipc.devourer.protocol.AmpduState
 import org.openipc.devourer.protocol.CcaGates
 import org.openipc.devourer.protocol.ChannelSpec
 import org.openipc.devourer.protocol.ChannelWidth
+import org.openipc.devourer.protocol.Tsf
 import org.openipc.devourer.protocol.FrameRecord
 import org.openipc.devourer.protocol.MonitorStats
 import org.openipc.devourer.protocol.RadioListResult
@@ -385,6 +386,14 @@ public class RadioManager(private val bridge: BridgeClient) : Radios {
             },
         )
         return BridgeJson.format.decodeFromJsonElement(AmpduState.serializer(), result)
+    }
+
+    override suspend fun tsf(session: Int): Tsf {
+        val result = bridge.call(
+            "radio.tsf",
+            buildJsonObject { put("session", JsonPrimitive(session)) },
+        )
+        return BridgeJson.format.decodeFromJsonElement(Tsf.serializer(), result)
     }
 
     override suspend fun activeRxPaths(session: Int): JsonObject =
