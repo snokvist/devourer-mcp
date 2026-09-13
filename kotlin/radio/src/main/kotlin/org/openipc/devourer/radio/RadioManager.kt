@@ -6,6 +6,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import org.openipc.devourer.protocol.BridgeJson
+import org.openipc.devourer.protocol.AckResponder
 import org.openipc.devourer.protocol.CcaGates
 import org.openipc.devourer.protocol.ChannelSpec
 import org.openipc.devourer.protocol.ChannelWidth
@@ -305,6 +306,42 @@ public class RadioManager(private val bridge: BridgeClient) : Radios {
             },
         )
         return BridgeJson.format.decodeFromJsonElement(TxReceipts.serializer(), result)
+    }
+
+    override suspend fun ackResponder(session: Int): AckResponder {
+        val result = bridge.call(
+            "radio.ack_responder",
+            buildJsonObject { put("session", JsonPrimitive(session)) },
+        )
+        return BridgeJson.format.decodeFromJsonElement(AckResponder.serializer(), result)
+    }
+
+    override suspend fun setAckResponder(
+        session: Int,
+        mac: String,
+        safety: SafetyLevel,
+    ): AckResponder {
+        RadioSafety.gateAckResponder(safety)
+        require(mac.isNotBlank()) { "mac is required to arm the responder" }
+        val result = bridge.call(
+            "radio.ack_responder",
+            buildJsonObject {
+                put("session", JsonPrimitive(session))
+                put("mac", JsonPrimitive(mac))
+            },
+        )
+        return BridgeJson.format.decodeFromJsonElement(AckResponder.serializer(), result)
+    }
+
+    override suspend fun clearAckResponder(session: Int): AckResponder {
+        val result = bridge.call(
+            "radio.ack_responder",
+            buildJsonObject {
+                put("session", JsonPrimitive(session))
+                put("clear", JsonPrimitive(true))
+            },
+        )
+        return BridgeJson.format.decodeFromJsonElement(AckResponder.serializer(), result)
     }
 
     override suspend fun activeRxPaths(session: Int): JsonObject =

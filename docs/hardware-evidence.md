@@ -831,12 +831,28 @@ started a monitor without stopping a pre-existing one, so a characterization
 failed with "already monitoring" whenever the caller had a capture open.
 `LinkProbe` already defended against this; `Characterizer` now does too.
 
+## The hardware ACK responder
+
+`radio_ack_responder` arms and clears `IRadio::SetAckResponder`: the MAC
+auto-ACKs unicast frames to a chosen address with no host involvement, so a
+peer transmitting there retransmits in hardware until the ACK — the
+reliable-unicast enabler, and the input to an ARQ measurement using the
+`tx.report` receipts. `tools/ack-responder-test.py` on the 2026-09-13 bench:
+
+- **All three adapters report the feature and arm/clear cleanly** (8822C,
+  MT7612U ×2), including readback of the armed address.
+- **Arming without `safety_level="experimental"` is refused** and changes
+  nothing; clearing is never gated. Arming is gated because the radio then
+  transmits ACKs on the air for that address and can answer traffic not meant
+  for it.
+
 ## Reproducing
 
 ```sh
 tools/host/bridge-ctl.sh start
 ./gradlew :mcp:installDist
 tools/mcp-verify.py              # every tool, real requests, artifacts + dashboard
+tools/ack-responder-test.py      # hardware ACK responder arm/clear + safety gate
 tools/smoke-test.py              # RX path, all adapters
 tools/rx-gain-cca-test.py        # receive-gain clamp + split CCA gates, needs a Realtek
 tools/tx-power-test.py           # TX-power knobs + a sweep measured on a witness

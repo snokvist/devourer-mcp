@@ -28,7 +28,7 @@ the acceptance test.
 
 ## Where it is now (2026-09-13)
 
-- 35 MCP tools, 24 bridge ops, 24 of 55 `IRadio` methods called.
+- 36 MCP tools, 25 bridge ops, 26 of 55 `IRadio` methods called.
 - **Proven end to end on the current bench**: discover/open/describe; monitor
   RX with per-frame telemetry and raw bytes; capture store/query/PCAP; frame
   inspection; TX structured and raw; split carrier-sense gates; receive-gain
@@ -67,7 +67,7 @@ what later milestones build on.
 | Capability | Demo knobs | Now | Where | Verify |
 |---|---|---|---|---|
 | A-MPDU | `TX_AMPDU`, `TX_AMPDU_MODE` | RX-visible only | bridge op; experiment axis | Goodput at the same PHY rate, payload delivered not occupancy |
-| Hardware ACK / ARQ | `ACK_RESPONDER`, `TX_RETRY_LIMIT`, `TX_RETRY_FALLBACK` | Gap | bridge ops (safety: `SetAckResponder`) | Per-frame ledger on a witness; ACKed-but-undelivered must be visible |
+| Hardware ACK / ARQ | `ACK_RESPONDER` | **Partial**: `radio_ack_responder` arms/clears | `TX_RETRY_LIMIT`/`TX_RETRY_FALLBACK` bring-up knobs still open; an ARQ e2e experiment uses the receipts | Per-frame ledger on a witness; ACKed-but-undelivered must be visible |
 | QoS / no-ack / STBC | `TX_QOS_*`, `TX_STBC_TOGGLE` | Mode spec covers some | widen the `TxMode` grammar | Decoded rate/flags on the witness |
 | Per-packet TX power | `TX_PKT_PWR_DB/QDB`, `TX_PKT_OFSET` | Gap | scratchpad/experiment: radiotap `DBM_TX_POWER` per frame | Witness RSSI per rate/frame |
 

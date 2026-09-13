@@ -40,6 +40,7 @@ import org.openipc.devourer.scratchpad.ScratchpadProgram
 import org.openipc.devourer.scratchpad.ScratchpadService
 import org.openipc.devourer.capture.FrameQuery
 import org.openipc.devourer.capture.PcapWriter
+import org.openipc.devourer.protocol.AckResponder
 import org.openipc.devourer.protocol.CcaGates
 import org.openipc.devourer.protocol.ChannelSpec
 import org.openipc.devourer.protocol.ChannelWidth
@@ -1100,6 +1101,51 @@ internal class Tools(
                 clear = request.boolOr("clear", true),
             )
             text(json.encodeToString(TxReceipts.serializer(), result))
+        }
+
+        register(
+            server,
+            name = "radio_ack_responder",
+            description = """
+                Arm or clear the hardware ACK responder: make the MAC auto-ACK, with no host
+                involvement, unicast frames addressed to a chosen MAC. This is the
+                reliable-unicast enabler — a peer transmitting to that address gets hardware
+                retransmissions until the ACK, visible as `retries` in radio_tx_receipts.
+
+                Omit both arguments to read. `mac` arms it; `clear:true` disarms it. Only a
+                unicast address is accepted (a group address would make the responder answer
+                frames not addressed to it).
+
+                ARMING IS EXPERIMENTAL and must be asked for by name: the radio then transmits
+                ACKs on the air for that address, so it can answer traffic that was not meant
+                for it. Clearing is never gated. Clearing is also best-effort — it does not
+                promise silence, because a die that matches on MACID alone keeps answering for
+                whatever address is left programmed. Capability-gated on the adapter's
+                `ack_responder` feature; an adapter without it reports `supported:false`.
+            """.trimIndent(),
+            inputSchema = ToolSchema(
+                properties = buildJsonObject {
+                    put("session", schema("integer", "Session id of a brought-up radio."))
+                    put("mac", schema("string", "Unicast address to ACK for, e.g. aa:bb:cc:dd:ee:ff. Omit to read."))
+                    put("clear", schema("boolean", "Disarm the responder."))
+                    put("safety_level", schema("string", "Must be \"experimental\" to arm."))
+                },
+                required = listOf("session"),
+            ),
+        ) { request ->
+            val session = request.intOr("session", -1)
+            val mac = request.stringOr("mac", "")
+            val clear = request.boolOr("clear", false)
+            val result = when {
+                mac.isNotBlank() -> radios.setAckResponder(
+                    session,
+                    mac,
+                    SafetyLevel.parse(request.stringOr("safety_level", "")),
+                )
+                clear -> radios.clearAckResponder(session)
+                else -> radios.ackResponder(session)
+            }
+            text(json.encodeToString(AckResponder.serializer(), result))
         }
 
         register(

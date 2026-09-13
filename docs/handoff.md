@@ -60,7 +60,7 @@ LLM ──MCP(stdio)──▶ Kotlin runtime ──UDS control + frame stream─
 | `kotlin/characterize/` | Evidence database, one JSON per adapter. |
 | `kotlin/scratchpad/` | Declarative micro-app runtime + live UI. |
 | `kotlin/dashboard/` | The persistent dashboard on `127.0.0.1:8910`. Reads in-process state only; never calls the bridge. |
-| `kotlin/mcp/` | The 35 tools. The only process the model talks to. |
+| `kotlin/mcp/` | The 36 tools. The only process the model talks to. |
 | `var/` | Runtime state: captures, `characterization/`, `scratchpads/`. Gitignored. |
 
 ### Why a separate bridge process
@@ -120,7 +120,7 @@ adapter is brought up. Realtek has it from construction.
 ## Testing
 
 ```sh
-./gradlew test                                   # 201 Kotlin tests, no hardware
+./gradlew test                                   # 207 Kotlin tests, no hardware
 ctest --test-dir build/native-bridge             # 63 vendored selftests
 tools/mcp-verify.py                              # every MCP tool, real requests, artifacts + dashboard
 tools/smoke-test.py                              # needs adapters; never passes vacuously
@@ -217,12 +217,17 @@ negative paths exercised, and the artifacts (PCAP, characterization DB,
 promoted scratchpad, dashboard) confirmed. That pass found and fixed one real
 gap — `characterize_run` failed when a capture was already running.
 
-The next slices on the parity plan are M4 (A-MPDU, hardware ACK/ARQ,
-per-packet TX power) and M6 (TSF/beacons/AP mode); the staged plan is
-[`rxdemo-txdemo-parity.md`](rxdemo-txdemo-parity.md). `radio.tx_stats` and
-`radio.cca` are the pattern to copy for a new op: a bridge op, a `RadioManager`
-method, an MCP tool with a description that says what the result does *not*
-prove. A new bridge op bumps the additive protocol minor from 1.8 to 1.9.
+M4 has started: `radio_ack_responder` arms/clears the hardware ACK responder
+(EXPERIMENTAL to arm). Remaining M4: A-MPDU (`SetAmpduMode` — no capability
+flag, and its "off" state is indistinguishable from "unwired" on a read, so the
+capability signal needs care), TX retry-limit/fallback bring-up knobs, and
+per-packet TX power (radiotap `DBM_TX_POWER`, reachable through the raw path
+today but not surfaced as a structured option). Then M6 (TSF/beacons/AP mode);
+the staged plan is [`rxdemo-txdemo-parity.md`](rxdemo-txdemo-parity.md).
+`radio.tx_stats` and `radio.cca` are the pattern to copy for a new op: a bridge
+op, a `RadioManager` method, an MCP tool with a description that says what the
+result does *not* prove. A new bridge op bumps the additive protocol minor from
+1.9 to 1.10.
 
 After that, multi-witness experiments. The two-witness run that settled the
 carrier-sense question was done by hand against the bridge; making it a first-

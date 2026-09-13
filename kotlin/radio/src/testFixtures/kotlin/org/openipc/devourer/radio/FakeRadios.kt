@@ -8,6 +8,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
+import org.openipc.devourer.protocol.AckResponder
 import org.openipc.devourer.protocol.CcaGates
 import org.openipc.devourer.protocol.ChannelSpec
 import org.openipc.devourer.protocol.FrameRecord
@@ -193,6 +194,9 @@ public class FakeRadios(radios: List<OpenRadio> = emptyList()) : Radios {
 
     /** Injected TX receipts per session, for tests that want a populated ring. */
     public val receipts: MutableMap<Int, MutableList<TxReceipt>> = ConcurrentHashMap()
+
+    /** Armed ACK-responder state per session. */
+    public val ackResponders: MutableMap<Int, AckResponder> = ConcurrentHashMap()
 
     /** Set to throw from the next call to the named op, once. */
     public var failNext: MutableMap<String, Throwable> = mutableMapOf()
@@ -772,6 +776,55 @@ public class FakeRadios(radios: List<OpenRadio> = emptyList()) : Radios {
         return out
     }
 
+    override suspend fun ackResponder(session: Int): AckResponder {
+        record("ackResponder", "$session")
+        val radio = radio(session)
+        if (!radio.capabilities.hasFeature("ack_responder")) {
+            return AckResponder(
+                session = session,
+                supported = false,
+                why = "this adapter does not report a hardware ACK responder",
+            )
+        }
+        return ackResponders[session]
+            ?: AckResponder(session = session, supported = true, armed = false)
+    }
+
+    override suspend fun setAckResponder(
+        session: Int,
+        mac: String,
+        safety: SafetyLevel,
+    ): AckResponder {
+        record("setAckResponder", "$session,$mac,$safety")
+        RadioSafety.gateAckResponder(safety)
+        val radio = radio(session)
+        if (!radio.capabilities.hasFeature("ack_responder")) {
+            throw CapabilityException(
+                "arm the hardware ACK responder", radio.label,
+                "the backend does not report one",
+            )
+        }
+        require(mac.isNotBlank()) { "mac is required" }
+        check(radio.state.broughtUp) { "bring the radio up before arming the responder" }
+        val next = AckResponder(session = session, supported = true, armed = true, mac = mac)
+        ackResponders[session] = next
+        return next
+    }
+
+    override suspend fun clearAckResponder(session: Int): AckResponder {
+        record("clearAckResponder", "$session")
+        val radio = radio(session)
+        if (!radio.capabilities.hasFeature("ack_responder")) {
+            throw CapabilityException(
+                "clear the hardware ACK responder", radio.label,
+                "the backend does not report one",
+            )
+        }
+        val next = AckResponder(session = session, supported = true, armed = false)
+        ackResponders[session] = next
+        return next
+    }
+
     override suspend fun activeRxPaths(session: Int): JsonObject {
         record("activeRxPaths", "$session")
         // Not implemented on MediaTek. Reporting "unsupported" rather than
@@ -860,7 +913,11 @@ public class FakeRadios(radios: List<OpenRadio> = emptyList()) : Radios {
                     supported = true, indexMax = 63, stepQdb = 2, stepMeasured = false,
                     offsetMinQdb = -32, offsetMaxQdb = 16, rateDiffs = true,
                 ),
-                features = mapOf("per_chain_rssi" to true, "hw_rx_timestamp" to true),
+                features = mapOf(
+                    "per_chain_rssi" to true,
+                    "hw_rx_timestamp" to true,
+                    "ack_responder" to true,
+                ),
             ),
             // Locally administered and invented: a fixture should not carry a
             // real adapter's address into a public repository.

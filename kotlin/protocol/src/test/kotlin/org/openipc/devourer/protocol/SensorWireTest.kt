@@ -110,6 +110,17 @@ class SensorWireTest {
     }
 
     @Test
+    fun `an ack-responder reply decodes every field`() {
+        val json = """{"session":3,"supported":true,"armed":true,"mac":"02:00:00:00:00:01"}"""
+
+        val a = BridgeJson.format.decodeFromString(AckResponder.serializer(), json)
+
+        assertTrue(a.supported)
+        assertTrue(a.armed)
+        assertEquals("02:00:00:00:00:01", a.mac)
+    }
+
+    @Test
     fun `a thermal reply decodes every field`() {
         val json = """
             {"session":3,"supported":true,"raw":20,"baseline":18,"delta":2,

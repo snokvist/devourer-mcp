@@ -64,6 +64,7 @@ header.
 | `radio.rx_quality` | the fused windowed RX sensor (`IRadio::GetRxQuality`): per-frame RSSI/SNR/EVM aggregate, a passive noise floor, FA/CCA/IGI, and the LinkHealth verdict. DRAINS on read, so read once and discard, dwell, read again; consumes the same counters as `radio.rx_energy` — do not poll both on one cadence. Realtek only. Flags an out-of-range peak RSSI rather than passing a bad-derived verdict clean. |
 | `radio.thermal` | the RF 0x42 thermal meter: raw thermal units, baseline, delta, and a coarse bucket. Telemetry, not a calibrated temperature and not a validated degradation predictor. `supported:false` where no meter is wired. |
 | `radio.cca` | MAC carrier-sense gate. Antisocial when disabled; the Kotlin layer requires `SafetyLevel.EXPERIMENTAL` |
+| `radio.ack_responder` | arm/clear the hardware ACK responder (`IRadio::SetAckResponder`): auto-ACK unicast frames to `mac` with no host involvement, the reliable-unicast enabler. Omit both to read. Unicast only; capability-gated on `AdapterCaps.ack_responder_ok`. Arming is EXPERIMENTAL in the Kotlin layer (it answers others' air); clearing is always allowed and best-effort. |
 | `sessions` / `shutdown` | |
 
 ## Two things that are correctness, not style

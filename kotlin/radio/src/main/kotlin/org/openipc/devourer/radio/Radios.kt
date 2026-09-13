@@ -4,6 +4,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonObject
+import org.openipc.devourer.protocol.AckResponder
 import org.openipc.devourer.protocol.CcaGates
 import org.openipc.devourer.protocol.ChannelSpec
 import org.openipc.devourer.protocol.ChannelWidth
@@ -325,6 +326,31 @@ public interface Radios {
      */
     public suspend fun txReceipts(session: Int, clear: Boolean = true): TxReceipts
 
+    /**
+     * The hardware ACK responder: whether it is supported and armed, and for
+     * which MAC. Read-only.
+     */
+    public suspend fun ackResponder(session: Int): AckResponder
+
+    /**
+     * Arm the hardware ACK responder for [mac], so the MAC auto-ACKs unicast
+     * frames addressed there with no host involvement. EXPERIMENTAL: the radio
+     * then transmits ACKs on the air for that address, which can answer traffic
+     * that was not meant for it, so it must be asked for by name.
+     */
+    public suspend fun setAckResponder(
+        session: Int,
+        mac: String,
+        safety: SafetyLevel = SafetyLevel.NORMAL,
+    ): AckResponder
+
+    /**
+     * Best-effort disarm. Always allowed, like re-enabling carrier sense — a
+     * cleanup path must never be blocked by a missing argument. Does not
+     * promise silence; see `IRadio::SetAckResponder`.
+     */
+    public suspend fun clearAckResponder(session: Int): AckResponder
+
     public suspend fun activeRxPaths(session: Int): JsonObject
 
     /**
@@ -393,6 +419,18 @@ public object RadioSafety {
                 "disabling a carrier-sense gate", SafetyLevel.EXPERIMENTAL, safety,
             )
         }
+    }
+
+    /**
+     * Arming a hardware ACK responder makes the radio transmit ACKs for a
+     * caller-chosen address, so it can answer traffic that was not meant for
+     * it — the same "affects other people's air" class as disabling carrier
+     * sense. EXPERIMENTAL to arm; clearing is never gated.
+     */
+    public fun gateAckResponder(safety: SafetyLevel) {
+        SafetyLevelException.require(
+            "arming the hardware ACK responder", SafetyLevel.EXPERIMENTAL, safety,
+        )
     }
 }
 

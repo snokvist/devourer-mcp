@@ -1525,6 +1525,90 @@ Json Session::thermal_json() {
   return j;
 }
 
+Json Session::ack_responder_json() {
+  std::lock_guard<std::recursive_mutex> life(_life_mu);
+  Json j;
+  j.set("session", _id);
+  if (_radio == nullptr) {
+    j.set("supported", false).set("why", "session has no radio");
+    return j;
+  }
+  const bool supported = _radio->GetAdapterCaps().ack_responder_ok;
+  j.set("supported", supported).set("armed", _ack_responder_armed);
+  if (_ack_responder_armed)
+    j.set("mac", _ack_responder_mac);
+  if (!supported)
+    j.set("why",
+          "this adapter does not report a hardware ACK responder "
+          "(AdapterCaps.ack_responder_ok is false)");
+  else
+    j.set("note",
+          "arming makes the MAC hardware-ACK unicast frames addressed to `mac` "
+          "with no host involvement, so a peer transmitting there retries in "
+          "hardware until the ACK. Clearing is best effort and does not promise "
+          "silence — see IRadio::SetAckResponder's contract.");
+  return j;
+}
+
+bool Session::set_ack_responder(const std::string &mac, std::string &err) {
+  std::lock_guard<std::recursive_mutex> life(_life_mu);
+  if (_radio == nullptr) {
+    err = "session has no radio";
+    return false;
+  }
+  if (!_radio->GetAdapterCaps().ack_responder_ok) {
+    err = "this adapter does not report a hardware ACK responder";
+    return false;
+  }
+  if (!_up) {
+    err = "bring the radio up before arming the ACK responder";
+    return false;
+  }
+  const auto parsed = devourer::parse_mac(mac);
+  if (!parsed) {
+    err = "mac must be an address like aa:bb:cc:dd:ee:ff";
+    return false;
+  }
+  if ((parsed->bytes[0] & 0x01) != 0) {
+    err = "mac must be unicast (the group bit is set); a multicast address "
+          "would make the responder answer frames not addressed to it";
+    return false;
+  }
+  try {
+    if (!_radio->SetAckResponder(*parsed)) {
+      err = "the backend refused to arm the ACK responder";
+      return false;
+    }
+  } catch (const std::exception &e) {
+    err = std::string("SetAckResponder threw: ") + e.what();
+    return false;
+  }
+  _ack_responder_armed = true;
+  _ack_responder_mac = mac;
+  return true;
+}
+
+bool Session::clear_ack_responder(std::string &err) {
+  std::lock_guard<std::recursive_mutex> life(_life_mu);
+  if (_radio == nullptr) {
+    err = "session has no radio";
+    return false;
+  }
+  if (!_radio->GetAdapterCaps().ack_responder_ok) {
+    err = "this adapter does not report a hardware ACK responder";
+    return false;
+  }
+  try {
+    _radio->ClearAckResponder();
+  } catch (const std::exception &e) {
+    err = std::string("ClearAckResponder threw: ") + e.what();
+    return false;
+  }
+  _ack_responder_armed = false;
+  _ack_responder_mac.clear();
+  return true;
+}
+
 Json Session::rx_energy_json(bool with_nhm) {
   std::lock_guard<std::recursive_mutex> life(_life_mu);
   Json j;
