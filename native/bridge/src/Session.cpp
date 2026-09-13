@@ -1022,6 +1022,13 @@ size_t Session::send_frames(const std::vector<std::vector<uint8_t>> &frames,
   return sent;
 }
 
+bool Session::supports_per_packet_txpower() const {
+  std::lock_guard<std::recursive_mutex> life(_life_mu);
+  if (_radio == nullptr)
+    return false;
+  return _radio->GetAdapterCaps().per_packet_txpower;
+}
+
 Json Session::rx_paths_json() {
   std::lock_guard<std::recursive_mutex> life(_life_mu);
   Json j;

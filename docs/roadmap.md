@@ -17,8 +17,9 @@ LLM ──MCP(stdio)──▶ Kotlin runtime ──UDS──▶ devourer-bridge 
 ```
 
 39 MCP tools across DISCOVER / OBSERVE / INSPECT / TRANSMIT / EXPERIMENT /
-CHARACTERIZE / BUILD TOOL. 231 offline tests plus 63 vendored Devourer
-selftests, none of which need hardware. Three hardware tests that refuse to
+CHARACTERIZE / BUILD TOOL. 231 offline tests plus 64 native selftests (63
+vendored Devourer selftests and the bridge's radiotap-layout test), none of
+which need hardware. Three hardware tests that refuse to
 pass vacuously: the end-to-end smoke test, a stalled-sink test, and a
 sustained-overload test.
 

@@ -43,3 +43,18 @@ if(NOT MSVC)
 endif()
 
 install(TARGETS devourer-bridge RUNTIME DESTINATION bin)
+
+# The radiotap DBM_TX_POWER insertion is a wire-layout rule the Kotlin layer
+# cannot see; a wrong presence bit is silent and reached hardware once already.
+# This pins bit 10 and the field offsets against the real builder.
+add_executable(radiotap_power_test bridge/tests/radiotap_power_test.cpp)
+target_compile_features(radiotap_power_test PRIVATE cxx_std_17)
+target_include_directories(radiotap_power_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/bridge/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/../vendor/devourer/src
+)
+target_link_libraries(radiotap_power_test PRIVATE devourer)
+if(NOT MSVC)
+    target_compile_options(radiotap_power_test PRIVATE -Wall -Wextra)
+endif()
+add_test(NAME radiotap_power COMMAND radiotap_power_test)

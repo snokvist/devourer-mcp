@@ -197,6 +197,13 @@ public:
   size_t send_frames(const std::vector<std::vector<uint8_t>> &frames,
                      std::string &err);
 
+  /* Whether this adapter's capability report advertises per-packet TX power
+   * (`AdapterCaps.per_packet_txpower`, true on Jaguar2/J3 and the 8814A). The
+   * send path uses it to refuse a `pkt_power_db` on a backend that has no
+   * descriptor field, rather than airing at full power while reporting the
+   * request accepted. */
+  bool supports_per_packet_txpower() const;
+
   /* Live estimate of which RF chains are actually carrying signal.
    *
    * The one antenna question that cannot be answered statically: a chain whose

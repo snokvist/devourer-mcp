@@ -127,7 +127,7 @@ adapter is brought up. Realtek has it from construction.
 
 ```sh
 ./gradlew test                                   # 220 Kotlin tests, no hardware
-ctest --test-dir build/native-bridge             # 63 vendored selftests
+ctest --test-dir build/native-bridge             # 64 native selftests (63 vendored + radiotap layout)
 tools/mcp-verify.py                              # every MCP tool, real requests, artifacts + dashboard
 tools/smoke-test.py                              # RX path, all adapters; never passes vacuously
 tools/rx-gain-cca-test.py                        # receive-gain clamp + split CCA gates
@@ -206,7 +206,7 @@ EDCCA threshold.
 ## Picking up (2026-09-13)
 
 State: **39 MCP tools, 28 bridge ops, protocol v1.14, the bridge calls 35 of 55
-`IRadio` methods, 231 Kotlin tests + 63 native selftests.** The current bench is
+`IRadio` methods, 231 Kotlin tests + 64 native selftests.** The current bench is
 an RTL8812CU (Jaguar3) plus two MT7612U; the 8812AU/Jaguar1 results below are
 history. Everything merged in PRs #10–#25.
 
