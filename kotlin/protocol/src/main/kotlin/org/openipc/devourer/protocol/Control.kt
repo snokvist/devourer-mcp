@@ -476,6 +476,55 @@ public data class AckResponder(
     val note: String? = null,
 )
 
+/**
+ * The 802.11 A-MPDU TX session mode (`IRadio::SetAmpduMode`): the bundle that
+ * marks data frames aggregatable and programs the MAC pacing that gates net
+ * goodput.
+ *
+ * There is no capability flag and the cleared state is byte-identical to the
+ * unwired default, so a READ cannot tell "supported, off" from "not
+ * implemented": [capability] is `supported`, `unsupported`, or `unknown` until
+ * a set attempt settles it. This type is the request; see [AmpduState] for the
+ * reply.
+ */
+@Serializable
+public data class AmpduMode(
+    val enabled: Boolean = true,
+    /** QSEL/TID the aggregatable frames ride (0..7). */
+    val tid: Int = 0,
+    /** Max MPDUs per A-MPDU (1..31). */
+    @SerialName("max_num") val maxNum: Int = 16,
+    /** Min MPDU start spacing (0..7); 7 is bench-fastest. */
+    val density: Int = 7,
+    /** Broadcast/no-BlockAck case: per-frame retry limit 0. */
+    @SerialName("no_ack") val noAck: Boolean = true,
+    /** Aggregate-fill timer; 0x20 is the proven unlock, <=0x08 disables. */
+    @SerialName("max_time") val maxTime: Int = 0x20,
+    @SerialName("clear_burst_mode") val clearBurstMode: Boolean = true,
+) {
+    init {
+        require(tid in 0..7) { "tid must be 0..7" }
+        require(maxNum in 1..0x1f) { "maxNum must be 1..31" }
+        require(density in 0..7) { "density must be 0..7" }
+    }
+}
+
+/** The reported A-MPDU state. See [AmpduMode] for the capability caveat. */
+@Serializable
+public data class AmpduState(
+    val session: Int = 0,
+    /** "supported", "unsupported", or "unknown" (no set attempt yet). */
+    val capability: String = "unknown",
+    val enabled: Boolean = false,
+    val tid: Int = 0,
+    @SerialName("max_num") val maxNum: Int = 16,
+    val density: Int = 7,
+    @SerialName("no_ack") val noAck: Boolean = true,
+    @SerialName("max_time") val maxTime: Int = 32,
+    @SerialName("clear_burst_mode") val clearBurstMode: Boolean = true,
+    val note: String? = null,
+)
+
 /** Channel width in MHz. The bridge takes MHz; the enum keeps callers honest. */
 public enum class ChannelWidth(public val mhz: Int) {
     W5(5), W10(10), W20(20), W40(40), W80(80), W160(160),

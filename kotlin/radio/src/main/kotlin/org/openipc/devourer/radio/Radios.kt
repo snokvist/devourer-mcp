@@ -5,6 +5,8 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonObject
 import org.openipc.devourer.protocol.AckResponder
+import org.openipc.devourer.protocol.AmpduMode
+import org.openipc.devourer.protocol.AmpduState
 import org.openipc.devourer.protocol.CcaGates
 import org.openipc.devourer.protocol.ChannelSpec
 import org.openipc.devourer.protocol.ChannelWidth
@@ -350,6 +352,23 @@ public interface Radios {
      * promise silence; see `IRadio::SetAckResponder`.
      */
     public suspend fun clearAckResponder(session: Int): AckResponder
+
+    /**
+     * The A-MPDU TX mode state. [AmpduState.capability] is `unknown` until a
+     * set attempt has told the bridge whether this adapter honours it, because
+     * the cleared state is byte-identical to the unwired default.
+     */
+    public suspend fun ampdu(session: Int): AmpduState
+
+    /**
+     * Enable the A-MPDU TX mode. Read [AmpduState.note]: the gain needs the TX
+     * queue fed deep enough for the MAC to aggregate, which the structured
+     * one-frame-at-a-time send path does not do.
+     */
+    public suspend fun setAmpdu(session: Int, mode: AmpduMode = AmpduMode()): AmpduState
+
+    /** Disable A-MPDU. Always allowed. */
+    public suspend fun clearAmpdu(session: Int): AmpduState
 
     public suspend fun activeRxPaths(session: Int): JsonObject
 

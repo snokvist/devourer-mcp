@@ -7,6 +7,8 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import org.openipc.devourer.protocol.BridgeJson
 import org.openipc.devourer.protocol.AckResponder
+import org.openipc.devourer.protocol.AmpduMode
+import org.openipc.devourer.protocol.AmpduState
 import org.openipc.devourer.protocol.CcaGates
 import org.openipc.devourer.protocol.ChannelSpec
 import org.openipc.devourer.protocol.ChannelWidth
@@ -342,6 +344,47 @@ public class RadioManager(private val bridge: BridgeClient) : Radios {
             },
         )
         return BridgeJson.format.decodeFromJsonElement(AckResponder.serializer(), result)
+    }
+
+    override suspend fun ampdu(session: Int): AmpduState {
+        val result = bridge.call(
+            "radio.ampdu",
+            buildJsonObject { put("session", JsonPrimitive(session)) },
+        )
+        return BridgeJson.format.decodeFromJsonElement(AmpduState.serializer(), result)
+    }
+
+    override suspend fun setAmpdu(session: Int, mode: AmpduMode): AmpduState {
+        val result = bridge.call(
+            "radio.ampdu",
+            buildJsonObject {
+                put("session", JsonPrimitive(session))
+                put(
+                    "mode",
+                    buildJsonObject {
+                        put("enabled", JsonPrimitive(mode.enabled))
+                        put("tid", JsonPrimitive(mode.tid))
+                        put("max_num", JsonPrimitive(mode.maxNum))
+                        put("density", JsonPrimitive(mode.density))
+                        put("no_ack", JsonPrimitive(mode.noAck))
+                        put("max_time", JsonPrimitive(mode.maxTime))
+                        put("clear_burst_mode", JsonPrimitive(mode.clearBurstMode))
+                    },
+                )
+            },
+        )
+        return BridgeJson.format.decodeFromJsonElement(AmpduState.serializer(), result)
+    }
+
+    override suspend fun clearAmpdu(session: Int): AmpduState {
+        val result = bridge.call(
+            "radio.ampdu",
+            buildJsonObject {
+                put("session", JsonPrimitive(session))
+                put("clear", JsonPrimitive(true))
+            },
+        )
+        return BridgeJson.format.decodeFromJsonElement(AmpduState.serializer(), result)
     }
 
     override suspend fun activeRxPaths(session: Int): JsonObject =

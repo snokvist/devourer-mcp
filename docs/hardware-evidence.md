@@ -846,6 +846,24 @@ reliable-unicast enabler, and the input to an ARQ measurement using the
   transmits ACKs on the air for that address and can answer traffic not meant
   for it.
 
+## A-MPDU control, and its honest capability
+
+`radio_ampdu` reads, enables and clears the 802.11 A-MPDU TX session mode
+(`IRadio::SetAmpduMode`) — the bundle that marks data frames aggregatable and
+programs the MAC pacing. `tools/ampdu-test.py` on the bench:
+
+- **RTL8822C**: a fresh read reports `capability:"unknown"` (the cleared state
+  is byte-identical to the unwired default, so a read cannot tell them apart);
+  enabling takes and reports `supported`; clearing works.
+- **MT7612U ×2**: `SetAmpduMode` refuses — its aggregation is real (2.21x at
+  200 B, docs/mt7612u.md) but rides descriptor state not yet plumbed through
+  `send_packet` — and the reply then honestly reports `unsupported` rather than
+  a granted-looking success.
+
+Control only. The +30% goodput needs the TX queue fed deep enough for the MAC
+to aggregate; this bridge's structured send path feeds one frame at a time, so
+the reply's note says the gain is not reachable here yet.
+
 ## Reproducing
 
 ```sh
@@ -853,6 +871,7 @@ tools/host/bridge-ctl.sh start
 ./gradlew :mcp:installDist
 tools/mcp-verify.py              # every tool, real requests, artifacts + dashboard
 tools/ack-responder-test.py      # hardware ACK responder arm/clear + safety gate
+tools/ampdu-test.py              # A-MPDU read/enable/clear + capability tri-state
 tools/smoke-test.py              # RX path, all adapters
 tools/rx-gain-cca-test.py        # receive-gain clamp + split CCA gates, needs a Realtek
 tools/tx-power-test.py           # TX-power knobs + a sweep measured on a witness

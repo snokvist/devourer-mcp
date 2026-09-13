@@ -31,6 +31,7 @@
 #include <thread>
 #include <vector>
 
+#include "AmpduMode.h"
 #include "Devices.h"
 #include "Json.h"
 #include "SelectedChannel.h"
@@ -276,6 +277,15 @@ public:
   bool set_ack_responder(const std::string &mac, std::string &err);
   bool clear_ack_responder(std::string &err);
 
+  /* 802.11 A-MPDU TX mode (IRadio::SetAmpduMode). There is no capability flag
+   * and the cleared state is byte-identical to the unwired default, so a READ
+   * cannot tell "supported, off" from "not implemented". The reply carries a
+   * `capability` of supported/unsupported/unknown: unknown until a set attempt
+   * has told us, which is the honest answer rather than a guessed boolean. */
+  Json ampdu_json();
+  bool set_ampdu(const devourer::AmpduMode &mode, std::string &err);
+  bool clear_ampdu(std::string &err);
+
   /* Per-frame TX receipts (`tx.report`): what the hardware said about each
    * reported transmission — delivery state, hardware retry count, final rate,
    * queue time, and (HalMAC) the frame's SW_DEFINE echo. These are the
@@ -376,6 +386,8 @@ private:
    * what it set; it does not claim to read the chip. */
   bool _ack_responder_armed = false;
   std::string _ack_responder_mac;
+  /* nullopt = not yet known, until a set attempt reports support. */
+  std::optional<bool> _ampdu_supported;
   /* The qdB SetTxPowerOffsetQdb reported APPLYING, for backends whose
    * GetTxPowerState is not overridden (the MT7612U's dBm model), where the
    * state readback is otherwise empty. Guarded by _life_mu. */

@@ -665,6 +665,56 @@ Json op_radio_ack_responder(const Json &req) {
   return ok(s->ack_responder_json());
 }
 
+Json op_radio_ampdu(const Json &req) {
+  std::string err;
+  auto s = find_session(req, err);
+  if (!s)
+    return fail("no_session", err);
+  if (Json bad = unknown_field(req, {"mode", "clear"}); !bad.is_null())
+    return bad;
+  const bool has_mode = req.at("mode").is_object();
+  if (!req.at("mode").is_null() && !has_mode)
+    return fail("bad_request", "mode must be an object");
+  if (!req.at("clear").is_null() && req.at("clear").type() != Json::Type::Bool)
+    return fail("bad_request", "clear must be a boolean");
+  const bool clear = req.at("clear").boolean(false);
+  if (has_mode && clear)
+    return fail("bad_request", "give `mode` to enable or `clear:true` to disable, not both");
+
+  if (has_mode) {
+    const Json &m = req.at("mode");
+    if (Json bad = unknown_field(
+            m, {"enabled", "tid", "max_num", "density", "no_ack", "max_time",
+                "clear_burst_mode"});
+        !bad.is_null())
+      return bad;
+    for (const char *k : {"tid", "max_num", "density", "max_time"}) {
+      const Json &v = m.at(k);
+      if (!v.is_null() && !v.is_number())
+        return fail("bad_request", std::string("mode.") + k + " must be an integer");
+    }
+    for (const char *k : {"enabled", "no_ack", "clear_burst_mode"}) {
+      const Json &v = m.at(k);
+      if (!v.is_null() && v.type() != Json::Type::Bool)
+        return fail("bad_request", std::string("mode.") + k + " must be a boolean");
+    }
+    devourer::AmpduMode mode;
+    mode.enabled = m.at("enabled").boolean(true);
+    mode.tid = static_cast<uint8_t>(m.at("tid").integer(0));
+    mode.max_num = static_cast<uint8_t>(m.at("max_num").integer(16));
+    mode.density = static_cast<uint8_t>(m.at("density").integer(7));
+    mode.no_ack = m.at("no_ack").boolean(true);
+    mode.max_time = static_cast<uint8_t>(m.at("max_time").integer(0x20));
+    mode.clear_burst_mode = m.at("clear_burst_mode").boolean(true);
+    if (!s->set_ampdu(mode, err))
+      return fail("unsupported", err);
+  } else if (clear) {
+    if (!s->clear_ampdu(err))
+      return fail("unsupported", err);
+  }
+  return ok(s->ampdu_json());
+}
+
 Json op_radio_rx_energy(const Json &req) {
   std::string err;
   auto s = find_session(req, err);
@@ -1010,6 +1060,8 @@ Json dispatch(const Json &req) {
     return op_radio_thermal(req);
   if (op == "radio.ack_responder")
     return op_radio_ack_responder(req);
+  if (op == "radio.ampdu")
+    return op_radio_ampdu(req);
   if (op == "radio.cca_gates")
     return op_radio_cca_gates(req);
   if (op == "radio.cca")
