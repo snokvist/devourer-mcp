@@ -133,6 +133,18 @@ public data class PointResult(
      */
     @SerialName("tx_late_frames") val txLateFrames: Int = 0,
     @SerialName("tx_max_late_us") val txMaxLateUs: Long = 0,
+    /** The probe MPDU size in bytes, from the point. */
+    @SerialName("frame_bytes") val frameBytes: Int = 0,
+    /**
+     * Delivered PAYLOAD throughput for this point, in bytes/s: the primary
+     * witness's received frame count times [frameBytes] over the transmit
+     * burst's elapsed time.
+     *
+     * Payload delivered, not channel occupancy — that distinction is the whole
+     * reason A-MPDU is interesting. Null when the point was not measured, so an
+     * unmeasured point carries no throughput number.
+     */
+    @SerialName("goodput_bytes_per_sec") val goodputBytesPerSec: Double? = null,
     /**
      * Every witness that heard this point, keyed by role.
      *

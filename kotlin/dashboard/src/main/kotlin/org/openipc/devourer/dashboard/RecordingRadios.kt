@@ -36,8 +36,15 @@ public class RecordingRadios(
         noiseFloor: Boolean,
         adaptiveGain: Boolean,
         txReport: Int,
+        txRetryLimit: Int,
+        txAckTimeoutUs: Int,
+        txRetryFallbackOff: Boolean,
+        usbAggMax: Int,
     ): OpenRadio =
-        delegate.open(bus, address, reset, noiseFloor, adaptiveGain, txReport).also { book.record(it) }
+        delegate.open(
+            bus, address, reset, noiseFloor, adaptiveGain, txReport,
+            txRetryLimit, txAckTimeoutUs, txRetryFallbackOff, usbAggMax,
+        ).also { book.record(it) }
 
     override suspend fun describe(session: Int): OpenRadio =
         delegate.describe(session).also { book.record(it) }

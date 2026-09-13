@@ -7,6 +7,7 @@ import kotlinx.serialization.json.JsonObject
 import org.openipc.devourer.protocol.AckResponder
 import org.openipc.devourer.protocol.AmpduMode
 import org.openipc.devourer.protocol.AmpduState
+import org.openipc.devourer.protocol.Beacon
 import org.openipc.devourer.protocol.CcaGates
 import org.openipc.devourer.protocol.ChannelSpec
 import org.openipc.devourer.protocol.Tsf
@@ -111,6 +112,22 @@ public interface Radios {
      *  RX loop (a monitor, or a family whose coex thread drains C2H); the
      *  RTL8733B has no report path and emits none.
      */
+    /**
+     * @param txRetryLimit per-frame hardware retry limit, 0..63 (0 = no
+     *  retries, the broadcast/no-ack recipe). A nonzero value is REQUIRED for
+     *  hardware-ARQ with [setAckResponder] and unicast. Set at open because
+     *  devourer reads it once; a family whose caps report
+     *  `tx_retry_limit:false` accepts it and is unchanged.
+     * @param txAckTimeoutUs the hardware ACK response window, 1..255 us — the
+     *  ARQ range lever. A longer window is not free: every retry of a LOST
+     *  frame waits the full window. Default 128.
+     * @param txRetryFallbackOff true pins every retry at the descriptor rate
+     *  (no firmware rate fallback) — for constant-rate links.
+     * @param usbAggMax pack up to N frames into one bulk-OUT URB inside the
+     *  batched TX path; 0 (default) is a per-frame submission. The deep feed
+     *  the MAC needs to form A-MPDUs. USB only, and only with the batched probe
+     *  path ([sendProbe] `batch = true`).
+     */
     public suspend fun open(
         bus: Int,
         address: Int,
@@ -118,6 +135,10 @@ public interface Radios {
         noiseFloor: Boolean = false,
         adaptiveGain: Boolean = false,
         txReport: Int = 0,
+        txRetryLimit: Int = 0,
+        txAckTimeoutUs: Int = 128,
+        txRetryFallbackOff: Boolean = false,
+        usbAggMax: Int = 0,
     ): OpenRadio
 
     public suspend fun describe(session: Int): OpenRadio
@@ -172,6 +193,20 @@ public interface Radios {
         count: Int,
         intervalUs: Int,
         sequenceOffset: Int,
+        /**
+         * Submit through `IRadio::send_packets` (deep, unpaced). With the
+         * session opened with [open] `usbAggMax > 0` this packs frames into
+         * shared URBs and feeds the MAC deep enough to form A-MPDUs. Mutually
+         * exclusive with a nonzero [intervalUs].
+         */
+        batch: Boolean = false,
+        /**
+         * Per-frame TX power as a signed whole-dB delta against the calibrated
+         * per-rate table, attached to every frame's radiotap (DBM_TX_POWER).
+         * Distinct from the session-wide [setTxPower] offset, and composes with
+         * it. Only for adapters whose caps report `per_packet_txpower:true`.
+         */
+        pktPowerDb: Int? = null,
     ): JsonObject
 
     /**
@@ -387,6 +422,44 @@ public interface Radios {
      */
     public suspend fun writeTsf(session: Int, tsfUs: Long): Tsf
 
+    /**
+     * The hardware beacon state. [Beacon.active] is the bridge's record of what
+     * it asked the backend to do, not a chip read — `IRadio` has no beacon
+     * getter. Read-only and ungated: seeing it changes nothing.
+     */
+    public suspend fun beacon(session: Int): Beacon
+
+    /**
+     * Arm the hardware beacon: load [frameHex] as the beacon MPDU and air it
+     * every [intervalTu] TU. The frame is a full 802.11 beacon MPDU; a leading
+     * radiotap header, if present, is stripped, and addr2/addr3 become the port
+     * MAC/BSSID. The chip then beacons AUTONOMOUSLY — hardware-timed and
+     * hardware-TSF-stamped, with no host involvement — until [stopBeacon].
+     *
+     * EXPERIMENTAL: the radio becomes an autonomous transmitter that occupies
+     * the channel and announces a network, so it must be asked for by name.
+     * A backend with no beacon engine refuses it, and the call says so.
+     */
+    public suspend fun startBeacon(
+        session: Int,
+        frameHex: String,
+        intervalTu: Int,
+        safety: SafetyLevel = SafetyLevel.NORMAL,
+    ): Beacon
+
+    /**
+     * Replace the ACTIVE beacon's payload in place. Requires an armed beacon.
+     * The interval, TBTT phase and port identity are not touched, and changing
+     * addr2/addr3 mid-flight is unsupported.
+     */
+    public suspend fun updateBeaconPayload(session: Int, frameHex: String): Beacon
+
+    /**
+     * Stop the hardware beacon. Always allowed, like re-enabling carrier sense:
+     * a cleanup path must never be blocked.
+     */
+    public suspend fun stopBeacon(session: Int): Beacon
+
     public suspend fun activeRxPaths(session: Int): JsonObject
 
     /**
@@ -466,6 +539,19 @@ public object RadioSafety {
     public fun gateAckResponder(safety: SafetyLevel) {
         SafetyLevelException.require(
             "arming the hardware ACK responder", SafetyLevel.EXPERIMENTAL, safety,
+        )
+    }
+
+    /**
+     * Arming the hardware beacon makes the radio an autonomous transmitter that
+     * occupies the channel and announces a BSS — the "affects other people's
+     * air" class, like disabling carrier sense. EXPERIMENTAL to start; updating
+     * an already-armed beacon and stopping it are never gated, so a cleanup
+     * path is always allowed.
+     */
+    public fun gateBeacon(safety: SafetyLevel) {
+        SafetyLevelException.require(
+            "starting an autonomous hardware beacon", SafetyLevel.EXPERIMENTAL, safety,
         )
     }
 }

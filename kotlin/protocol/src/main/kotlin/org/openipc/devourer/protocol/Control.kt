@@ -548,6 +548,34 @@ public data class Tsf(
     @SerialName("delta_us") val deltaUs: Long? = null,
 )
 
+/**
+ * The hardware beacon state (`IRadio::StartBeacon` / `UpdateBeaconPayload` /
+ * `StopBeacon`).
+ *
+ * [active] and [intervalTu] are the bridge's record of what it asked the
+ * backend to do, NOT a chip read: `IRadio` has no beacon getter. The MAC airs
+ * the beacon autonomously at every TBTT once armed, so a session that ends with
+ * one active stops it during teardown.
+ */
+@Serializable
+public data class Beacon(
+    val session: Int = 0,
+    val supported: Boolean = false,
+    val active: Boolean = false,
+    @SerialName("interval_tu") val intervalTu: Int = 0,
+    /** Bytes of the frame as supplied (including any radiotap header). */
+    @SerialName("frame_bytes") val frameBytes: Int = 0,
+    /** Bytes that landed in the beacon page, after the optional radiotap strip. */
+    @SerialName("mpdu_bytes") val mpduBytes: Int = 0,
+    /** The action this reply answered: "start", "update" or "stop"; null on a read. */
+    val action: String? = null,
+    val started: Boolean? = null,
+    val updated: Boolean? = null,
+    val stopped: Boolean? = null,
+    val why: String? = null,
+    val note: String? = null,
+)
+
 /** Channel width in MHz. The bridge takes MHz; the enum keeps callers honest. */
 public enum class ChannelWidth(public val mhz: Int) {
     W5(5), W10(10), W20(20), W40(40), W80(80), W160(160),

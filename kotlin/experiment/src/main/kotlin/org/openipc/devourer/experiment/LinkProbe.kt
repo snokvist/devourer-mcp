@@ -333,6 +333,8 @@ public class LinkProbe(
             count = spec.bounds.framesPerPoint,
             intervalUs = point.intervalUs,
             sequenceOffset = ProbeFrame.SEQUENCE_OFFSET,
+            batch = spec.batch,
+            pktPowerDb = spec.pktPowerDb,
         )
         val accepted = txResult.int("sent")
         val elapsedNs = txResult.long("elapsed_ns")
@@ -364,6 +366,15 @@ public class LinkProbe(
             txElapsedMs = elapsedNs / 1e6,
             txLateFrames = txResult.int("late_frames"),
             txMaxLateUs = txResult.long("max_late_us"),
+            frameBytes = point.frameBytes,
+            // Payload delivered over the transmit burst: the primary witness's
+            // received count times the MPDU size. Null when nothing was
+            // measured; a zero-length burst cannot produce a rate.
+            goodputBytesPerSec = if (elapsedNs > 0) {
+                primary.framesReceived.toDouble() * point.frameBytes * 1e9 / elapsedNs
+            } else {
+                null
+            },
             witnesses = perWitness,
             channelEnergy = channelEnergy,
             powerOffsetQdb = point.powerOffsetQdb,

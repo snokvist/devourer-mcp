@@ -9,6 +9,7 @@ import org.openipc.devourer.protocol.BridgeJson
 import org.openipc.devourer.protocol.AckResponder
 import org.openipc.devourer.protocol.AmpduMode
 import org.openipc.devourer.protocol.AmpduState
+import org.openipc.devourer.protocol.Beacon
 import org.openipc.devourer.protocol.CcaGates
 import org.openipc.devourer.protocol.ChannelSpec
 import org.openipc.devourer.protocol.ChannelWidth
@@ -54,8 +55,15 @@ public class RadioManager(private val bridge: BridgeClient) : Radios {
         noiseFloor: Boolean,
         adaptiveGain: Boolean,
         txReport: Int,
+        txRetryLimit: Int,
+        txAckTimeoutUs: Int,
+        txRetryFallbackOff: Boolean,
+        usbAggMax: Int,
     ): OpenRadio {
         require(txReport in 0..255) { "txReport must be 0..255 (the report divisor)" }
+        require(txRetryLimit in 0..63) { "txRetryLimit must be 0..63" }
+        require(txAckTimeoutUs in 1..255) { "txAckTimeoutUs must be 1..255 us" }
+        require(usbAggMax in 0..255) { "usbAggMax must be 0..255" }
         val result = bridge.call(
             "radio.open",
             buildJsonObject {
@@ -65,6 +73,10 @@ public class RadioManager(private val bridge: BridgeClient) : Radios {
                 put("noise_floor", JsonPrimitive(noiseFloor))
                 put("adaptive_gain", JsonPrimitive(adaptiveGain))
                 put("tx_report", JsonPrimitive(txReport))
+                put("tx_retry_limit", JsonPrimitive(txRetryLimit))
+                put("tx_ack_timeout_us", JsonPrimitive(txAckTimeoutUs))
+                put("tx_retry_fallback", JsonPrimitive(txRetryFallbackOff))
+                put("usb_agg", JsonPrimitive(usbAggMax))
             },
         )
         return BridgeJson.format.decodeFromJsonElement(OpenRadio.serializer(), result)
@@ -143,8 +155,16 @@ public class RadioManager(private val bridge: BridgeClient) : Radios {
         count: Int,
         intervalUs: Int,
         sequenceOffset: Int,
+        batch: Boolean,
+        pktPowerDb: Int?,
     ): JsonObject {
         require(count in 1..MAX_TX_COUNT) { "count must be 1..$MAX_TX_COUNT" }
+        require(!(batch && intervalUs > 0)) {
+            "batch is a deep unpaced feed; give intervalUs 0 or use the paced path"
+        }
+        require(pktPowerDb == null || pktPowerDb in -128..127) {
+            "pktPowerDb must be -128..127 (an int8 radiotap field)"
+        }
         return bridge.call(
             "tx.send",
             buildJsonObject {
@@ -154,6 +174,8 @@ public class RadioManager(private val bridge: BridgeClient) : Radios {
                 put("count", JsonPrimitive(count))
                 put("interval_us", JsonPrimitive(intervalUs))
                 put("seq_offset", JsonPrimitive(sequenceOffset))
+                put("batch", JsonPrimitive(batch))
+                if (pktPowerDb != null) put("pkt_power_db", JsonPrimitive(pktPowerDb))
             },
         )
     }
@@ -406,6 +428,64 @@ public class RadioManager(private val bridge: BridgeClient) : Radios {
             },
         )
         return BridgeJson.format.decodeFromJsonElement(Tsf.serializer(), result)
+    }
+
+    override suspend fun beacon(session: Int): Beacon {
+        val result = bridge.call(
+            "radio.beacon",
+            buildJsonObject { put("session", JsonPrimitive(session)) },
+        )
+        return BridgeJson.format.decodeFromJsonElement(Beacon.serializer(), result)
+    }
+
+    override suspend fun startBeacon(
+        session: Int,
+        frameHex: String,
+        intervalTu: Int,
+        safety: SafetyLevel,
+    ): Beacon {
+        RadioSafety.gateBeacon(safety)
+        require(frameHex.isNotBlank() && frameHex.length % 2 == 0) {
+            "frame_hex must be a non-empty even-length hex string (a full 802.11 " +
+                "beacon MPDU, or one with a leading radiotap header)"
+        }
+        require(intervalTu in 1..65535) { "intervalTu must be 1..65535 TU" }
+        val result = bridge.call(
+            "radio.beacon",
+            buildJsonObject {
+                put("session", JsonPrimitive(session))
+                put("action", JsonPrimitive("start"))
+                put("frame_hex", JsonPrimitive(frameHex))
+                put("interval_tu", JsonPrimitive(intervalTu))
+            },
+        )
+        return BridgeJson.format.decodeFromJsonElement(Beacon.serializer(), result)
+    }
+
+    override suspend fun updateBeaconPayload(session: Int, frameHex: String): Beacon {
+        require(frameHex.isNotBlank() && frameHex.length % 2 == 0) {
+            "frame_hex must be a non-empty even-length hex string"
+        }
+        val result = bridge.call(
+            "radio.beacon",
+            buildJsonObject {
+                put("session", JsonPrimitive(session))
+                put("action", JsonPrimitive("update"))
+                put("frame_hex", JsonPrimitive(frameHex))
+            },
+        )
+        return BridgeJson.format.decodeFromJsonElement(Beacon.serializer(), result)
+    }
+
+    override suspend fun stopBeacon(session: Int): Beacon {
+        val result = bridge.call(
+            "radio.beacon",
+            buildJsonObject {
+                put("session", JsonPrimitive(session))
+                put("action", JsonPrimitive("stop"))
+            },
+        )
+        return BridgeJson.format.decodeFromJsonElement(Beacon.serializer(), result)
     }
 
     override suspend fun activeRxPaths(session: Int): JsonObject =

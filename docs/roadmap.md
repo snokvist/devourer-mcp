@@ -16,8 +16,8 @@ The architecture is proven end to end on real hardware:
 LLM ──MCP(stdio)──▶ Kotlin runtime ──UDS──▶ devourer-bridge ──libusb──▶ adapter
 ```
 
-38 MCP tools across DISCOVER / OBSERVE / INSPECT / TRANSMIT / EXPERIMENT /
-CHARACTERIZE / BUILD TOOL. 220 offline tests plus 63 vendored Devourer
+39 MCP tools across DISCOVER / OBSERVE / INSPECT / TRANSMIT / EXPERIMENT /
+CHARACTERIZE / BUILD TOOL. 229 offline tests plus 63 vendored Devourer
 selftests, none of which need hardware. Three hardware tests that refuse to
 pass vacuously: the end-to-end smoke test, a stalled-sink test, and a
 sustained-overload test.
@@ -32,7 +32,7 @@ page down with it.
 | Subsystem | State | Notes |
 |---|---|---|
 | Vendored Devourer | done | pinned at `45f4022`, one local RX-gain patch |
-| `devourer-bridge` | done | separate process, protocol v1.11, session ownership |
+| `devourer-bridge` | done | separate process, protocol v1.13, session ownership |
 | Radio discovery + capabilities | done | derived from source, never a hand-kept table |
 | Monitor capture | done | ~1500–3300 frames/s, zero drops |
 | Capture store, query, PCAP | done | radiotap synthesized; raw bytes always reachable |
@@ -61,7 +61,7 @@ Full evidence, including the findings below, is in
 
 ## The big one: `IRadio` coverage
 
-**The bridge calls 31 of `IRadio`'s 55 virtual methods.** That single number is
+**The bridge calls 34 of `IRadio`'s 55 virtual methods.** That single number is
 the most useful measure of what is left, and it is why this does not yet fully
 replace Devourer's own `rxdemo`/`txdemo` as research instruments. Those two are
 thin loops over the same API: 76 bring-up knobs in `DeviceConfig` (77 `env:`
@@ -83,6 +83,7 @@ set. Roughly in value order:
 | `FastRetune` | done | `radio_fast_retune`; 21 ms on the 8822C, full-retune fallback elsewhere. The scan/survey built on it is still open. |
 | `FastSetBandwidth` | done | `radio_fast_bandwidth`; 20<->5/10 narrowband, capability-gated on the adapter's width set. |
 | Channel sweep / spectrum survey | done | `spectrum_sweep` dwells channels with `FastRetune` and reads the frame-free energy per bin; Realtek only, and the quietest channel is a hint not a throughput answer. |
+| Beacons / AP mode | done | Exposed as `radio_beacon` (arm/update/stop; the `IRadio::StartBeacon` family). On both the MT7612U and the RTL8822C (Jaguar3) a second MT7612U decoded the beacon, its 102.4 ms cadence and its live TX-egress TSF stamp, and the updated SSID after `update`; the host MT7922 on its stock kernel driver independently saw the beacon and its TSF. Station association is a separate feature: it needs an AP responder (probe/auth/assoc), not exposed here. |
 | `SetAckResponder` | medium | Required for any bidirectional or associated-link work. |
 | `SetAmpduMode` | medium | Aggregation is observable on RX today but not controllable on TX. |
 | Frequency hopping / FHSS | large | Substantial in both demos, with adaptive policy. Real algorithms, not register access. |

@@ -38,12 +38,16 @@ class LinkProbeTest {
         carrierSense: Boolean = true,
         safety: SafetyLevel = SafetyLevel.NORMAL,
         bounds: ExperimentBounds = ExperimentBounds(framesPerPoint = 100, intervalUs = 100),
+        batch: Boolean = false,
+        pktPowerDb: Int? = null,
     ) = ExperimentSpec(
         roles = roles,
         sweep = sweep,
         bounds = bounds,
         basePoint = SweepPoint("6M", ChannelLabel("ch6"), 200, 100),
         carrierSense = carrierSense,
+        batch = batch,
+        pktPowerDb = pktPowerDb,
         safety = safety,
     )
 
@@ -351,6 +355,27 @@ class LinkProbeTest {
                 ),
             )
         }
+    }
+
+    @Test
+    fun `batch and per-frame power reach the transmitter and yield goodput`() = runTest {
+        val radios = fake()
+        var seen: FakeRadios.Probe? = null
+        radios.onProbe = { p ->
+            seen = p
+            radios.deliverTo(p, to = 2, frames = p.count)
+            // 100 frames x 200 B in 2 ms = 10 MB/s of delivered payload.
+            FakeRadios.TxOutcome(accepted = p.count, elapsedNs = 2_000_000)
+        }
+
+        val result = LinkProbe(radios, backgroundScope)
+            .run(spec(batch = true, pktPowerDb = -20, bounds = ExperimentBounds(framesPerPoint = 100)))
+
+        assertTrue(assertNotNull(seen).batch)
+        assertEquals(-20, seen!!.pktPowerDb)
+        val point = result.points.single()
+        assertEquals(200, point.frameBytes)
+        assertEquals(10_000_000.0, assertNotNull(point.goodputBytesPerSec), 1.0)
     }
 
     @Test

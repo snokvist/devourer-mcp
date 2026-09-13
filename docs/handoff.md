@@ -136,9 +136,11 @@ tools/rx-quality-thermal-test.py                 # fused RX sensor + thermal met
 tools/fast-retune-test.py                        # lean same-band hop + narrowband toggle
 tools/spectrum-sweep-test.py                     # coarse per-channel energy survey
 tools/tx-receipts-test.py                        # per-frame TX reports (needs a Jaguar TX)
+tools/tx-retry-arq-test.py                       # retry-limit knob + hardware ARQ (needs a Jaguar TX)
 tools/ack-responder-test.py                      # hardware ACK responder + safety gate
 tools/ampdu-test.py                              # A-MPDU read/enable/clear + capability tri-state
 tools/tsf-test.py                                # MAC TSF read + adoption
+tools/beacon-test.py                             # hardware beacon, decoded by an independent witness
 tools/stall-test.py / tools/backpressure-test.py # sink stops reading / sustained overload
 
 # A/B a vendor change against a pristine build before proposing it — the
@@ -203,8 +205,8 @@ EDCCA threshold.
 
 ## Picking up (2026-09-13)
 
-State: **38 MCP tools, 27 bridge ops, protocol v1.12, the bridge calls 31 of 55
-`IRadio` methods, 220 Kotlin tests + 63 native selftests.** The current bench is
+State: **39 MCP tools, 28 bridge ops, protocol v1.14, the bridge calls 34 of 55
+`IRadio` methods, 230 Kotlin tests + 63 native selftests.** The current bench is
 an RTL8812CU (Jaguar3) plus two MT7612U; the 8812AU/Jaguar1 results below are
 history. Everything merged in PRs #10–#25.
 
@@ -223,6 +225,7 @@ history. Everything merged in PRs #10–#25.
 | Hardware ACK responder | `radio_ack_responder` | all three arm/clear |
 | A-MPDU control | `radio_ampdu` | 8822C enables; MT refuses honestly |
 | MAC TSF read + adoption | `radio_tsf` (+ `set_tsf_us`) | reads all; write 8822C only |
+| Hardware beacon (arm/update/stop) | `radio_beacon` | MT7612U and RTL8822C (Jaguar3) armed, witnessed by an independent MT7612U (~30 beacons, 102.4 ms cadence, live TX-egress TSF; `update` swapped the SSID on air; quiet after stop) and by the host MT7922 on its stock kernel driver (`iw scan` + monitor capture, TSF delta 102399 µs) |
 | Whole-surface verification | `tools/mcp-verify.py` | 46/46 |
 
 `tools/rxdemo-txdemo-parity.md` is the staged plan; M2 is complete, M3's
@@ -230,14 +233,27 @@ retune/survey primitives are done, M4 is partial, M6 has started.
 
 ### Next
 
-1. **M6 beacons + AP mode** (`StartBeacon`/`StopBeacon`/`UpdateBeaconPayload`):
-   verify with a second adapter decoding the autonomous beacon and its TSF
-   stamp, and a station associating.
-2. **M4 remainders**, each with a known blocker: A-MPDU *goodput* needs a deep
-   TX feeder (`send_packets` with frames in flight); per-packet TX power is
-   raw-path only because `build_stream_radiotap` cannot carry `DBM_TX_POWER`
-   and appending it flips `send_packet`'s length heuristic; TX retry-limit/
-   fallback are bring-up knobs whose effect needs structured unicast.
+1. **M6 beacons are done and independently verified.** `radio_beacon`
+   (arm/update/stop) is built; `tools/beacon-test.py` has a second MT7612U
+   decode the autonomous beacon, its 102.4 ms cadence, its live TX-egress TSF
+   stamp and an on-air `update`, then confirms the air goes quiet after `stop`.
+   The host MT7922 on its stock kernel driver independently saw the same
+   beacon (`iw scan`) and its TSF (monitor capture). Station *association* is
+   a separate feature, not part of the beacon slice: it needs an AP responder
+   for probe/auth/assoc (the vendored `ap_responder`), which the instrument
+   does not expose.
+2. **M4.** Hardware ARQ is done and verified (`tools/tx-retry-arq-test.py`):
+   the new `radio_open` retry knobs (`tx_retry_limit`/`tx_ack_timeout_us`/
+   `tx_retry_fallback_off`) plus `radio_ack_responder` give retries 0/1 and
+   delivered receipts where no responder gave retries at the limit. The deep
+   feeder is built (`radio_open usb_agg`, `experiment_link_probe batch:true`
+   over `send_packets`, `goodput_bytes_per_sec`), but A-MPDU goodput is not
+   shown yet because the probe frames are not QoS. Still open:
+   (a) **A-MPDU goodput** — needs QoS probe frames (a TID) before the MAC will
+   aggregate; (b) **per-packet TX power** — `pkt_power_db` composes a valid
+   radiotap `DBM_TX_POWER` but is inert on the 8812CU; the bank selector needs
+   `SetTxPacketPowerOffsetQdb`, which is concrete-backend-only, so this is an
+   `IRadio` interface gap (or a tester harness against the concrete class).
 3. **Multi-witness role in `LinkProbe`** — the two-witness run that settled the
    carrier-sense question was done by hand at the bridge; making it a
    first-class role would also settle the open antenna question.
@@ -258,4 +274,4 @@ retune/survey primitives are done, M4 is partial, M6 has started.
 Derive, don't hardcode. Capability-gate every advanced op; a backend that
 cannot do something must say so. Absent is not zero. Every claim carries its
 evidence. A new bridge op bumps the additive protocol minor; the next one is
-1.12 → 1.13.
+1.14 → 1.15.

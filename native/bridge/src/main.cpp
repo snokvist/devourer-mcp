@@ -307,6 +307,36 @@ Json op_radio_open(const Json &req) {
       return fail("bad_request", err);
     o.tx_report = static_cast<int>(v);
   }
+  /* Hardware retry/ARQ and USB-aggregation bring-up knobs. Present-but-wrong-
+   * typed is refused (nothing.wrong = a silent no-op that looks like success). */
+  for (const char *k : {"tx_retry_limit", "tx_ack_timeout_us", "usb_agg"}) {
+    const Json &v = req.at(k);
+    if (!v.is_null() && !v.is_number())
+      return fail("bad_request", std::string(k) + " must be an integer");
+  }
+  if (!req.at("tx_retry_fallback").is_null() &&
+      req.at("tx_retry_fallback").type() != Json::Type::Bool)
+    return fail("bad_request", "tx_retry_fallback must be a boolean");
+  if (!req.at("tx_retry_limit").is_null()) {
+    int64_t v = 0;
+    if (!ranged(req, "tx_retry_limit", 0, 63, v, err))
+      return fail("bad_request", err);
+    o.tx_retry_limit = static_cast<int>(v);
+  }
+  if (!req.at("tx_ack_timeout_us").is_null()) {
+    int64_t v = 0;
+    if (!ranged(req, "tx_ack_timeout_us", 1, 255, v, err))
+      return fail("bad_request", err);
+    o.tx_ack_timeout_us = static_cast<int>(v);
+  }
+  if (!req.at("tx_retry_fallback").is_null())
+    o.tx_retry_fallback_off = req.at("tx_retry_fallback").boolean(false);
+  if (!req.at("usb_agg").is_null()) {
+    int64_t v = 0;
+    if (!ranged(req, "usb_agg", 0, 255, v, err))
+      return fail("bad_request", err);
+    o.usb_agg_max = static_cast<unsigned>(v);
+  }
   if (req.at("buffer_bytes").is_number()) {
     int64_t v = 0;
     if (!ranged(req, "buffer_bytes", 1 << 20, 256LL << 20, v, err))
@@ -757,6 +787,115 @@ Json op_radio_tsf(const Json &req) {
   return ok(r);
 }
 
+/* Decode the beacon MPDU argument. The frame is a full 802.11 beacon MPDU;
+ * a leading radiotap header, if present, is stripped by the backend. */
+bool beacon_frame_arg(const Json &req, std::vector<uint8_t> &out,
+                      std::string &err) {
+  const bool hex = req.at("frame_hex").is_string();
+  const bool b64 = req.at("frame_b64").is_string();
+  if (hex && b64) {
+    err = "give either frame_hex or frame_b64, not both";
+    return false;
+  }
+  if (!hex && !b64) {
+    err = "frame_hex (or frame_b64) is required for a beacon start or update";
+    return false;
+  }
+  if (hex) {
+    if (!decode_hex(req.at("frame_hex").str(), out)) {
+      err = "frame_hex is not valid hex";
+      return false;
+    }
+  } else if (!decode_b64(req.at("frame_b64").str(), out)) {
+    err = "frame_b64 is not valid base64";
+    return false;
+  }
+  if (out.empty()) {
+    err = "the beacon frame is empty";
+    return false;
+  }
+  return true;
+}
+
+/* One op for the beacon life-cycle: the three IRadio calls are three phases of
+ * one concept — arm it (start), swap its content in flight (update), silence
+ * it (stop). `action` is explicit rather than inferred from which fields are
+ * present, because start and update differ only by the interval and a request
+ * that silently did the wrong one must not come back as success. */
+Json op_radio_beacon(const Json &req) {
+  std::string err;
+  auto s = find_session(req, err);
+  if (!s)
+    return fail("no_session", err);
+  if (Json bad = unknown_field(
+          req, {"action", "frame_hex", "frame_b64", "interval_tu"});
+      !bad.is_null())
+    return bad;
+  const Json &a = req.at("action");
+  if (!a.is_null() && !a.is_string())
+    return fail("bad_request",
+                "action must be \"read\", \"start\", \"update\" or \"stop\"");
+  const std::string action = a.is_string() ? a.str() : "read";
+  if (action != "read" && action != "start" && action != "update" &&
+      action != "stop")
+    return fail("bad_request",
+                "action must be \"read\", \"start\", \"update\" or \"stop\"");
+  const bool has_frame =
+      req.at("frame_hex").is_string() || req.at("frame_b64").is_string();
+  const bool has_interval = !req.at("interval_tu").is_null();
+
+  if (action == "read") {
+    if (has_frame || has_interval)
+      return fail("bad_request",
+                  "a read takes no frame_hex/interval_tu; give action "
+                  "\"start\", \"update\" or \"stop\" to change the beacon");
+    return ok(s->beacon_json());
+  }
+  if (action == "stop") {
+    if (has_frame || has_interval)
+      return fail("bad_request", "stop takes no frame_hex or interval_tu");
+    bool was_active = false;
+    if (!s->stop_beacon(was_active, err))
+      return fail("unsupported", err);
+    Json r = s->beacon_json();
+    r.set("action", "stop").set("stopped", was_active);
+    if (!was_active)
+      r.set("why", "no beacon was active on this session — nothing to stop");
+    return ok(r);
+  }
+
+  std::vector<uint8_t> frame;
+  if (!beacon_frame_arg(req, frame, err))
+    return fail("bad_request", err);
+
+  if (action == "update") {
+    if (has_interval)
+      return fail("bad_request",
+                  "update changes only the payload; the interval is fixed by "
+                  "start (IRadio::UpdateBeaconPayload leaves it untouched)");
+    if (!s->update_beacon_payload(frame, err))
+      return fail("unsupported", err);
+    Json r = s->beacon_json();
+    r.set("action", "update").set("updated", true);
+    return ok(r);
+  }
+
+  /* start */
+  if (!has_interval)
+    return fail("bad_request",
+                "interval_tu is required to start a beacon (TU, 1 TU = 1024 us)");
+  if (!req.at("interval_tu").is_number())
+    return fail("bad_request", "interval_tu must be an integer");
+  int64_t interval = 0;
+  if (!ranged(req, "interval_tu", 1, 65535, interval, err))
+    return fail("bad_request", err);
+  if (!s->start_beacon(frame, static_cast<int>(interval), err))
+    return fail("unsupported", err);
+  Json r = s->beacon_json();
+  r.set("action", "start").set("started", true);
+  return ok(r);
+}
+
 Json op_radio_rx_energy(const Json &req) {
   std::string err;
   auto s = find_session(req, err);
@@ -890,6 +1029,71 @@ Json op_radio_fast_bandwidth(const Json &req) {
  *               byte for byte. The escape hatch for development and for shapes
  *               the builder cannot express. Never the normal interface.
  */
+/* Insert a radiotap DBM_TX_POWER field (present bit 5) into a header produced
+ * by devourer::build_stream_radiotap. The field must appear in bit order —
+ * BEFORE TX_FLAGS (bit 15) — so appending it would be out of order and a
+ * strict parser rejects that; each of the builder's four layouts is known
+ * exactly, so this rebuilds the header with the field in place.
+ *
+ * `db` is a signed whole-dB delta against the calibrated per-rate table (the
+ * radiotap convention the backends parse; a backend multiplies by 4 to reach
+ * its qdB units). It applies per frame; the session-wide radio_tx_power offset
+ * is a separate knob and the two compose.
+ *
+ * J1 CAVEAT: lengthening the 13-byte HT radiotap trips `radiotap_length !=
+ * 0x0d` in RtlJaguarDevice, which still derives the TX-descriptor RATE_ID from
+ * that guess rather than the parsed rate family — so on an 8814A (the only J1
+ * die with per-packet power) an HT frame carrying per-packet power would be
+ * grouped as VHT. Recorded as a vendored finding; J2/J3 compute rate_id from
+ * the parsed rate (rateid_for_mgn) and are unaffected. */
+bool insert_dbm_tx_power(std::vector<uint8_t> &rt, int db, std::string &err) {
+  if (rt.size() < 8) {
+    err = "radiotap header too short to carry per-packet power";
+    return false;
+  }
+  const uint32_t present =
+      static_cast<uint32_t>(rt[4]) | (static_cast<uint32_t>(rt[5]) << 8) |
+      (static_cast<uint32_t>(rt[6]) << 16) | (static_cast<uint32_t>(rt[7]) << 24);
+  constexpr uint32_t kRate = 1u << 2, kDbm = 1u << 5, kTxFlags = 1u << 15;
+  constexpr uint32_t kMcs = 1u << 19, kVht = 1u << 21, kHe = 1u << 23;
+  if (present & kDbm)
+    return true; /* already present */
+  const uint8_t d = static_cast<uint8_t>(static_cast<int8_t>(db));
+  std::vector<uint8_t> out;
+  if ((present & kMcs) || (present & kVht) || (present & kHe)) {
+    /* HT / VHT / HE all carry TX_FLAGS first; DBM (bit 5) goes ahead of it,
+     * with a pad so TX_FLAGS stays 2-byte aligned. */
+    out.reserve(rt.size() + 2);
+    out.insert(out.end(), rt.begin(), rt.begin() + 8);
+    out.push_back(d);
+    out.push_back(0);
+    out.insert(out.end(), rt.begin() + 8, rt.end());
+    const uint32_t np = present | kDbm;
+    out[4] = static_cast<uint8_t>(np);
+    out[5] = static_cast<uint8_t>(np >> 8);
+    out[6] = static_cast<uint8_t>(np >> 16);
+    out[7] = static_cast<uint8_t>(np >> 24);
+    const uint16_t nl = static_cast<uint16_t>(out.size());
+    out[2] = static_cast<uint8_t>(nl);
+    out[3] = static_cast<uint8_t>(nl >> 8);
+  } else if ((present & kRate) && (present & kTxFlags)) {
+    /* Legacy: RATE(1) then a pad before TX_FLAGS; the DBM byte takes the pad
+     * slot, so the length is unchanged and TX_FLAGS stays aligned. */
+    rt[9] = d;
+    const uint32_t np = present | kDbm;
+    rt[4] = static_cast<uint8_t>(np);
+    rt[5] = static_cast<uint8_t>(np >> 8);
+    rt[6] = static_cast<uint8_t>(np >> 16);
+    rt[7] = static_cast<uint8_t>(np >> 24);
+    return true;
+  } else {
+    err = "radiotap header has no rate/MCS field to attach per-packet power to";
+    return false;
+  }
+  rt.swap(out);
+  return true;
+}
+
 bool build_tx_frame(const Json &req, std::vector<uint8_t> &out,
                     std::string &mode_used, size_t &body_at, std::string &err) {
   const bool raw = req.at("frame_hex").is_string() || req.at("frame_b64").is_string();
@@ -900,6 +1104,11 @@ bool build_tx_frame(const Json &req, std::vector<uint8_t> &out,
     return false;
   }
   if (raw) {
+    if (!req.at("pkt_power_db").is_null()) {
+      err = "pkt_power_db applies to the structured path only; on the raw path "
+            "the caller owns the radiotap and sets DBM_TX_POWER itself";
+      return false;
+    }
     mode_used = "raw";
     body_at = 0; /* the caller supplied radiotap itself, so offsets are absolute */
     if (req.at("frame_hex").is_string()) {
@@ -935,6 +1144,20 @@ bool build_tx_frame(const Json &req, std::vector<uint8_t> &out,
   const devourer::TxMode mode = devourer::parse_tx_mode_str(spec);
   mode_used = spec;
   out = devourer::build_stream_radiotap(mode);
+  /* Per-packet TX power (`pkt_power_db`): a signed whole-dB delta attached to
+   * this frame's radiotap. Only the structured path can carry it — on the raw
+   * path the caller owns the radiotap. */
+  if (!req.at("pkt_power_db").is_null()) {
+    if (!req.at("pkt_power_db").is_number())
+      return (err = "pkt_power_db must be an integer (whole dB)"), false;
+    const int64_t db = req.at("pkt_power_db").integer(0);
+    if (db < -128 || db > 127)
+      return (err = "pkt_power_db must be -128..127 (an int8 radiotap field)"),
+             false;
+    if (!insert_dbm_tx_power(out, static_cast<int>(db), err))
+      return false;
+    mode_used += "@" + std::to_string(db) + "dB";
+  }
   body_at = out.size();
   out.insert(out.end(), body.begin(), body.end());
   return true;
@@ -945,6 +1168,11 @@ Json op_tx_send(const Json &req) {
   auto s = find_session(req, err);
   if (!s)
     return fail("no_session", err);
+  if (Json bad = unknown_field(
+          req, {"body_hex", "mode", "frame_hex", "frame_b64", "count",
+                "interval_us", "seq_offset", "batch", "pkt_power_db"});
+      !bad.is_null())
+    return bad;
 
   std::vector<uint8_t> frame;
   std::string mode_used;
@@ -988,41 +1216,82 @@ Json op_tx_send(const Json &req) {
                 "seq_offset+4 is past the end of the frame (offsets are "
                 "relative to body_hex on the structured path)");
 
+  /* The deep feed. `batch:true` submits frames through IRadio::send_packets
+   * (and, with the session opened with `usb_agg`, packs them into shared
+   * bulk-OUT URBs and into the TXDMA back-to-back) — the queue depth the MAC
+   * needs to actually form A-MPDUs. It is deliberately a separate, unpaced
+   * path: pacing one frame at a time is the opposite of a deep feed. */
+  const bool batch = req.at("batch").boolean(false);
+  if (batch && interval_us > 0)
+    return fail("bad_request",
+                "batch mode is a deep unpaced feed (the A-MPDU/aggregation "
+                "path); give interval_us:0, or use the paced path");
+
   const uint64_t t0 = now_monotonic_ns();
   int64_t sent = 0;
   int64_t late = 0;          /* frames whose slot had already passed */
   uint64_t max_late_ns = 0;  /* worst single miss */
   uint64_t send_ns = 0;      /* time inside send_packet, summed */
-  for (int64_t i = 0; i < count; ++i) {
-    if (interval_us > 0 && i > 0) {
-      const uint64_t due = t0 + static_cast<uint64_t>(i) *
-                                    static_cast<uint64_t>(interval_us) * 1000ull;
-      const uint64_t before = now_monotonic_ns();
-      if (before >= due) {
-        ++late;
-        max_late_ns = std::max(max_late_ns, before - due);
-      } else {
-        sleep_until_ns(due);
+  if (batch) {
+    /* Bounded chunk: build at most this many frames at once (memory is
+     * chunk x frame), submit them, repeat. */
+    constexpr int64_t kChunk = 256;
+    while (sent < count) {
+      if (g_stop) {
+        err = "bridge is shutting down";
+        break;
       }
+      if (now_monotonic_ns() - t0 > kTxBudgetNs) {
+        err = "30 s transmit budget reached";
+        break;
+      }
+      const int64_t n = std::min(kChunk, count - sent);
+      std::vector<std::vector<uint8_t>> frames(static_cast<size_t>(n), frame);
+      for (int64_t i = 0; i < n; ++i) {
+        if (stamp) {
+          const uint32_t v = static_cast<uint32_t>(sent + i);
+          std::memcpy(frames[static_cast<size_t>(i)].data() + stamp_at, &v, 4);
+        }
+      }
+      const uint64_t s0 = now_monotonic_ns();
+      const size_t ok = s->send_frames(frames, err);
+      send_ns += now_monotonic_ns() - s0;
+      sent += static_cast<int64_t>(ok);
+      if (ok != static_cast<size_t>(n))
+        break;
     }
-    if (stamp) {
-      const uint32_t v = static_cast<uint32_t>(i);
-      std::memcpy(frame.data() + stamp_at, &v, 4);
+  } else {
+    for (int64_t i = 0; i < count; ++i) {
+      if (interval_us > 0 && i > 0) {
+        const uint64_t due = t0 + static_cast<uint64_t>(i) *
+                                      static_cast<uint64_t>(interval_us) * 1000ull;
+        const uint64_t before = now_monotonic_ns();
+        if (before >= due) {
+          ++late;
+          max_late_ns = std::max(max_late_ns, before - due);
+        } else {
+          sleep_until_ns(due);
+        }
+      }
+      if (stamp) {
+        const uint32_t v = static_cast<uint32_t>(i);
+        std::memcpy(frame.data() + stamp_at, &v, 4);
+      }
+      if (g_stop) {
+        err = "bridge is shutting down";
+        break;
+      }
+      if (now_monotonic_ns() - t0 > kTxBudgetNs) {
+        err = "30 s transmit budget reached";
+        break;
+      }
+      const uint64_t s0 = now_monotonic_ns();
+      const bool sent_ok = s->send_frame(frame.data(), frame.size(), err);
+      send_ns += now_monotonic_ns() - s0;
+      if (!sent_ok)
+        break;
+      ++sent;
     }
-    if (g_stop) {
-      err = "bridge is shutting down";
-      break;
-    }
-    if (now_monotonic_ns() - t0 > kTxBudgetNs) {
-      err = "30 s transmit budget reached";
-      break;
-    }
-    const uint64_t s0 = now_monotonic_ns();
-    const bool sent_ok = s->send_frame(frame.data(), frame.size(), err);
-    send_ns += now_monotonic_ns() - s0;
-    if (!sent_ok)
-      break;
-    ++sent;
   }
   const uint64_t elapsed_ns = now_monotonic_ns() - t0;
 
@@ -1034,6 +1303,7 @@ Json op_tx_send(const Json &req) {
       .set("frame_bytes", static_cast<int64_t>(frame.size()))
       .set("elapsed_ns", elapsed_ns)
       .set("seq_stamped", stamp)
+      .set("batch", batch)
       .set("radiotap_bytes", static_cast<int64_t>(body_at))
       /* Frames the loop could not start on time. Nonzero means the requested
        * spacing was tighter than this host and adapter can sustain, so the
@@ -1106,6 +1376,8 @@ Json dispatch(const Json &req) {
     return op_radio_ampdu(req);
   if (op == "radio.tsf")
     return op_radio_tsf(req);
+  if (op == "radio.beacon")
+    return op_radio_beacon(req);
   if (op == "radio.cca_gates")
     return op_radio_cca_gates(req);
   if (op == "radio.cca")
