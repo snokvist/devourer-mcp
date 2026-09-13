@@ -31,7 +31,7 @@ for a JDK elsewhere, add `org.gradle.java.installations.paths=...` to
 `~/.gradle/gradle.properties`. Nothing is installed system-wide except the udev
 rules.
 
-### Two things that will bite
+### Three things that will bite
 
 **The socket path must stay under ~100 bytes.** `sun_path` is 108. A path under
 a session scratch directory will exceed it and the bridge exits with "socket
@@ -40,6 +40,12 @@ path too long".
 **Adapters need the udev rules.** `tools/host/70-devourer-usb.rules`, already
 installed to `/etc/udev/rules.d/`. Without them everything needs root. They
 grant the supported USB ids to `plugdev` and blacklist nothing.
+
+**The RTL8812CU is held by the ground station when it runs.** `waybeam-hub`
+(`systemctl` unit `waybeam-hub`) claims it, so `radio.open` fails with `busy`.
+Free it with `sudo systemctl stop waybeam-hub`, do the radio work, then
+`sudo systemctl start waybeam-hub` to restore the link. The two MT7612U are
+usually free.
 
 ---
 
