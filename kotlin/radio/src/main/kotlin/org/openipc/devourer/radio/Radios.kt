@@ -439,6 +439,11 @@ public interface Radios {
      * EXPERIMENTAL: the radio becomes an autonomous transmitter that occupies
      * the channel and announces a network, so it must be asked for by name.
      * A backend with no beacon engine refuses it, and the call says so.
+     *
+     * Kestrel (RTW89) caveat: `StartBeacon` is ported there but
+     * `StopBeacon`/`UpdateBeaconPayload` are not, so a Kestrel beacon can be
+     * armed and NOT silenced through this interface — do not start one you
+     * cannot power-cycle. No such hardware on this bench.
      */
     public suspend fun startBeacon(
         session: Int,
@@ -457,6 +462,10 @@ public interface Radios {
     /**
      * Stop the hardware beacon. Always allowed, like re-enabling carrier sense:
      * a cleanup path must never be blocked.
+     *
+     * On Kestrel this returns `false` (the override is not ported) while the
+     * beacon keeps airing; the backend refuses honestly rather than faking a
+     * stop, but the caller cannot silence it through this interface.
      */
     public suspend fun stopBeacon(session: Int): Beacon
 

@@ -472,6 +472,14 @@ public class FakeRadios(radios: List<OpenRadio> = emptyList()) : Radios {
         require(count in 1..RadioManager.MAX_TX_COUNT) {
             "count must be 1..${RadioManager.MAX_TX_COUNT}"
         }
+        // Mirror the production boundary, so an experiment test cannot pass a
+        // combination RadioManager would reject on the real path.
+        require(!(batch && intervalUs > 0)) {
+            "batch is a deep unpaced feed; give intervalUs 0 or use the paced path"
+        }
+        require(pktPowerDb == null || pktPowerDb in -128..127) {
+            "pktPowerDb must be -128..127 (an int8 radiotap field)"
+        }
         radio(session)
         val probe = Probe(session, frameHex, mode, count, intervalUs, sequenceOffset, batch, pktPowerDb)
         val outcome = onProbe?.invoke(probe) ?: TxOutcome(accepted = count)

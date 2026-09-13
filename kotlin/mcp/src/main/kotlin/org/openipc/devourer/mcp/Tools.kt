@@ -1326,6 +1326,12 @@ internal class Tools(
                 start/update/stop and the call says so. Confirm the beacon on an independent
                 receiver — a witness decoding the beacon and its TSF stamp is the evidence,
                 never this reply.
+
+                CAVEAT (Kestrel/RTW89 only): `start` is ported there but `stop` and `update`
+                are not, so a Kestrel beacon can be ARMED AND NOT SILENCED through this
+                interface (teardown's stop is best-effort and `Stop()` does not disable the AX
+                beacon engine). Do not start a Kestrel beacon you cannot power-cycle. No such
+                hardware is on the current bench.
             """.trimIndent(),
             inputSchema = ToolSchema(
                 properties = buildJsonObject {
@@ -1559,6 +1565,16 @@ internal class Tools(
                             "${witnessRoles.joinToString()}); got ${extra.size}",
                     )
                 }
+                // The interval sweep is the other way a nonzero spacing could
+                // reach a batch point; reject it rather than let it fail deep
+                // in the send call.
+                val sweepInterval = request.intList("sweep_interval_us")
+                if (batch && sweepInterval.any { it != 0 }) {
+                    throw ExperimentException(
+                        "batch is a deep unpaced feed; sweep_interval_us must be " +
+                            "empty or all zeros",
+                    )
+                }
                 val spec = ExperimentSpec(
                     roles = buildMap {
                         put(RadioRole.TX_PEER, request.intOr("tx_session", -1))
@@ -1569,7 +1585,7 @@ internal class Tools(
                         modes = modes,
                         channels = sweepChannels,
                         frameBytes = request.intList("sweep_frame_bytes"),
-                        intervalUs = request.intList("sweep_interval_us"),
+                        intervalUs = if (batch) emptyList() else sweepInterval,
                         powerOffsetQdb = sweepPower,
                     ),
                     bounds = bounds,
