@@ -123,10 +123,17 @@ adapter is brought up. Realtek has it from construction.
 ./gradlew test                                   # 220 Kotlin tests, no hardware
 ctest --test-dir build/native-bridge             # 63 vendored selftests
 tools/mcp-verify.py                              # every MCP tool, real requests, artifacts + dashboard
-tools/smoke-test.py                              # needs adapters; never passes vacuously
-tools/rx-gain-cca-test.py                        # receive-gain clamp + split CCA gates; needs a Realtek
-tools/stall-test.py                              # needs adapters; a sink that stops reading
-tools/backpressure-test.py                       # needs two adapters; sustained overload
+tools/smoke-test.py                              # RX path, all adapters; never passes vacuously
+tools/rx-gain-cca-test.py                        # receive-gain clamp + split CCA gates
+tools/tx-power-test.py                           # TX-power knobs + a sweep measured on a witness
+tools/rx-quality-thermal-test.py                 # fused RX sensor + thermal meter
+tools/fast-retune-test.py                        # lean same-band hop + narrowband toggle
+tools/spectrum-sweep-test.py                     # coarse per-channel energy survey
+tools/tx-receipts-test.py                        # per-frame TX reports (needs a Jaguar TX)
+tools/ack-responder-test.py                      # hardware ACK responder + safety gate
+tools/ampdu-test.py                              # A-MPDU read/enable/clear + capability tri-state
+tools/tsf-test.py                                # MAC TSF read + adoption
+tools/stall-test.py / tools/backpressure-test.py # sink stops reading / sustained overload
 
 # A/B a vendor change against a pristine build before proposing it — the
 # pattern that caught a 96% result which turned out to be session state:
@@ -188,51 +195,61 @@ rebased onto the merged CCA/watchdog code; its Jaguar1 implementation now owns
 the small amount of gate-state memory needed when a gain change re-derives the
 EDCCA threshold.
 
-## Picking up
+## Picking up (2026-09-13)
 
-The September 13 repin to `45f4022` was replayed from a clean upstream clone.
-The full native build passed all 63 tests (the two reference-submodule checks
-were skipped as expected) and `./gradlew test --rerun-tasks` passed. A review of
-the rebased RX-gain patch found and fixed the repin's own gaps: `radio.rx_gain`
-let a wrong-typed value skip the write and return the unchanged state as
-success, and three docs counted a stale `IRadio` ratio.
+State: **38 MCP tools, 27 bridge ops, protocol v1.12, the bridge calls 31 of 55
+`IRadio` methods, 220 Kotlin tests + 63 native selftests.** The current bench is
+an RTL8812CU (Jaguar3) plus two MT7612U; the 8812AU/Jaguar1 results below are
+history. Everything merged in PRs #10–#25.
 
-M2 is largely complete and exposed end to end: `radio.rx_gain`,
-`radio.cca_gates`, `radio.tx_power` (offset/index/reapply + per-rate diffs),
-`radio.rx_quality` and `radio.thermal` in the bridge; matching `Radios` methods
-and MCP tools; plus a `sweep_power_qdb` experiment axis. Disabling either
-carrier-sense gate is gated on `SafetyLevel.EXPERIMENTAL` through the same
-`RadioSafety` the rest of the tree uses. Protocol minor is now 1.6 (two new ops
-in the last slice).
+### What this session added, end to end
 
-The highest-value next step is still closing `IRadio` coverage — the bridge
-calls 24 of 55 methods. **M2 is complete** (RX gain, CCA gates, TX power
-offset/index/reapply + per-rate diffs + sweep axis, fused RX quality, thermal,
-per-frame TX receipts) and the M3 retune/survey primitives are done
-(`radio_fast_retune`, `radio_fast_bandwidth`, `spectrum_sweep`).
+| Area | Exposed as | Verified |
+|---|---|---|
+| RX gain clamp, split CCA gates | `radio_rx_gain`, `radio_cca_gates` | 8812CU + MT (honest absence) |
+| TX power: offset / flat index / reapply | `radio_tx_power` | 8812CU |
+| TX power: per-rate diffs | `radio_tx_power.rate_diffs` | 8812CU, rate-selective on a witness |
+| TX power: sweep axis | `experiment_link_probe.sweep_power_qdb` | 8812CU → MT witness |
+| Fused RX quality, thermal | `radio_rx_quality`, `radio_thermal` | 8812CU + MT |
+| Per-frame TX receipts (`tx.report`) | `radio_tx_receipts` + `radio_open.tx_report` | 8822C, 200/200 on a burst |
+| Lean retune | `radio_fast_retune`, `radio_fast_bandwidth` | 21 ms hop vs 130 ms full |
+| Energy survey | `spectrum_sweep` | quietest channel on ch1/6/11 |
+| Hardware ACK responder | `radio_ack_responder` | all three arm/clear |
+| A-MPDU control | `radio_ampdu` | 8822C enables; MT refuses honestly |
+| MAC TSF read + adoption | `radio_tsf` (+ `set_tsf_us`) | reads all; write 8822C only |
+| Whole-surface verification | `tools/mcp-verify.py` | 46/46 |
 
-The whole MCP surface is now functionally verified on hardware by
-`tools/mcp-verify.py` (46/46): every tool driven with a real request, the
-negative paths exercised, and the artifacts (PCAP, characterization DB,
-promoted scratchpad, dashboard) confirmed. That pass found and fixed one real
-gap — `characterize_run` failed when a capture was already running.
+`tools/rxdemo-txdemo-parity.md` is the staged plan; M2 is complete, M3's
+retune/survey primitives are done, M4 is partial, M6 has started.
 
-M4 is under way: `radio_ack_responder` arms/clears the hardware ACK responder
-(EXPERIMENTAL to arm), and `radio_ampdu` reads/sets/clears the A-MPDU TX mode
-with an honest capability tri-state. Remaining M4: the A-MPDU *goodput*
-measurement (needs a deep TX feeder, which the structured send path does not
-have), TX retry-limit/fallback bring-up knobs, and per-packet TX power
-(radiotap `DBM_TX_POWER` — `build_stream_radiotap` cannot carry it and
-appending it flips `send_packet`'s length heuristic, so it stays raw-path
-only). M6 is under way: `radio_tsf` reads the MAC clock and `set_tsf_us` writes
-it (adoption). The 8822C takes the write; the MT7612U's `WriteTsf` override is
-a silent no-op, so adoption is Jaguar-only here — recorded as a vendored
-finding. Next: beacons/AP mode. The staged plan is
-[`rxdemo-txdemo-parity.md`](rxdemo-txdemo-parity.md). `radio.tx_stats` and
-`radio.cca` are the pattern to copy for a new op: a bridge op, a `RadioManager`
-method, an MCP tool with a description that says what the result does *not*
-prove. A new bridge op bumps the additive protocol minor from 1.11 to 1.12.
+### Next
 
-After that, multi-witness experiments. The two-witness run that settled the
-carrier-sense question was done by hand against the bridge; making it a first-
-class role in `LinkProbe` would also settle the open antenna question.
+1. **M6 beacons + AP mode** (`StartBeacon`/`StopBeacon`/`UpdateBeaconPayload`):
+   verify with a second adapter decoding the autonomous beacon and its TSF
+   stamp, and a station associating.
+2. **M4 remainders**, each with a known blocker: A-MPDU *goodput* needs a deep
+   TX feeder (`send_packets` with frames in flight); per-packet TX power is
+   raw-path only because `build_stream_radiotap` cannot carry `DBM_TX_POWER`
+   and appending it flips `send_packet`'s length heuristic; TX retry-limit/
+   fallback are bring-up knobs whose effect needs structured unicast.
+3. **Multi-witness role in `LinkProbe`** — the two-witness run that settled the
+   carrier-sense question was done by hand at the bridge; making it a
+   first-class role would also settle the open antenna question.
+
+### Open findings (recorded, not fixed — vendored)
+
+- **8822C raw PWDB > 127.** `parse_phy_sts_jgr3` assumes the 0..127 convention,
+  so a byte ≥128 converts to a >17 dBm reading and can drive a bogus
+  `SATURATED` verdict. The bridge flags the out-of-range window; the parser fix
+  belongs upstream.
+- **MT7612U `WriteTsf` is a silent no-op.** The override calls
+  `mt7612u_write_tsf()`, which writes the same `DW0`/`DW1` the read path reads,
+  yet the value does not stick, and the method is `void`. `radio_tsf` reports
+  `took:false`; the fix belongs upstream.
+
+### Working rules that did not change
+
+Derive, don't hardcode. Capability-gate every advanced op; a backend that
+cannot do something must say so. Absent is not zero. Every claim carries its
+evidence. A new bridge op bumps the additive protocol minor; the next one is
+1.12 → 1.13.
