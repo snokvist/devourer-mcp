@@ -252,7 +252,7 @@ already implemented:
 |---|---|
 | the IGI write | `PhydmWatchdog::DigWriteIgi` — `phy_set_bb_reg(0xc50/0xe50, 0xff, igi)` |
 | the floor write at bring-up | `HalModule::phydm_SetIgiFloor_Jaguar()`, hard-coded `0x1c` |
-| DIG's clamps | `PhydmWatchdog::_rx_gain_range_min/_max` |
+| DIG's clamps | `PhydmWatchdog::_rx_gain_range` (min/max packed in one atomic) |
 | a documented config field for exactly this | `DeviceConfig.rx.igi` ("fixed initial-gain index override") |
 
 **`rx.igi` has exactly one consumer in the whole tree: `HalJaguar2.cpp:2597`.**

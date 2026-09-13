@@ -178,17 +178,25 @@ version of that sentence only exists because the knob does.
 
 Ordered by value, and only the first two need to land together.
 
-**jaguar1** — implemented and verified. `PhydmWatchdog` already holds
-`_rx_gain_range_min = 0x1c` / `_rx_gain_range_max = 0x2a` and clamps `DigTick`
-to them, so the change is a setter plus an immediate `DigWriteIgi(clamp(cur))`
-for the case where the watchdog is not running, which is the default.
-`phydm_SetIgiFloor_Jaguar()` writes `clamp(0x1c, min, max)` instead of the
-literal, so an `rx.igi` set at open survives bring-up. Read via the existing
-`ReadBBReg(0xc50, 0xff)`.
+**jaguar1** — implemented and verified. `PhydmWatchdog` holds the clamp as one
+packed atomic, `_rx_gain_range` (high byte `min`, low byte `max`, default
+`0x1c2a` — DIG's own window) plus `_gain_range_pinned`; `PinGainRange` updates
+it and re-applies the current index under `_dig_mu`, so a host change cannot
+race a tick, and `DigTick` clamps to it. `RtlJaguarDevice::SetRxGainRange`
+validates against the caps envelope, refuses without corrupting state, and
+stores `_rx_gain_min`/`_rx_gain_max`; `ApplyConfiguredRxGain()` applies that
+stored clamp on both bring-up paths and after `SetCcaMode`, and seeds a pin
+from `rx.igi` only when the configured value is present and in range. Read via
+the existing `ReadBBReg(0xc50, 0x7f)`.
 
-Caps: `index_name = "igi"`, `index_min = 0x1c`, `index_max = 0x2a`,
-`automatic = <watchdog running>`,
+Caps: `index_name = "igi"`, `index_min = 0x1c`, `index_max = 0x3e` (the
+supported envelope — the default unlinked DIG window is the narrower
+`[0x1c, 0x2a]`), `automatic = <watchdog running>`,
 `automatic_input = "phydm DIG, keyed on the false-alarm rate"`.
+
+Because caps describe the supported envelope and not the initial window, a
+caller restoring state must remember the initial `GetRxGainState()` range
+rather than assume the caps' own limits are the default.
 
 **mt7612u** — NOT implemented here; no hardware time was spent on it and the
 not-ported default is what it reports. Sketch retained because it is the

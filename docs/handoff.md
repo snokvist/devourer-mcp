@@ -198,12 +198,14 @@ the bridge has `radio.rx_gain` and `radio.cca_gates`, but Kotlin/MCP has no
 client for either.
 
 The highest-value next step is closing `IRadio` coverage — the bridge calls 14
-of 52 methods, and that single number explains most of what this cannot yet do.
+of 55 methods, and that single number explains most of what this cannot yet do.
 Start with a bounded TX-power vertical slice (`GetTxPowerCaps`, offset/index
 control, reapply and honest state reporting), then expose RX gain and the split
 CCA gates. `radio.tx_stats` and `radio.cca` are the pattern to copy: a bridge
 op, a `RadioManager` method, an MCP tool with a description that says what the
-result does *not* prove. Bump the additive protocol minor from 1.2 to 1.3.
+result does *not* prove. Exposing the existing `radio.rx_gain`/`radio.cca_gates`
+ops needs no protocol change; a *new* bridge op (e.g. TX power) bumps the
+additive protocol minor from 1.2 to 1.3.
 
 After that, multi-witness experiments. The two-witness run that settled the
 carrier-sense question was done by hand against the bridge; making it a first-

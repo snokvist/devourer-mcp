@@ -500,7 +500,18 @@ Json op_radio_rx_gain(const Json &req) {
     return fail("no_session", err);
   if (Json bad = unknown_field(req, {"min_index", "max_index"}); !bad.is_null())
     return bad;
-  if (req.at("min_index").is_number() || req.at("max_index").is_number()) {
+  /* Presence, not type, decides whether this is a write. Gating on is_number()
+   * meant {"min_index":"28"} skipped the set entirely and returned the
+   * unchanged state as success — the misspelled-request-looks-like-success
+   * failure unknown_field exists to prevent, one type check too late. */
+  const bool has_lo = !req.at("min_index").is_null();
+  const bool has_hi = !req.at("max_index").is_null();
+  if (has_lo || has_hi) {
+    for (const char *k : {"min_index", "max_index"}) {
+      const Json &v = req.at(k);
+      if (!v.is_null() && !v.is_number())
+        return fail("bad_request", std::string(k) + " must be an integer");
+    }
     int64_t lo = 0, hi = 0;
     if (!ranged(req, "min_index", 0, 127, lo, err) ||
         !ranged(req, "max_index", 0, 127, hi, err))
@@ -534,6 +545,8 @@ Json op_radio_cca(const Json &req) {
   auto s = find_session(req, err);
   if (!s)
     return fail("no_session", err);
+  if (Json bad = unknown_field(req, {"disabled"}); !bad.is_null())
+    return bad;
   if (!req.at("disabled").is_null() && req.at("disabled").type() != Json::Type::Bool)
     return fail("bad_request", "'disabled' must be a boolean");
   const bool disabled = req.at("disabled").boolean(false);
