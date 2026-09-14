@@ -1546,10 +1546,23 @@ internal class Tools(
                 // see it run, and experiment_cancel can reach it.
                 experiments.start(id, "link_probe", points) { sink -> probe.run(spec, sink) }
                 val result = experiments.await(id)
-                text(
-                    json.encodeToString(ExperimentResult.serializer(), result),
-                    isError = result.verification == VerificationState.FAILED,
-                )
+                // A FAILED experiment is returned as an error, and many
+                // clients print the error field and ignore the rest. Without
+                // one, a real diagnosis — "transmitted but no witness heard
+                // anything" — reached the caller as a blank failure. The
+                // non-failed branch still serializes through `json` so the
+                // reply keeps its pretty formatting.
+                val failed = result.verification == VerificationState.FAILED
+                val body = if (failed) {
+                    val obj = json.encodeToJsonElement(ExperimentResult.serializer(), result)
+                        .jsonObject + (
+                        "error" to JsonPrimitive("experiment FAILED: ${result.conclusion}")
+                        )
+                    json.encodeToString(JsonObject.serializer(), JsonObject(obj))
+                } else {
+                    json.encodeToString(ExperimentResult.serializer(), result)
+                }
+                text(body, isError = failed)
             } catch (e: CancellationException) {
                 text(
                     errorReply("the experiment was cancelled", "cancelled" to true),
@@ -1812,6 +1825,7 @@ internal class Tools(
                     put("program", schema("object", "The program. See scratchpad_capabilities for its shape."))
                     put("radio_sessions", schema("array", "Radio session ids this program may read."))
                     put("capture_ids", schema("array", "Capture ids this program may read."))
+                    put("experiment_ids", schema("array", "Experiment ids this program may read results from."))
                     put("http_hosts", schema("array", "Hosts or host:port this program may GET. Exact match."))
                     put("grant_capabilities", schema("array", "Capabilities the CALLER allows. Defaults to all non-privileged ones. A program declaring anything outside this set is refused — a program cannot grant itself."))
                     put("max_runtime_ms", schema("integer", "Ceiling on the run. Default 120000."))
@@ -1847,6 +1861,7 @@ internal class Tools(
                 capabilities = requested intersect allowed,
                 radioSessions = request.intList("radio_sessions").toSet(),
                 captureIds = request.stringList("capture_ids").toSet(),
+                experimentIds = request.stringList("experiment_ids").toSet(),
                 httpHosts = request.stringList("http_hosts").toSet(),
                 maxRuntimeMs = request.longOr("max_runtime_ms", 120_000).coerceIn(100, 3_600_000),
             )
@@ -1874,7 +1889,10 @@ internal class Tools(
                 return@register text(errorReply(e.message), isError = true)
             }
             text(
-                json.encodeToString(ScratchpadStarted.serializer(), ScratchpadStarted(handle, inspection)),
+                json.encodeToString(
+                    ScratchpadStarted.serializer(),
+                    ScratchpadStarted(handle.id, handle, inspection),
+                ),
             )
         }
 
@@ -2152,6 +2170,20 @@ internal class Tools(
  * handler is then only the part that runs it.
  */
 internal fun linkProbeSpec(request: CallToolRequest): ExperimentSpec {
+    val txSession = request.intOr("tx_session", -1)
+    val rxSession = request.intOr("rx_session", -1)
+    if (txSession < 0) throw ExperimentException("tx_session is required")
+    if (rxSession < 0) {
+        // An experiment without an independent receiver is not a weaker
+        // experiment, it is a non-experiment: the transmitter's own report is
+        // MAC-side and never delivery. There is no sensible default, so say
+        // what is missing rather than letting -1 reach the bridge and come
+        // back as "no session 4294967295".
+        throw ExperimentException(
+            "rx_session is required: an experiment needs an independent receiver, and a " +
+                "radio cannot witness itself. Pass the session of a second adapter.",
+        )
+    }
     val modes = request.stringList("modes").ifEmpty { listOf("6M") }
     val baseChannel = ChannelSpec(
         channel = request.intOr("channel", -1),
@@ -2199,8 +2231,8 @@ internal fun linkProbeSpec(request: CallToolRequest): ExperimentSpec {
     }
     return ExperimentSpec(
         roles = buildMap {
-            put(RadioRole.TX_PEER, request.intOr("tx_session", -1))
-            put(RadioRole.RX_PEER, request.intOr("rx_session", -1))
+            put(RadioRole.TX_PEER, txSession)
+            put(RadioRole.RX_PEER, rxSession)
             extra.forEachIndexed { i, s -> put(witnessRoles[i], s) }
         },
         sweep = Sweep(

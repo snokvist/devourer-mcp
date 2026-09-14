@@ -174,7 +174,7 @@ nowhere. Three of five `RadioRole`s unreferenced.
 
 **Unimplemented-but-advertised.** `RADIO_TX` (privileged), `RADIO_MONITOR`,
 `STORAGE` have no implementing step; `txFrameBudget` is never read.
-`Interpreter.sample()` has exactly three arms.
+`Interpreter.sample()` has four arms.
 
 **Measured numbers (docs were wrong).**
 

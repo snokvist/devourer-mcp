@@ -164,14 +164,16 @@ public class LinkProbe(
         val channelEnergy = mutableMapOf<String, RxEnergy?>()
         var truncated = false
         var tuned: String? = null
-        // One collector per witness for the whole run, started before any
-        // transmission so nothing is missed between points.
+        var collectorsStarted = false
+        // One collector per witness for the whole run. They attach only after
+        // their monitors are started (below): the bridge keeps one frame sink
+        // per session and a later attach replaces the earlier one, so the
+        // experiment's collector must be the last binder — a capture that was
+        // stopped but whose collector has not finished unwinding must not
+        // supersede it. The launch is asynchronous, so awaitSinks() waits for
+        // the bridge to confirm the sink before anything is transmitted.
         val jobs = mutableListOf<Job>()
         try {
-            witnesses.forEach { w ->
-                jobs += scope.launch { radios.frames(w.session).collect { w.offer(it) } }
-            }
-
             for (point in points) {
                 if (System.currentTimeMillis() - started > spec.bounds.maxDurationMs) {
                     truncated = true
@@ -184,6 +186,13 @@ public class LinkProbe(
                 if (point.channel.text != tuned) {
                     retuneAll(spec, witnesses, point.channel.spec())
                     tuned = point.channel.text
+                    if (!collectorsStarted) {
+                        witnesses.forEach { w ->
+                            jobs += scope.launch { radios.frames(w.session).collect { w.offer(it) } }
+                        }
+                        awaitSinks(witnesses, caveats)
+                        collectorsStarted = true
+                    }
                     channelEnergy[point.channel.text] = idleEnergy(spec.transmitter)
                 }
 
@@ -325,6 +334,33 @@ public class LinkProbe(
                 safety = safety,
             ),
         )
+    }
+
+    /**
+     * Waits for each witness's frame sink to be attached, briefly.
+     *
+     * [radios.frames] opens its bridge channel asynchronously, and the bridge
+     * counts a frame only while a sink is attached — a burst that starts
+     * before the attach lands has its first frames discarded and the point
+     * under-counts. Asked of the bridge rather than a sleep, so a healthy
+     * attach costs a round trip and a missing one is named instead of silently
+     * losing frames.
+     */
+    private suspend fun awaitSinks(witnesses: List<Witness>, caveats: MutableList<String>) {
+        for (w in witnesses) {
+            val deadline = System.currentTimeMillis() + SINK_ATTACH_MS
+            var attached = false
+            while (!attached && System.currentTimeMillis() < deadline) {
+                attached = runCatching { radios.stats(w.session).sinkAttached }.getOrDefault(false)
+                if (!attached) delay(SINK_POLL_MS)
+            }
+            if (!attached) {
+                caveats += "${w.role} (session ${w.session}) did not confirm its frame sink " +
+                    "within ${SINK_ATTACH_MS}ms. The run still measures what that witness " +
+                    "reports, but its first point may under-count: frames aired before the " +
+                    "attach are discarded by the bridge."
+            }
+        }
     }
 
     private suspend fun retuneAll(
@@ -563,6 +599,16 @@ public class LinkProbe(
     private companion object {
         /** How long cleanup waits for a frame collector to stop. */
         const val CLEANUP_JOIN_MS = 5_000L
+
+        /**
+         * How long to wait for a witness collector to confirm its frame sink.
+         * A round trip on a healthy bridge; the bound exists so a missing sink
+         * becomes a caveat rather than a hang.
+         */
+        const val SINK_ATTACH_MS = 2_000L
+
+        /** Poll spacing while waiting for the sink confirmation. */
+        const val SINK_POLL_MS = 20L
 
         /**
          * Idle dwell for the channel-energy sample, per channel visited.

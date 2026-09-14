@@ -16,11 +16,16 @@ import kotlin.test.assertTrue
  */
 class SandboxTest {
 
-    private fun grant(vararg caps: Capability, hosts: Set<String> = emptySet()) =
+    private fun grant(
+        vararg caps: Capability,
+        hosts: Set<String> = emptySet(),
+        experiments: Set<String> = emptySet(),
+    ) =
         CapabilityGrant(
             capabilities = caps.map { it.id }.toSet(),
             radioSessions = setOf(1),
             captureIds = setOf("cap-1"),
+            experimentIds = experiments,
             httpHosts = hosts,
         )
 
@@ -41,12 +46,13 @@ class SandboxTest {
         // `privileged: ["radio.tx"]` was scrutinising a gate that could not
         // gate. The catalogue must only contain what a step implements.
         val implemented = setOf(
-            Capability.CAPTURE_READ,   // CaptureMetricSource
-            Capability.RADIO_DESCRIBE, // RadioMetricSource
-            Capability.HTTP_GET,       // HttpPollSource
-            Capability.TIMER,          // every source is timer-driven
-            Capability.METRICS,        // Computed
-            Capability.UI,             // UiServer
+            Capability.CAPTURE_READ,    // CaptureMetricSource
+            Capability.EXPERIMENT_READ, // ExperimentMetricSource
+            Capability.RADIO_DESCRIBE,  // RadioMetricSource
+            Capability.HTTP_GET,        // HttpPollSource
+            Capability.TIMER,           // every source is timer-driven
+            Capability.METRICS,         // Computed
+            Capability.UI,              // UiServer
         )
         assertEquals(
             implemented,
@@ -150,5 +156,49 @@ class SandboxTest {
     fun `unknown metrics are rejected rather than silently returning nothing`() {
         val p = CaptureMetricSource(id = "m", captureId = "cap-1", metric = "vibes")
         assertTrue(p.validate().any { it.contains("unknown metric") })
+    }
+
+    @Test
+    fun `an experiment outside the grant is refused even with the capability`() {
+        // Holding experiment.read is not permission to read every run's
+        // result; the grant names the ids and a program handed exp-1 must not
+        // reach exp-2 by asking.
+        val g = grant(Capability.EXPERIMENT_READ, experiments = setOf("exp-1"))
+        g.requireExperiment("exp-1")
+        val e = assertFailsWith<CapabilityDeniedException> { g.requireExperiment("exp-2") }
+        assertTrue("exp-2" in (e.message ?: ""), e.message)
+    }
+
+    @Test
+    fun `an experiment source without the declared capability is caught before it runs`() {
+        val program = ScratchpadProgram(
+            name = "peek",
+            capabilities = listOf(Capability.TIMER.id),
+            sources = listOf(
+                ExperimentMetricSource(id = "d", experimentId = "exp-1", metric = "delivery_ratio"),
+            ),
+        )
+        assertTrue(Capability.EXPERIMENT_READ in program.undeclared())
+    }
+
+    @Test
+    fun `experiment source validation rejects a bad selector or metric`() {
+        val both = ExperimentMetricSource(
+            id = "d", experimentId = "exp-1", metric = "delivery_ratio",
+            point = "6M", pointIndex = 0,
+        )
+        assertTrue(both.validate().any { it.contains("either point or point_index") })
+
+        val aggregateWithPoint = ExperimentMetricSource(
+            id = "d", experimentId = "exp-1", metric = "delivery_ratio",
+            point = "6M", aggregate = "mean",
+        )
+        assertTrue(aggregateWithPoint.validate().any { it.contains("aggregate applies across") })
+
+        val bad = ExperimentMetricSource(id = "d", experimentId = "exp-1", metric = "vibes")
+        assertTrue(bad.validate().any { it.contains("unknown experiment metric") })
+
+        val noId = ExperimentMetricSource(id = "d", experimentId = "", metric = "delivery_ratio")
+        assertTrue(noId.validate().any { it.contains("experiment_id") })
     }
 }

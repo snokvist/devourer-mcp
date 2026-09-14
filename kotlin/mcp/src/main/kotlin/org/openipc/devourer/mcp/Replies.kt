@@ -216,6 +216,18 @@ internal data class ScratchpadDoc(
                     fields = listOf("id", "session", "metric", "every_ms"),
                     values = org.openipc.devourer.scratchpad.RadioMetricSource.METRICS,
                 ),
+                SourceKindDoc(
+                    kind = "experiment.metric",
+                    description = "a scalar from a granted experiment's result: one point by " +
+                        "label or index, or a reduction across every point (default last, " +
+                        "over the points that produced a value)",
+                    fields = listOf(
+                        "id", "experiment_id", "metric", "every_ms",
+                        "point (optional exact point label)", "point_index (optional)",
+                        "aggregate (optional last|first|mean|min|max|sum|count across points)",
+                    ),
+                    values = org.openipc.devourer.scratchpad.ExperimentMetricSource.METRICS,
+                ),
             ),
             widgetKinds = listOf("chart", "stat", "gauge", "table", "log"),
             expressionFunctions = listOf(
@@ -270,9 +282,22 @@ internal data class SourceKindDoc(
 
 @Serializable
 internal data class ScratchpadStarted(
+    /**
+     * The run id, repeated at the top level.
+     *
+     * It is already inside [run] as `run.id`, but `scratchpad_result`,
+     * `scratchpad_stop` and `scratchpad_promote` all take an argument named
+     * `run_id`. A caller that has to map one name to the other will eventually
+     * map it wrong, so the reply offers the exact name the next call wants.
+     */
+    @SerialName("run_id") val runId: String,
     val run: org.openipc.devourer.scratchpad.ScratchpadService.RunHandle,
     val inspection: org.openipc.devourer.scratchpad.ScratchpadService.InspectionResult,
-)
+) {
+    init {
+        require(runId == run.id) { "the run_id alias must match run.id" }
+    }
+}
 
 @Serializable
 internal data class SeriesStats(

@@ -43,6 +43,15 @@ public enum class Capability(
     /** Read live per-frame metrics from a running capture. */
     CAPTURE_READ("capture.read", "read summaries and frames from a capture this program was given"),
 
+    /**
+     * Read a finished experiment's result by id.
+     *
+     * An experiment is where a rate sweep, a power sweep or a delivery
+     * measurement actually lives. A live view that cannot see one can chart a
+     * radio's raw counters but not the run's own answer.
+     */
+    EXPERIMENT_READ("experiment.read", "read point metrics from a granted experiment result"),
+
     /** Read a radio's identity, capabilities and state. */
     RADIO_DESCRIBE("radio.describe", "read a granted radio's capability and state report"),
 
@@ -89,6 +98,8 @@ public data class CapabilityGrant(
     @SerialName("radio_sessions") val radioSessions: Set<Int> = emptySet(),
     /** Capture ids this program may read. */
     @SerialName("capture_ids") val captureIds: Set<String> = emptySet(),
+    /** Experiment ids this program may read results from. */
+    @SerialName("experiment_ids") val experimentIds: Set<String> = emptySet(),
     /** Hosts (or host:port) this program may GET. Exact match, no wildcards. */
     @SerialName("http_hosts") val httpHosts: Set<String> = emptySet(),
     /** Wall-clock ceiling on the whole run. */
@@ -120,6 +131,14 @@ public data class CapabilityGrant(
         if (id !in captureIds) {
             throw CapabilityDeniedException(
                 "capture '$id' was not granted to this program (granted: $captureIds)",
+            )
+        }
+    }
+
+    public fun requireExperiment(id: String) {
+        if (id !in experimentIds) {
+            throw CapabilityDeniedException(
+                "experiment '$id' was not granted to this program (granted: $experimentIds)",
             )
         }
     }

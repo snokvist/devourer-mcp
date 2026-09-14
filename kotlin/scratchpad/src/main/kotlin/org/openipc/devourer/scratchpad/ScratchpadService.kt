@@ -92,6 +92,8 @@ public class ScratchpadService(
                     .mapTo(this) { "capture ${it.captureId}" }
                 program.sources.filterIsInstance<RadioMetricSource>()
                     .mapTo(this) { "radio session ${it.session}" }
+                program.sources.filterIsInstance<ExperimentMetricSource>()
+                    .mapTo(this) { "experiment ${it.experimentId}" }
                 program.sources.filterIsInstance<HttpPollSource>()
                     .mapTo(this) { "http ${it.url}" }
             }.distinct(),

@@ -8,6 +8,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
 import org.openipc.devourer.protocol.AmpduMode
 import org.openipc.devourer.protocol.ChannelSpec
@@ -216,6 +217,34 @@ class LinkProbeTest {
         )
         assertEquals(2, radios.calls.count { it.startsWith("retune(1,") })
         assertEquals(2, radios.calls.count { it.startsWith("startMonitor(2,") })
+    }
+
+    @Test
+    fun `a witness collector attaches after its monitor, not before`() =
+        runTest(UnconfinedTestDispatcher()) {
+        // The bridge keeps one frame sink per session, and a later attach
+        // replaces an earlier one. Attaching the collector before the witness
+        // monitor starts leaves whatever held the sink before — a capture
+        // stopped earlier in the session, say — as the last binder, and a
+        // witness that heard every frame reads as silent.
+        val radios = fake()
+        radios.onProbe = { p ->
+            radios.deliverTo(p, to = 2, frames = 50)
+            FakeRadios.TxOutcome(accepted = p.count)
+        }
+
+        val result = LinkProbe(radios, backgroundScope).run(spec())
+
+        val monitorAt = radios.calls.indexOfFirst { it.startsWith("startMonitor(2,") }
+        val attachAt = radios.calls.indexOfFirst { it.startsWith("frames(2)") }
+        assertTrue(monitorAt >= 0, "the witness monitor must be started: ${radios.calls}")
+        assertTrue(attachAt >= 0, "the witness collector must attach: ${radios.calls}")
+        assertTrue(
+            monitorAt < attachAt,
+            "the witness collector must attach after its monitor: ${radios.calls}",
+        )
+        assertEquals(VerificationState.TX_VERIFIED, result.verification)
+        assertEquals(50, result.points.single().framesReceived)
     }
 
     @Test

@@ -127,7 +127,7 @@ brought up. Realtek reports its MAC from construction.
 ## Testing
 
 ```sh
-./gradlew test                                   # 248 Kotlin tests, one hardware-tagged
+./gradlew test                                   # 260 Kotlin tests, one hardware-tagged
 ctest --test-dir build/native-bridge             # 64 native selftests (63 vendored + radiotap layout)
 tools/mcp-verify.py                              # every MCP tool, real requests, artifacts + dashboard
 tools/smoke-test.py                              # RX path, all adapters; never passes vacuously
@@ -144,6 +144,7 @@ tools/ampdu-goodput-test.py                      # A-MPDU goodput vs both contro
 tools/stbc-test.py                               # /STBC airs and decodes on an independent monitor
 tools/narrowband-test.py                         # 5/10 MHz TX+RX witnessed, plus the width gate
 tools/multi-witness-test.py                      # two independent witnesses + the localisation note
+tools/monitor-restart-test.py                    # second monitor on a session: jaguar2 delivers nothing (known)
 tools/acceptance-matrix.py                       # demo-vs-MCP acceptance run; prints the strictly-better list
 ./gradlew :mcp:test -PwithHardware               # hardware-tagged JUnit: list/open/describe/monitor/close
 tools/tsf-test.py                                # MAC TSF read + adoption
@@ -213,7 +214,7 @@ EDCCA threshold.
 ## Picking up (2026-09-13)
 
 State: **39 MCP tools, 28 bridge ops, protocol v1.14, the bridge calls 35 of 55
-`IRadio` methods, 248 Kotlin tests + 64 native selftests.** The current bench is
+`IRadio` methods, 260 Kotlin tests + 64 native selftests.** The current bench is
 an RTL8812CU (Jaguar3), an RTL8822B (Jaguar2) and one MT7612U; the second
 MT7612U was swapped out on 2026-09-13 for the RTL8822B, because 5/10 MHz
 narrowband needs two Realteks (the MT7612U cannot do it). The 8812AU/Jaguar1
@@ -241,6 +242,9 @@ results below are history. Everything merged in PRs #10–#25.
 | MAC TSF read + adoption | `radio_tsf` (+ `set_tsf_us`) | reads all; write 8822C only |
 | Hardware beacon (arm/update/stop) | `radio_beacon` | MT7612U and RTL8822C (Jaguar3) armed, witnessed by an independent MT7612U (~30 beacons, 102.4 ms cadence, live TX-egress TSF; `update` swapped the SSID on air; quiet after stop) and by the host MT7922 on its stock kernel driver (`iw scan` + monitor capture, TSF delta 102399 µs) |
 | Whole-surface verification | `tools/mcp-verify.py` | 46/46 |
+| Witness collector attach | `experiment_link_probe` witnesses | collectors attach after their monitor and wait for the bridge's `sink_attached`; `CaptureService.stop` joins its collector — removes an attach race, does not fix the jaguar2 restart below |
+| Scratchpad experiment source | `scratchpad_run` `experiment.metric` + `experiment_ids` grant | offline: capability-gated per experiment id, point/aggregate reads, unmeasured points read absent rather than 0 |
+| Second monitor on a session | `monitor_start` on a used session | diagnosed: the RTL8822B (jaguar2) arms an RX loop that receives nothing; jaguar3/MT7612U restart cleanly; the capture is labelled with the caveat (`tools/monitor-restart-test.py`) |
 
 `tools/rxdemo-txdemo-parity.md` is the staged plan; M2 is complete, M3 is
 complete (retune/survey primitives, multi-witness evidence, narrowband 5/10 MHz
@@ -316,10 +320,17 @@ deliberately out of scope; the reasons are in the roadmap section above.
   so a byte ≥128 converts to a >17 dBm reading and can drive a bogus
   `SATURATED` verdict. The bridge flags the out-of-range window; the parser fix
   belongs upstream.
-- **MT7612U `WriteTsf` is a silent no-op.** The override calls
-  `mt7612u_write_tsf()`, which writes the same `DW0`/`DW1` the read path reads,
-  yet the value does not stick, and the method is `void`. `radio_tsf` reports
-  `took:false`; the fix belongs upstream.
+- **MT7612U `WriteTsf` is a silent no-op.** Measured: the part has no TSF load
+  path at all. Fixed upstream as a contract change —
+  [`OpenIPC/devourer#430`](https://github.com/OpenIPC/devourer/pull/430) makes
+  `IRadio::WriteTsf` return success/failure and the MT7612U report `false`.
+- **A jaguar2 monitor does not survive a stop/start.** A second
+  `monitor_start` on an RTL8822B session arms an RX loop that receives nothing
+  (0 reads in the bridge log) while jaguar3/MT7612U restart cleanly;
+  `radio_close` + `radio_open` restores it. `CaptureService` labels a restarted
+  monitor with the caveat; the fix belongs upstream. Evidence and a
+  characterization cell: `hardware-evidence.md`,
+  `tools/monitor-restart-test.py`.
 
 ### Working rules that did not change
 

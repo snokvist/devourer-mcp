@@ -11,6 +11,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import org.openipc.devourer.experiment.ExperimentException
 
 /**
  * The `experiment_link_probe` argument wiring, without radios or hardware.
@@ -84,5 +85,41 @@ class LinkProbeSpecTest {
         }
 
         assertTrue("qos_tid" in (e.message ?: ""), e.message)
+    }
+
+    @Test
+    fun `a missing rx_session is named, not sent to the bridge as -1`() {
+        // Omitting the independent receiver used to reach the bridge as
+        // session -1 and come back as "no session 4294967295", which names
+        // nothing a caller can act on.
+        val e = assertFailsWith<ExperimentException> {
+            linkProbeSpec(
+                request(
+                    buildJsonObject {
+                        put("tx_session", 1)
+                        put("channel", 6)
+                    },
+                ),
+            )
+        }
+
+        assertTrue("rx_session" in (e.message ?: ""), e.message)
+        assertTrue("independent receiver" in (e.message ?: ""), e.message)
+    }
+
+    @Test
+    fun `a missing tx_session is named`() {
+        val e = assertFailsWith<ExperimentException> {
+            linkProbeSpec(
+                request(
+                    buildJsonObject {
+                        put("rx_session", 2)
+                        put("channel", 6)
+                    },
+                ),
+            )
+        }
+
+        assertTrue("tx_session" in (e.message ?: ""), e.message)
     }
 }

@@ -1180,6 +1180,35 @@ repeated cleanly), so the conservative tools ordering stands. The follow-up, if
 it is ever worth chasing, is whether the wedge is in `SetMonitorChannel` on an
 already-up jaguar2 TX or in the feeder's re-arm.
 
+**Diagnosed: a jaguar2 monitor does not survive a stop/start — and this is
+what made a witness read 0/200.** With `monitor_start` + a 300-frame `txdemo`
+burst + `monitor_stop`, twice on the same session, the RTL8822B stores 241-290
+frames on the first monitor and **0** on the second, while the RTL8812CU (330
+then 308) and the MT7612U (300 then 300) restart cleanly. The bridge log shows
+the jaguar2 RX loop entering and exiting immediately with 0 reads, so it is a
+restart defect in the vendor RX path (`RtlJaguar2Device::StartRxLoop` after
+`StopRxLoop`), not a sink or collector problem. It is also the root cause of the
+usability trial's witness symptom: a radio that had monitored and was then used
+as an `experiment_link_probe` witness read 0/200 while an untouched radio heard
+~195-200/200, because the experiment restarts the witness monitor itself and
+hits the same defect. A `radio_close` + `radio_open` restores reception (a
+fresh session reported 246) and a non-jaguar2 witness avoids it entirely.
+Reproduce with `tools/monitor-restart-test.py`, which passes only while this
+known pattern holds; `CaptureService.start` labels a restarted monitor with the
+caveat so an empty capture is not presented as a quiet channel. The fix belongs
+upstream.
+
+**Retained hardening, which did NOT change the jaguar2 result.** `LinkProbe`
+now attaches its witness collectors after the monitors are started and waits,
+bounded, for the bridge to confirm `sink_attached` before the first point, and
+`CaptureService.stop` joins the stopped collector instead of cancelling without
+waiting. Both remove a pre-existing asynchronous-attach race (a burst could
+start before the bridge had a sink attached, and the bridge counts a frame only
+while it has one) and keep the experiment's collector as the last binder of the
+bridge's single per-session sink. They do not fix the restart defect: the same
+pre-monitored-witness run read 199/200 once and then 0/200 on a re-run, which is
+the jaguar2 restart above, not the attach race.
+
 **The acceptance matrix is met on the bench.** `tools/acceptance-matrix.py`
 runs the same measurement through `rxdemo`/`txdemo` and through MCP and
 compares. On 2026-09-14 (RTL8812CU transmitting, MT7612U as the receiver, and
@@ -1210,6 +1239,7 @@ tools/stbc-test.py               # /STBC airs and decodes on an independent moni
 tools/multi-witness-test.py      # two independent witnesses + the localisation note
 tools/narrowband-test.py         # 5/10 MHz TX+RX witnessed, plus the width gate
 tools/acceptance-matrix.py       # demo-vs-MCP acceptance run; prints the strictly-better list
+tools/monitor-restart-test.py    # second monitor on a session: jaguar2 delivers nothing (known)
 tools/tsf-test.py                # MAC TSF read + rate
 tools/beacon-test.py             # hardware beacon, decoded by an independent witness
 tools/smoke-test.py              # RX path, all adapters

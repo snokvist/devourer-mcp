@@ -42,6 +42,19 @@ public interface ScratchpadHost {
     ): Double?
 
     public suspend fun radioMetric(session: Int, metric: String): Double?
+
+    /**
+     * A scalar from a granted experiment's result. Null while the run is still
+     * in flight or has no value for that metric; throws when there is no such
+     * experiment at all, so a typo does not read as an empty series.
+     */
+    public suspend fun experimentMetric(
+        experimentId: String,
+        metric: String,
+        point: String?,
+        pointIndex: Int?,
+        aggregate: String?,
+    ): Double?
 }
 
 /**
@@ -141,8 +154,20 @@ public class Interpreter(
         delay((source.id.hashCode().toLong() and 0x7f))
         while (currentCoroutineIsActive()) {
             val t0 = System.currentTimeMillis()
-            runCatching { sample(source, state) }
-                .onFailure { state.log("${source.id}: ${it.message ?: it::class.simpleName}") }
+            try {
+                sample(source, state)
+            } catch (e: CapabilityDeniedException) {
+                // A program reaching for something it was not granted is fatal
+                // to the run, not a sample to skip and retry: it is a defect in
+                // the program or its grant, and continuing would flood the log
+                // with the same denial every period.
+                state.log("${source.id}: ${e.message}")
+                state.log("stopping the run: ${e.message}")
+                state.requestStop()
+                return
+            } catch (e: Exception) {
+                state.log("${source.id}: ${e.message ?: e::class.simpleName}")
+            }
             val spent = System.currentTimeMillis() - t0
             delay((source.everyMs - spent).coerceAtLeast(10))
         }
@@ -173,6 +198,27 @@ public class Interpreter(
                 if (v == null) state.noteEmpty(source.id, "radio session ${source.session} " +
                     "returned no value for metric '${source.metric}'")
                 else state.record(source.id, v)
+            }
+
+            is ExperimentMetricSource -> {
+                grant.require(Capability.EXPERIMENT_READ, "read experiment results")
+                grant.requireExperiment(source.experimentId)
+                val v = host.experimentMetric(
+                    source.experimentId,
+                    source.metric,
+                    source.point,
+                    source.pointIndex,
+                    source.aggregate,
+                )
+                if (v == null) {
+                    state.noteEmpty(
+                        source.id,
+                        "experiment '${source.experimentId}' returned no value for metric " +
+                            "'${source.metric}'",
+                    )
+                } else {
+                    state.record(source.id, v)
+                }
             }
 
             is HttpPollSource -> {
