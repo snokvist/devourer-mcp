@@ -127,7 +127,7 @@ brought up. Realtek reports its MAC from construction.
 ## Testing
 
 ```sh
-./gradlew test                                   # 247 Kotlin tests, no hardware
+./gradlew test                                   # 248 Kotlin tests, one hardware-tagged
 ctest --test-dir build/native-bridge             # 64 native selftests (63 vendored + radiotap layout)
 tools/mcp-verify.py                              # every MCP tool, real requests, artifacts + dashboard
 tools/smoke-test.py                              # RX path, all adapters; never passes vacuously
@@ -145,6 +145,7 @@ tools/stbc-test.py                               # /STBC airs and decodes on an 
 tools/narrowband-test.py                         # 5/10 MHz TX+RX witnessed, plus the width gate
 tools/multi-witness-test.py                      # two independent witnesses + the localisation note
 tools/acceptance-matrix.py                       # demo-vs-MCP acceptance run; prints the strictly-better list
+./gradlew :mcp:test -PwithHardware               # hardware-tagged JUnit: list/open/describe/monitor/close
 tools/tsf-test.py                                # MAC TSF read + adoption
 tools/beacon-test.py                             # hardware beacon, decoded by an independent witness
 tools/stall-test.py / tools/backpressure-test.py # sink stops reading / sustained overload
@@ -212,7 +213,7 @@ EDCCA threshold.
 ## Picking up (2026-09-13)
 
 State: **39 MCP tools, 28 bridge ops, protocol v1.14, the bridge calls 35 of 55
-`IRadio` methods, 247 Kotlin tests + 64 native selftests.** The current bench is
+`IRadio` methods, 248 Kotlin tests + 64 native selftests.** The current bench is
 an RTL8812CU (Jaguar3), an RTL8822B (Jaguar2) and one MT7612U; the second
 MT7612U was swapped out on 2026-09-13 for the RTL8822B, because 5/10 MHz
 narrowband needs two Realteks (the MT7612U cannot do it). The 8812AU/Jaguar1
@@ -293,7 +294,11 @@ are done and the gate is met; the only remaining item is the optional step 6.
    verdict "not materially worse" within an explicit band (max 15% or 25
    frames), and the strictly-better list prints on every run. Full table:
    `docs/rxdemo-txdemo-parity.md` "The acceptance test".
-6. Optional: convert the Python hardware checks to the JUnit `hardware` tag.
+6. **Optional: hardware-tagged JUnit — seed done.** `HardwareSmokeTest` (in
+   `:mcp`) is tagged `hardware`, runs list → open → describe → monitor → close
+   against the real bridge with `./gradlew :mcp:test -PwithHardware`, and skips
+   when the bridge or adapters are absent. The Python checks remain the full
+   hardware runs; converting them all onto the tag is still open.
 
 Already done and independently verified this session: M6 beacons
 (`radio_beacon` + `tools/beacon-test.py`, plus the host MT7922 as an

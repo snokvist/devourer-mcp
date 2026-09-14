@@ -17,7 +17,8 @@ LLM ──MCP(stdio)──▶ Kotlin runtime ──UDS──▶ devourer-bridge 
 ```
 
 39 MCP tools across DISCOVER / OBSERVE / INSPECT / TRANSMIT / EXPERIMENT /
-CHARACTERIZE / BUILD TOOL. 247 offline tests plus 64 native selftests (63
+CHARACTERIZE / BUILD TOOL. 248 Kotlin tests (one hardware-tagged, excluded
+unless `-PwithHardware`) plus 64 native selftests (63
 vendored Devourer selftests and the bridge's radiotap-layout test), none of
 which need hardware. Three hardware tests that refuse to
 pass vacuously: the end-to-end smoke test, a stalled-sink test, and a
@@ -173,9 +174,12 @@ point of the comparison. The per-milestone tables in
    engine — MCP is strictly better, and the matrix prints that list every run.
    The full table and gate statement are in `docs/rxdemo-txdemo-parity.md`; it
    stays a documented hardware run, never a unit test.
-6. **Optional: hardware-tagged JUnit.** The `hardware` tag exists but nothing
-   carries it; converting the Python hardware checks would make the parity
-   matrix a gated CI target rather than a set of scripts.
+6. **Optional: hardware-tagged JUnit — seed done.** The `hardware` tag now has
+   its first carrier: `kotlin/mcp/src/test/.../HardwareSmokeTest.kt` walks
+   list → open → describe → monitor → close through the real bridge, excluded
+   unless `-PwithHardware` and skipping (`UNAVAILABLE`, not a failure) when the
+   bridge or an adapter is absent. The Python harnesses remain the full
+   hardware runs; converting them wholesale onto the tag is still open.
 
 Out of scope, decided: **AP/station association** (needs a probe/auth/assoc
 responder, which the instrument does not expose — see the M6 note above) and
