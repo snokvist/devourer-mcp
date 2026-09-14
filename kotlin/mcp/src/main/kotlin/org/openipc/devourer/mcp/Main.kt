@@ -97,7 +97,14 @@ public fun main(args: Array<String>): Unit = runBlocking {
         ?: Path.of(System.getProperty("user.dir"), "var", "characterization")
     val evidence = EvidenceStore(evidenceDir)
     val varDir = evidenceDir.parent ?: Path.of(System.getProperty("user.dir"), "var")
-    val scratchpads = ScratchpadService(McpScratchpadHost(radios, captures), scope, varDir)
+    // Constructed before the scratchpads: a program may read a granted
+    // experiment's result, so the host needs the runner.
+    val experiments = ExperimentRunner(scope)
+    val scratchpads = ScratchpadService(
+        McpScratchpadHost(radios, captures, experiments),
+        scope,
+        varDir,
+    )
 
     val server = Server(
         serverInfo = Implementation(
@@ -110,7 +117,6 @@ public fun main(args: Array<String>): Unit = runBlocking {
         ),
         instructions = INSTRUCTIONS,
     )
-    val experiments = ExperimentRunner(scope)
     Tools(radios, captures, exportDir, scope, evidence, scratchpads, experiments, activity)
         .registerAll(server)
 

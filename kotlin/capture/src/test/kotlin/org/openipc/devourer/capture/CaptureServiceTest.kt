@@ -80,4 +80,52 @@ class CaptureServiceTest {
         assertTrue(captures.discard(capture.id))
         assertNull(captures.get(capture.id))
     }
+
+    @Test
+    fun `a restarted monitor is labelled, not presented as a quiet channel`() = runTest {
+        // On the jaguar2 bench a second monitor on a session receives nothing.
+        // An empty capture must carry that possibility rather than looking
+        // like channel silence.
+        val radios = FakeRadios(listOf(realtek))
+        val captures = CaptureService(radios, backgroundScope)
+
+        val first = captures.start(1, ChannelSpec(6))
+        assertTrue(
+            first.capabilityNote?.contains("restarted") != true,
+            "a first capture is not a restart: ${first.capabilityNote}",
+        )
+        captures.stop(first.id)
+
+        val second = captures.start(1, ChannelSpec(6))
+        assertTrue(
+            second.capabilityNote?.contains("restarted") == true,
+            "a restarted monitor must say so: ${second.capabilityNote}",
+        )
+        assertTrue(
+            second.capabilityNote?.contains("radio_close") == true,
+            second.capabilityNote!!,
+        )
+    }
+
+    @Test
+    fun `stop releases the session's frame stream before it returns`() = runTest {
+        // The bridge keeps one frame sink per session and a later attach
+        // replaces it. A stopped capture that still holds that sink is the
+        // state that made an experiment's witness read as silent, so
+        // "stopped" must mean the session's frame stream is free.
+        val radios = FakeRadios(listOf(realtek))
+        val captures = CaptureService(radios, backgroundScope)
+
+        val capture = captures.start(1, ChannelSpec(6))
+        radios.awaitCollector(1)
+        assertEquals(1, radios.collectorCount(1))
+
+        captures.stop(capture.id)
+
+        assertEquals(
+            0,
+            radios.collectorCount(1),
+            "a stopped capture must not still hold the session's frame stream",
+        )
+    }
 }

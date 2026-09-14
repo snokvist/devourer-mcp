@@ -28,6 +28,7 @@ public object ScratchpadJson {
     public val module: SerializersModule = SerializersModule {
         polymorphic(Source::class) {
             subclass(CaptureMetricSource::class)
+            subclass(ExperimentMetricSource::class)
             subclass(HttpPollSource::class)
             subclass(RadioMetricSource::class)
         }

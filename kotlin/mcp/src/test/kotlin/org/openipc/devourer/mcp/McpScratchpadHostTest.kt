@@ -5,10 +5,17 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.test.runTest
 import org.openipc.devourer.capture.CaptureService
+import org.openipc.devourer.experiment.ExperimentBounds
+import org.openipc.devourer.experiment.ExperimentResult
+import org.openipc.devourer.experiment.ExperimentRunner
+import org.openipc.devourer.experiment.PointResult
 import org.openipc.devourer.protocol.ChannelSpec
 import org.openipc.devourer.radio.FakeRadios
+import org.openipc.devourer.radio.VerificationState
 
 /**
  * What a scratchpad can read, and what it is told when there is nothing there.
@@ -20,10 +27,11 @@ import org.openipc.devourer.radio.FakeRadios
  */
 class McpScratchpadHostTest {
 
-    private suspend fun host(
+    private fun host(
         radios: FakeRadios,
         captures: CaptureService,
-    ) = McpScratchpadHost(radios, captures)
+        experiments: ExperimentRunner = ExperimentRunner(CoroutineScope(SupervisorJob())),
+    ) = McpScratchpadHost(radios, captures, experiments)
 
     @Test
     fun `a mistyped capture id is an error, not an empty reading`() = runTest {
@@ -89,5 +97,100 @@ class McpScratchpadHostTest {
         assertNull(h.radioMetric(2, "no_such_metric"))
         // A session that does not exist must not read as a measured zero.
         assertNull(h.radioMetric(99, "monitor_frames"))
+    }
+
+    private fun finished(id: String, points: List<PointResult>) = ExperimentResult(
+        id = id,
+        kind = "link_probe",
+        startedAtEpochMs = 0,
+        durationMs = 1,
+        roles = emptyMap(),
+        channel = "ch6",
+        bounds = ExperimentBounds(),
+        points = points,
+        verification = VerificationState.TX_VERIFIED,
+        conclusion = "ok",
+    )
+
+    private fun point(
+        label: String,
+        delivery: Double?,
+        frames: Int?,
+        accepted: Int = 0,
+    ) = PointResult(
+        point = label,
+        framesSent = 100,
+        framesReceived = frames,
+        deliveryRatio = delivery,
+        txAccepted = accepted,
+    )
+
+    @Test
+    fun `an experiment metric reads one point, a reduction, or null`() = runTest {
+        val radios = FakeRadios(listOf(FakeRadios.realtek(1)))
+        val captures = CaptureService(radios, backgroundScope)
+        val runner = ExperimentRunner(backgroundScope)
+        runner.start("exp-1", "link_probe", totalPoints = 3) {
+            finished(
+                "exp-1",
+                listOf(
+                    point("6M", 1.0, 100, accepted = 100),
+                    point("MCS7/20", 0.5, 50, accepted = 50),
+                    // An unmeasured point: frames_received and delivery stay
+                    // null, and must not read as zeros.
+                    point("MCS9/20", null, null),
+                ),
+            )
+        }
+        runner.await("exp-1")
+
+        val h = host(radios, captures, runner)
+        assertEquals(0.5, h.experimentMetric("exp-1", "delivery_ratio", "MCS7/20", null, null))
+        assertEquals(50.0, h.experimentMetric("exp-1", "frames_received", null, 1, null))
+        // mean over measured points only: the null point is not a zero.
+        assertEquals(0.75, h.experimentMetric("exp-1", "delivery_ratio", null, null, "mean"))
+        // count is the number of points that produced a value, the same set
+        // every other aggregate reduces over.
+        assertEquals(2.0, h.experimentMetric("exp-1", "delivery_ratio", null, null, "count"))
+        assertNull(h.experimentMetric("exp-1", "delivery_ratio", "not-a-point", null, null))
+        assertNull(h.experimentMetric("exp-1", "delivery_ratio", "MCS9/20", null, null))
+        assertNull(h.experimentMetric("exp-1", "no_such_metric", null, null, null))
+
+        // A counter metric on the unmeasured point must be absent too: its
+        // PointResult counters hold 0 defaults, and reporting one would
+        // fabricate a measurement. Over the measured points, count is 2.
+        assertNull(h.experimentMetric("exp-1", "tx_accepted", "MCS9/20", null, null))
+        assertEquals(2.0, h.experimentMetric("exp-1", "tx_accepted", null, null, "count"))
+        assertEquals(150.0, h.experimentMetric("exp-1", "tx_accepted", null, null, "sum"))
+    }
+
+    @Test
+    fun `a running experiment has no result to read, and an unknown id is a fault`() = runTest {
+        val radios = FakeRadios(listOf(FakeRadios.realtek(1)))
+        val captures = CaptureService(radios, backgroundScope)
+        val runner = ExperimentRunner(backgroundScope)
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        runner.start("exp-run", "link_probe", totalPoints = 1) { sink ->
+            sink.startingPoint("6M")
+            gate.await()
+            finished("exp-run", listOf(point("6M", 1.0, 100)))
+        }
+        testScheduler.runCurrent()
+
+        val h = host(radios, captures, runner)
+        // In flight: nothing published yet, so null rather than a stale or
+        // invented value.
+        assertNull(h.experimentMetric("exp-run", "delivery_ratio", null, null, null))
+
+        // Never ran in this session: a fault that names what did run.
+        val e = assertFailsWith<IllegalStateException> {
+            h.experimentMetric("exp-typo", "delivery_ratio", null, null, null)
+        }
+        assertTrue("no experiment 'exp-typo'" in e.message!!, e.message)
+
+        gate.complete(Unit)
+        testScheduler.runCurrent()
+        runner.await("exp-run")
+        assertEquals(1.0, h.experimentMetric("exp-run", "delivery_ratio", null, null, null))
     }
 }

@@ -3,6 +3,7 @@ package org.openipc.devourer.experiment
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.Transient
+import org.openipc.devourer.protocol.AmpduState
 import org.openipc.devourer.protocol.ChannelSpec
 import org.openipc.devourer.protocol.RxEnergy
 import org.openipc.devourer.radio.VerificationState
@@ -225,6 +226,20 @@ public data class ExperimentResult(
      * result that did not say which would be unusable later.
      */
     @SerialName("carrier_sense_enabled") val carrierSenseEnabled: Boolean = true,
+    /**
+     * The QoS TID the probe frames carried, when they were QoS Data.
+     *
+     * Recorded because it changes what a goodput number means: a QoS frame
+     * gives the MAC a TID to aggregate under, which a plain data frame does
+     * not. [ampdu] says whether aggregation was actually armed.
+     */
+    @SerialName("qos_tid") val qosTid: Int? = null,
+    /**
+     * The transmitter's A-MPDU state at the start of the run, when [qosTid] is
+     * set. A QoS run with aggregation off is a valid single-MPDU measurement,
+     * and this field is what keeps it from being read as an A-MPDU one.
+     */
+    @SerialName("ampdu") val ampdu: AmpduState? = null,
     val bounds: ExperimentBounds,
     val points: List<PointResult>,
     val verification: VerificationState,

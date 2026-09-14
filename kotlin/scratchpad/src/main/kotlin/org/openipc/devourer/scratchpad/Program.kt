@@ -208,6 +208,74 @@ public data class RadioMetricSource(
     }
 }
 
+/**
+ * A scalar read from a finished experiment's result.
+ *
+ * The experiment engine is where rate sweeps, power sweeps and delivery
+ * measurements live; without this a live view can chart a radio's raw counters
+ * but not the answer a run produced. Reads one metric from one point, or
+ * reduces it across every point.
+ */
+@Serializable
+@SerialName("experiment.metric")
+public data class ExperimentMetricSource(
+    override val id: String,
+    @SerialName("experiment_id") val experimentId: String,
+    /**
+     * One of: delivery_ratio, frames_received, goodput_bytes_per_sec,
+     * rssi_mean, snr_mean, tx_accepted, crc_errors, duplicates, out_of_order,
+     * longest_gap.
+     */
+    val metric: String,
+    @SerialName("every_ms") override val everyMs: Long = 1_000,
+    /** Exact `PointResult.point` label to read, e.g. "MCS7/20". */
+    val point: String? = null,
+    /** Zero-based index into the result's points. */
+    @SerialName("point_index") val pointIndex: Int? = null,
+    /**
+     * How to reduce across every point when neither [point] nor [pointIndex] is
+     * given. One of last|first|mean|min|max|sum|count; default last. Every
+     * aggregate reduces over the points that produced a value for this metric;
+     * an unmeasured point is not a zero, and `count` counts only those.
+     */
+    val aggregate: String? = null,
+) : Source {
+    override fun validate(): List<String> = buildList {
+        if (experimentId.isBlank()) add("'$id' needs an experiment_id")
+        if (metric !in METRICS) {
+            add("unknown experiment metric '$metric' for '$id' (have: $METRICS)")
+        }
+        if (everyMs !in 50..600_000) add("'$id' every_ms must be 50..600000")
+        if (point != null && pointIndex != null) {
+            add("'$id' takes either point or point_index, not both")
+        }
+        if (point != null && point.isBlank()) add("'$id' point must not be blank")
+        if (pointIndex != null && pointIndex < 0) add("'$id' point_index must be >= 0")
+        if (aggregate != null && (point != null || pointIndex != null)) {
+            add("'$id' aggregate applies across points; drop point/point_index")
+        }
+        if (aggregate != null && aggregate !in AGGREGATES) {
+            add("unknown aggregate '$aggregate' for '$id' (have: $AGGREGATES)")
+        }
+    }
+
+    override fun requires(): Set<Capability> = setOf(Capability.EXPERIMENT_READ)
+
+    public companion object {
+        // Duplicated from the experiment module on purpose: the sandbox module
+        // does not depend on :experiment, so the interpreter only ever sees a
+        // primitive Double returned by its host.
+        public val METRICS: List<String> = listOf(
+            "delivery_ratio", "frames_received", "goodput_bytes_per_sec",
+            "rssi_mean", "snr_mean", "tx_accepted", "crc_errors",
+            "duplicates", "out_of_order", "longest_gap",
+        )
+        public val AGGREGATES: List<String> = listOf(
+            "last", "first", "mean", "min", "max", "sum", "count",
+        )
+    }
+}
+
 /** A value derived from other series by a bounded arithmetic expression. */
 @Serializable
 public data class Computed(

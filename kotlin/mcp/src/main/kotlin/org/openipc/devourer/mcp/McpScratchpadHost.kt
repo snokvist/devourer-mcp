@@ -1,6 +1,8 @@
 package org.openipc.devourer.mcp
 
 import org.openipc.devourer.capture.FrameQuery
+import org.openipc.devourer.experiment.ExperimentRunner
+import org.openipc.devourer.experiment.PointResult
 import org.openipc.devourer.radio.Radios
 import org.openipc.devourer.scratchpad.ScratchpadHost
 import org.openipc.devourer.capture.CaptureService
@@ -16,6 +18,7 @@ import org.openipc.devourer.capture.CaptureService
 internal class McpScratchpadHost(
     private val radios: Radios,
     private val captures: CaptureService,
+    private val experiments: ExperimentRunner,
 ) : ScratchpadHost {
 
     override suspend fun captureMetric(
@@ -84,5 +87,70 @@ internal class McpScratchpadHost(
         "monitor_frames" -> runCatching { radios.stats(session).frames.toDouble() }.getOrNull()
         "monitor_dropped" -> runCatching { radios.stats(session).dropped.toDouble() }.getOrNull()
         else -> null
+    }
+
+    override suspend fun experimentMetric(
+        experimentId: String,
+        metric: String,
+        point: String?,
+        pointIndex: Int?,
+        aggregate: String?,
+    ): Double? {
+        val result = experiments.result(experimentId)
+        if (result == null) {
+            // A run still in flight publishes no points, and one that failed or
+            // was cancelled keeps none — both read as null. Only an id this
+            // session never ran is a fault, and it says which.
+            if (experiments.progress(experimentId) != null) return null
+            throw IllegalStateException(
+                "no experiment '$experimentId' (this session ran: " +
+                    experiments.all().joinToString(", ") { it.id }.ifEmpty { "none" } + ")",
+            )
+        }
+        val points = result.points
+        val selected = when {
+            point != null -> points.firstOrNull { it.point == point }
+            pointIndex != null -> points.getOrNull(pointIndex)
+            else -> null
+        }
+        if (selected != null) return pointValue(selected, metric)
+        // A point selector that matched nothing is null, not a reduction: the
+        // caller asked about one point, and no point is not the same as all of
+        // them averaged.
+        if (point != null || pointIndex != null) return null
+
+        val values = points.mapNotNull { pointValue(it, metric) }
+        if (values.isEmpty()) return null
+        return when (aggregate ?: "last") {
+            "first" -> values.first()
+            "last" -> values.last()
+            "mean" -> values.average()
+            "min" -> values.min()
+            "max" -> values.max()
+            "sum" -> values.sum()
+            "count" -> values.size.toDouble()
+            else -> null
+        }
+    }
+
+    private fun pointValue(p: PointResult, metric: String): Double? {
+        // frames_received is null exactly when the point was never measured
+        // (a timeout, say), and an unmeasured point's counters still hold
+        // their 0 defaults. Reading one would report a fabrication, so every
+        // metric is absent for that point.
+        val frames = p.framesReceived ?: return null
+        return when (metric) {
+            "delivery_ratio" -> p.deliveryRatio
+            "frames_received" -> frames.toDouble()
+            "goodput_bytes_per_sec" -> p.goodputBytesPerSec
+            "rssi_mean" -> p.rssiMean
+            "snr_mean" -> p.snrMean
+            "tx_accepted" -> p.txAccepted.toDouble()
+            "crc_errors" -> p.crcErrors.toDouble()
+            "duplicates" -> p.duplicates.toDouble()
+            "out_of_order" -> p.outOfOrder.toDouble()
+            "longest_gap" -> p.longestGap.toDouble()
+            else -> null
+        }
     }
 }

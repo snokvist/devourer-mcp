@@ -455,8 +455,18 @@ public class FakeRadios(radios: List<OpenRadio> = emptyList()) : Radios {
         return info
     }
 
-    override fun frames(session: Int): Flow<FrameRecord> =
-        stream(session)
+    override fun frames(session: Int): Flow<FrameRecord> {
+        record("frames", "$session")
+        return stream(session)
+    }
+
+    /**
+     * How many collectors are currently subscribed to a session's frame
+     * stream. Production keeps one bridge sink per session, so a session whose
+     * count is nonzero is a session whose frames belong to whoever attached
+     * last — the state a stopped capture must not leave behind.
+     */
+    public fun collectorCount(session: Int): Int = stream(session).subscriptionCount.value
 
     override suspend fun sendProbe(
         session: Int,

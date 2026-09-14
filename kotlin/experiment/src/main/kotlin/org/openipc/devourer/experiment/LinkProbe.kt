@@ -13,6 +13,7 @@ import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import org.openipc.devourer.protocol.AmpduState
 import org.openipc.devourer.protocol.ChannelSpec
 import org.openipc.devourer.protocol.FrameRecord
 import org.openipc.devourer.protocol.RxEnergy
@@ -61,6 +62,31 @@ public class LinkProbe(
 
         if (!tx.capabilities.tx.supported) {
             throw ExperimentException("${tx.label} reports no TX capability")
+        }
+
+        // A QoS frame gives the A-MPDU engine a TID to aggregate under, but the
+        // mode itself is armed by radio_ampdu, not here. Read the state this run
+        // inherits and say plainly whether aggregation was actually on: goodput
+        // from a single-MPDU run is a different fact from an aggregated one, and
+        // a result that did not distinguish them could not be used as evidence.
+        val ampduAtStart: AmpduState? = if (spec.qosTid == null) {
+            null
+        } else {
+            val state = runCatching { radios.ampdu(spec.transmitter) }.getOrNull()
+            val aggregated = state != null && state.capability == "supported" &&
+                state.enabled && state.tid == spec.qosTid
+            if (!aggregated) {
+                val how = state?.let {
+                    "the transmitter reports capability=${it.capability}, " +
+                        "enabled=${it.enabled}, tid=${it.tid}"
+                } ?: "the transmitter's A-MPDU state could not be read"
+                caveats += "qos_tid ${spec.qosTid} was requested, but this run was NOT " +
+                    "aggregated: $how. The delivery ratio is real, but " +
+                    "goodput_bytes_per_sec is a single-MPDU QoS figure, not an A-MPDU " +
+                    "one. Arm radio_ampdu with tid ${spec.qosTid} (after bringing the " +
+                    "radio up) and re-run to measure aggregation."
+            }
+            state
         }
 
         // The power envelope is family-specific, so validate every requested
@@ -138,14 +164,16 @@ public class LinkProbe(
         val channelEnergy = mutableMapOf<String, RxEnergy?>()
         var truncated = false
         var tuned: String? = null
-        // One collector per witness for the whole run, started before any
-        // transmission so nothing is missed between points.
+        var collectorsStarted = false
+        // One collector per witness for the whole run. They attach only after
+        // their monitors are started (below): the bridge keeps one frame sink
+        // per session and a later attach replaces the earlier one, so the
+        // experiment's collector must be the last binder — a capture that was
+        // stopped but whose collector has not finished unwinding must not
+        // supersede it. The launch is asynchronous, so awaitSinks() waits for
+        // the bridge to confirm the sink before anything is transmitted.
         val jobs = mutableListOf<Job>()
         try {
-            witnesses.forEach { w ->
-                jobs += scope.launch { radios.frames(w.session).collect { w.offer(it) } }
-            }
-
             for (point in points) {
                 if (System.currentTimeMillis() - started > spec.bounds.maxDurationMs) {
                     truncated = true
@@ -158,6 +186,13 @@ public class LinkProbe(
                 if (point.channel.text != tuned) {
                     retuneAll(spec, witnesses, point.channel.spec())
                     tuned = point.channel.text
+                    if (!collectorsStarted) {
+                        witnesses.forEach { w ->
+                            jobs += scope.launch { radios.frames(w.session).collect { w.offer(it) } }
+                        }
+                        awaitSinks(witnesses, caveats)
+                        collectorsStarted = true
+                    }
                     channelEnergy[point.channel.text] = idleEnergy(spec.transmitter)
                 }
 
@@ -264,7 +299,7 @@ public class LinkProbe(
             }
         }
 
-        return conclude(id, started, tx, witnesses, spec, points, results, caveats, truncated)
+        return conclude(id, started, tx, witnesses, spec, points, results, caveats, truncated, ampduAtStart)
     }
 
     /**
@@ -299,6 +334,33 @@ public class LinkProbe(
                 safety = safety,
             ),
         )
+    }
+
+    /**
+     * Waits for each witness's frame sink to be attached, briefly.
+     *
+     * [radios.frames] opens its bridge channel asynchronously, and the bridge
+     * counts a frame only while a sink is attached — a burst that starts
+     * before the attach lands has its first frames discarded and the point
+     * under-counts. Asked of the bridge rather than a sleep, so a healthy
+     * attach costs a round trip and a missing one is named instead of silently
+     * losing frames.
+     */
+    private suspend fun awaitSinks(witnesses: List<Witness>, caveats: MutableList<String>) {
+        for (w in witnesses) {
+            val deadline = System.currentTimeMillis() + SINK_ATTACH_MS
+            var attached = false
+            while (!attached && System.currentTimeMillis() < deadline) {
+                attached = runCatching { radios.stats(w.session).sinkAttached }.getOrDefault(false)
+                if (!attached) delay(SINK_POLL_MS)
+            }
+            if (!attached) {
+                caveats += "${w.role} (session ${w.session}) did not confirm its frame sink " +
+                    "within ${SINK_ATTACH_MS}ms. The run still measures what that witness " +
+                    "reports, but its first point may under-count: frames aired before the " +
+                    "attach are discarded by the bridge."
+            }
+        }
     }
 
     private suspend fun retuneAll(
@@ -348,14 +410,16 @@ public class LinkProbe(
         powerApplied: Int?,
     ): PointResult {
         witnesses.forEach { it.reset() }
-        val frameHex = ProbeFrame.toHex(ProbeFrame.build(runId, point.frameBytes))
+        val frameHex = ProbeFrame.toHex(
+            ProbeFrame.build(runId, point.frameBytes, spec.qosTid),
+        )
         val txResult: JsonObject = radios.sendProbe(
             session = spec.transmitter,
             frameHex = frameHex,
             mode = point.mode,
             count = spec.bounds.framesPerPoint,
             intervalUs = point.intervalUs,
-            sequenceOffset = ProbeFrame.SEQUENCE_OFFSET,
+            sequenceOffset = ProbeFrame.sequenceOffset(spec.qosTid),
             batch = spec.batch,
             pktPowerDb = spec.pktPowerDb,
         )
@@ -416,6 +480,7 @@ public class LinkProbe(
         points: List<PointResult>,
         caveats: MutableList<String>,
         truncated: Boolean,
+        ampdu: AmpduState?,
     ): ExperimentResult {
         val measured = points.filter { it.deliveryRatio != null }
         val best = measured.maxByOrNull { it.deliveryRatio ?: 0.0 }
@@ -492,6 +557,8 @@ public class LinkProbe(
             caveats = caveats,
             truncated = truncated,
             carrierSenseEnabled = spec.carrierSense,
+            qosTid = spec.qosTid,
+            ampdu = ampdu,
         )
     }
 
@@ -532,6 +599,16 @@ public class LinkProbe(
     private companion object {
         /** How long cleanup waits for a frame collector to stop. */
         const val CLEANUP_JOIN_MS = 5_000L
+
+        /**
+         * How long to wait for a witness collector to confirm its frame sink.
+         * A round trip on a healthy bridge; the bound exists so a missing sink
+         * becomes a caveat rather than a hang.
+         */
+        const val SINK_ATTACH_MS = 2_000L
+
+        /** Poll spacing while waiting for the sink confirmation. */
+        const val SINK_POLL_MS = 20L
 
         /**
          * Idle dwell for the channel-energy sample, per channel visited.

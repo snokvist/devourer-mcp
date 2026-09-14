@@ -62,6 +62,18 @@ class ExperimentSpecTest {
     }
 
     @Test
+    fun `a qos_tid outside the A-MPDU space is refused up front`() {
+        val e = assertFailsWith<ExperimentException> {
+            ExperimentSpec(
+                roles = mapOf(RadioRole.TX_PEER to 1, RadioRole.RX_PEER to 2),
+                basePoint = base,
+                qosTid = 8,
+            )
+        }
+        assertTrue("qos_tid" in e.message!!, e.message)
+    }
+
+    @Test
     fun `witnesses come back with RX_PEER first`() {
         val s = spec(
             mapOf(

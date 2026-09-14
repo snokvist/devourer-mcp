@@ -39,6 +39,34 @@ class ProgramTest {
     }
 
     @Test
+    fun `an experiment source round-trips through the production JSON`() {
+        // The subclass registration is the whole wire format: without it a
+        // `{"kind":"experiment.metric"}` program fails to decode, and a
+        // decoded source that lost its experiment id would read the wrong run.
+        val p = ScratchpadProgram(
+            name = "p",
+            capabilities = listOf("timer", "experiment.read"),
+            sources = listOf(
+                ExperimentMetricSource(
+                    id = "delivery",
+                    experimentId = "exp-7",
+                    metric = "delivery_ratio",
+                    point = "MCS7/20",
+                ),
+            ),
+        )
+        val text = ScratchpadJson.format.encodeToString(ScratchpadProgram.serializer(), p)
+        val back = ScratchpadJson.format.decodeFromString(ScratchpadProgram.serializer(), text)
+        val source = back.sources.single() as ExperimentMetricSource
+
+        assertEquals("exp-7", source.experimentId)
+        assertEquals("MCS7/20", source.point)
+        assertEquals(setOf("delivery"), back.seriesIds())
+        assertTrue(Capability.EXPERIMENT_READ in back.requiredCapabilities())
+        assertEquals(emptySet(), back.undeclared())
+    }
+
+    @Test
     fun `a widget charting a derived http series validates`() {
         val p = program().copy(
             ui = UiSpec(

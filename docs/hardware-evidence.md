@@ -11,22 +11,28 @@ vendored source compiles; that is the least interesting thing we know.
 
 | Adapter | USB id | Backend | State | Evidence |
 |---|---|---|---|---|
-| Realtek RTL8812CU | `0bda:c812` | jaguar3 (rtl8822c, chip-id 0x13) | `TX_VERIFIED`, `RX_VERIFIED` | RX: 46 frames / 4.8 s smoke. TX: 100% at 6M–MCS7 on ch6/20, witnessed by both MT7612U simultaneously, carrier sense on. Gain clamp and gate split driven from MCP |
-| MediaTek MT7612U ×2 | `0e8d:7612` | mt7612u | `TX_VERIFIED` | RX: 5905–20890 frames / 10 s. TX: 99–100% delivery witnessed by the Realtek |
+| Realtek RTL8812CU | `0bda:c812` | jaguar3 (rtl8822c, chip-id 0x13) | `TX_VERIFIED`, `RX_VERIFIED` | RX: 46 frames / 4.8 s smoke. TX: 100% at 6M–MCS7 on ch6/20, witnessed (then by both MT7612U), carrier sense on. Gain clamp and gate split driven from MCP. Later the STBC/decode and narrowband TX for the post-swap bench |
+| Realtek RTL8822B (8822BU) | `0bda:b812` | jaguar2 (rtl8822b, chip-id 0x0a) | `TX_VERIFIED`, `RX_VERIFIED` | Added 2026-09-13 as the second narrowband radio. STBC decode monitor for `tools/stbc-test.py` (control `stbc=0`, `/STBC` `stbc=1`); narrowband 5/10 MHz TX+RX |
+| MediaTek MT7612U ×1 | `0e8d:7612` | mt7612u | `TX_VERIFIED` | RX: 5905–20890 frames / 10 s. TX: 99–100% delivery witnessed by the Realtek. The second unit was swapped for the RTL8822B on 2026-09-13 |
 | Everything else devourer implements | — | — | `UNAVAILABLE` | no hardware present |
+
+`tools/stbc-test.py` and `tools/narrowband-test.py` are the repeatable checks
+for the RTL8822B entries; both refuse to pass without an independent receiver.
 
 TX_VERIFIED here means what the ladder says: an *independent* adapter received
 tagged frames off the air. No radio was allowed to witness itself.
 
 **The RTL8812AU (Jaguar1) left the bench on 2026-09-13**, replaced by the
-RTL8812CU above. Every "8812AU"/Jaguar1 result further down is a record of
-that part and stays valid as history; the current bench has no Jaguar1
-adapter, so a Jaguar1-specific claim is `UNAVAILABLE` to re-test here.
+RTL8812CU above. The same day one MT7612U left, replaced by the RTL8822B, so
+the current bench is RTL8812CU + RTL8822B + one MT7612U. Every "8812AU"/Jaguar1
+result further down is a record of that part and stays valid as history; the
+current bench has no Jaguar1 adapter, so a Jaguar1-specific claim is
+`UNAVAILABLE` to re-test here.
 
 ## The bench
 
-Ambient traffic, 4 s per channel, measured on all three adapters (the Realtek
-then was the 8812A; the current Realtek is the 8812CU):
+Occupancy snapshot from before the 2026-09-13 swap — three adapters then were
+the 8812A and two MT7612U — kept as history:
 
 | Adapter | ch1 | ch6 | ch11 |
 |---|---|---|---|
@@ -971,14 +977,43 @@ That is the ARQ loop closed in hardware — a nonzero `tx_retry_limit` plus the
 ACK responder — and the receipts tier is what makes it visible; no host-side
 counter can see hardware retries.
 
-**The deep feeder is built but A-MPDU goodput is not yet shown.**
-`radio_open` now takes `usb_agg` (USB TX aggregation) and `experiment_link_probe`
-takes `batch:true`, which submits through `IRadio::send_packets` instead of a
-per-frame loop; the experiment also reports `goodput_bytes_per_sec` (delivered
-payload over the burst). But the probe frames the experiment builds are plain
-data frames, not QoS data, and A-MPDU formation needs a TID/QoS frame — so
-arming `radio_ampdu` with this feeder showed no goodput gain. QoS probe frames
-are the missing piece.
+**A-MPDU goodput is now shown, with QoS probe frames and an honest label.**
+`ProbeFrame` builds a QoS Data form whose QoS control field names the TID the
+A-MPDU engine aggregates under (and the tag/counter move with the header, which
+is parsed from the frame's own control field). `tools/ampdu-goodput-test.py`
+arms `radio_ampdu` (tid 0, max 16) on an RTL8822C, then runs the deep feeder
+(`usb_agg 16`, `experiment_link_probe batch:true`, 2000 frames x 1000 B) at two
+PHY rates and compares delivered payload against both A-MPDU-off controls —
+plain data frames and QoS frames with the mode cleared — with an independent
+MT7612U as the witness:
+
+- MCS7/20, run 4: plain 4.89 MB/s, QoS-not-aggregated 4.85 MB/s, A-MPDU
+  6.54 MB/s — +33.8% over the best control.
+- MCS7/20, run 5: 4.91 / 4.91 / 6.47 MB/s — +31.7%.
+- MCS7/20, run 6: 4.94 / 4.91 / 6.67 MB/s — +35.1%, after the script was
+  restructured to pick its transmitter by capability (jaguar3). Three runs on
+  the same bench minutes apart give **~+32–35%**, consistent with the vendor's
+  ~+30% at high MCS. Quoting one run as *the* result would overstate what a
+  single run supports.
+- MCS0/20: 0.79 / 0.79 / 0.73 MB/s — no gain, as expected: per-MPDU airtime
+  dominates at a low rate, so preamble amortization has little to win. The
+  script reports this rather than requiring a gain at every rate.
+- Delivery was 1.000 in every condition at MCS7; witness RSSI ~62 (magnitude).
+  A later re-run of the hardened script reproduced it (6.60 vs 4.96 MB/s,
+  +33.0%), inside the band.
+- This is a **broadcast, no-ack measurement**: the probe's RA is broadcast, so
+  nothing is ACKed, and `radio_ampdu no_ack` defaults true — no Block Ack, no
+  retransmission, and no ARQ claim (see "No-ack semantics" below). The gain is
+  delivered payload observed by a witness, not a conformant A-MPDU+BA link.
+- The armed run *reports itself* as armed: `capability=supported,
+  enabled=true, tid=0` with no caveat, and the A-MPDU-off control carries the
+  "NOT aggregated ... single-MPDU figure" caveat. That value is a transmitter
+  software-state read (`radios.ampdu()`), **not air evidence** — the witness
+  goodput is the air evidence. The labelling is load-bearing: the same goodput
+  number means different things aggregated and not, and `LinkProbe` reads
+  `radios.ampdu()` at run start so a result can never imply aggregation that
+  was not armed. A QoS run with no armed mode is still valid; it is just
+  labelled a single-MPDU measurement.
 
 **Per-packet TX power works — after a radiotap presence-bit bug was fixed.**
 `experiment_link_probe` accepts the per-frame radiotap `DBM_TX_POWER`
@@ -998,6 +1033,199 @@ the frame at full power while the reply reads as success. (The `LinkProbeTest`
 fixture for this adds the capability explicitly, because the 8812AU fixture
 models a part that does not have it.)
 
+**STBC airs and an independent receiver decodes it.**
+The mode grammar already carried `/STBC`; what was missing was proof it reaches
+the air. `tools/stbc-test.py` runs `experiment_link_probe` twice from the
+RTL8822C (jaguar3, `stbc_ok` true, 2 TX chains), with an MT7612U as the
+independent peer witness and the RTL8822B monitor-capturing the same channel.
+`frame_inspect` on the captured probe frames, which the monitor decodes
+independently of the transmitter's own descriptor:
+
+- control `MCS0/20`: 362 decoded DVRX probes, **all `stbc=0`**.
+- `MCS0/20/STBC`: 357 decoded DVRX probes, **all `stbc=1`**.
+
+Both runs were `TX_VERIFIED` by the MT7612U peer (0.99 and 1.00 delivery); the
+counts vary with capture completeness from run to run, so what matters is that
+every probe in an arm carries the same flag.
+The plain control is what makes the decode mean something: it rules out a
+receiver that flags STBC unconditionally.
+
+**Two independent witnesses, first-class through MCP.**
+`experiment_link_probe` takes `rx_session` plus optional `witness_sessions`; the
+result names every role and, with more than one witness, emits a note comparing
+them. `tools/multi-witness-test.py` runs it on the bench: an RTL8822C
+transmits, an RTL8822B and an MT7612U both monitor the same burst. Both heard
+it (253 and 300 of 300 in the validating run; 289 and 299 in an earlier one),
+delivery 0.84–0.96, `TX_VERIFIED`, and the result carries the two-witness
+sentence — *disagreed by up to 47 frames*, so the loss is not purely
+transmit-side, which is the call a single receiver cannot make. Frame-for-frame
+agreement would say the opposite (the missing frames were never aired). No demo
+can run two witnesses at once.
+
+**Narrowband 5/10 MHz, TX and RX, witnessed on an independent receiver.**
+`tools/narrowband-test.py` runs `experiment_link_probe` at 10 and 5 MHz on the
+post-swap pair — RTL8822C (jaguar3) and RTL8822B (jaguar2), the two
+narrowband-capable radios; the MT7612U has no 5/10 MHz encoding at all. On
+ch6, 6M:
+
+- `--jaguar2-width 10`: 10 MHz j3 → j2 196/200 (0.98); 5 MHz j3 → j2 199/200
+  (0.995, attempt 2); gate refused naming the width; 10 MHz j2 → j3 198/200
+  (0.99).
+- `--jaguar2-width 5`: 10 MHz j3 → j2 197/200 (0.985, attempt 2); 5 MHz j3 → j2
+  180/200 (0.900); gate refused; 5 MHz j2 → j3 200/200 (1.000).
+
+The reverse arm is one width per invocation (`--jaguar2-width`), so the two runs
+above together cover **both directions at both widths**; the replug check
+independently ran the jaguar2 as transmitter three sequential times in one
+session (10 MHz 199/200, 5 MHz 200/200, 5 MHz 200/200). Across earlier runs the
+10 MHz j3→j2 arm gave 0.92–0.99 (287/300 and 275/300).
+
+Narrowband RX on this bench is intermittent: the same 10 MHz jaguar3→jaguar2
+arm delivered 0/300 in one run and 0.957 in a later one, and 0.983 at 5 MHz
+immediately after a 10 MHz miss with no state change in between. The script
+therefore retries a required arm once and prints when a retry was needed. The
+retry must itself deliver (≥0.5) — an arm that fails every attempt is a
+failure — and because a retry can turn an intermittent miss into a pass, the
+transcript names it (`delivered on attempt 2`), so a marginal link is visible
+rather than laundered.
+
+A receiver's *reported* width proves nothing (vendor `docs/narrowband.md`), so
+the evidence is that an independent narrowband receiver decoded the frames. The
+script also proves the gate: the MT7612U is refused as a 5 MHz witness
+("cannot use 5MHz channels: it supports 20, 40, 80MHz") rather than silently
+capturing wide. A gate that cannot be exercised is a failure, not a silent pass.
+
+**The jaguar2 TX wedge is a stuck chip state, cleared by a power cycle.**
+The failure is in the jaguar2 TX submit path — the host accepts every frame
+and nothing airs. A `radio_close`+`radio_open` did not clear it either; only a
+VBUS power cycle did (2026-09-14 replug).
+After the replug (a VBUS power cycle) the same jaguar2 accepted **three
+sequential** `experiment_link_probe` runs as transmitter in one session and
+all three delivered: 10 MHz 199/200, 5 MHz 200/200, 5 MHz 200/200, all
+`TX_VERIFIED`. So it is neither a per-run limit nor session-scoped; it is a
+chip condition a hard power cycle clears, which the multi-run tools avoid by
+preferring a jaguar3 transmitter. `tools/narrowband-test.py` still runs its
+one jaguar2 TX arm last and treats a zero-delivery first attempt as a CAVEAT
+that leaves that direction unverified (it is never counted as a pass, and a
+retry cannot earn the carve-out) — conservative on a wedged chip, and on the
+fresh chip the reverse direction is now verified at both widths.
+
+**The absolute noise floor stays blocked, and says so.**
+`radio_open noise_floor:true` plus `channel_energy` is the path. On the
+2026-09-14 bench both Realteks reported `valid_noise_floor:false`. The reasons
+are per-generation: on **Jaguar1** the vendor CAL that fills the absolute floor
+runs inside `IRadio::Init`, and this bridge brings radios up with `InitWrite` +
+`StartRxLoop`, so it never runs (the bridge's reason string says this); on
+**Jaguar2** the live report is best-effort in `GetRxEnergy` and was simply
+unpopulated in monitor mode here; **Jaguar3** has no absolute-floor report in
+this path in vendor source. The MT7612U reports the counter family unsupported. What is usable is `igi`, the
+AGC initial-gain index, a relative floor proxy: 30 on the jaguar3 (bottom of
+its range, maximum gain) and 52 on the jaguar2 in the same read-out. Moving
+Jaguar1 bring-up onto `Init` is the unstarted fix; until then an absolute dBm
+floor is `UNAVAILABLE`, not a number.
+
+**No-ack is the retry-limit-0 state, and it has two faces.**
+Two knobs express it at different scopes, and neither is a mode of its own:
+
+- `radio_open tx_retry_limit` (0..63, default 0) is the per-frame hardware
+  retry limit. 0 submits the frame once and never retransmits; a nonzero limit
+  is what turns on the MAC's autonomous retransmission, and it only closes a
+  loop when an ACK/BlockAck responder is armed (`radio_ack_responder`). Retries
+  then show up as `retries` in `radio_tx_receipts`, invisible to any host
+  counter.
+- `radio_ampdu no_ack` (default true) is the same retry-limit-0 stance inside
+  the aggregation recipe: broadcast / no-BlockAck A-MPDU.
+
+Consequences the instrument must not blur:
+
+1. A no-ack frame has no ACK to infer delivery from. `radio_tx_receipts`
+   reports retries 0 and (with `tx_report`) a state that says nothing about the
+   air; delivery is only a claim when an independent receiver saw the frames —
+   the witness `delivery_ratio` / `goodput_bytes_per_sec` tier.
+2. `retries` is only meaningful with `tx_retry_limit > 0` and a responder
+   armed. On a no-ack frame, zero is the configured truth, not a measurement.
+3. A-MPDU goodput measured under `no_ack` is a delivery measurement, not ARQ.
+   The two are orthogonal: ARQ is `retry_limit > 0` + responder; goodput is
+   `no_ack` + deep feed.
+
+Decision: keep both defaults (0 / true) for probe and experiment TX —
+deterministic bursts, no retries inflating a count or hiding a loss behind a
+retransmission — and reserve nonzero `tx_retry_limit` + responder for the ARQ
+measurement itself. The QoS-control ack-policy bits are deliberately not
+surfaced as a third knob: the no-ack recipe is retry-limit-based, so there is
+one place to reason about retransmission.
+
+**Diagnosed: a jaguar2 transmitter can wedge in a stuck TX state, and a power
+cycle clears it.** Found while building the STBC test on the post-swap bench.
+With the RTL8822B (jaguar2) as `tx_session` in that session, the first run
+delivered (~0.99) and later runs reported `frames_received: 0` /
+`verification: FAILED` while
+`tx_accepted` still equals `frames_sent` — the host submitted and nothing
+reached the witness. The identical sequence with the RTL8822C (jaguar3) as TX
+delivers 0.995 / 1.000 / 1.000 across three runs. A later narrowband run showed
+a `radio_close` + `radio_open` does **not** clear it (the reopened jaguar2 still
+accepted every frame and reached no witness), so it is chip-state, not
+session-scoped — consistent with devourer's "the chip retains state across soft
+re-init" note. `tools/ampdu-goodput-test.py`, `tools/stbc-test.py` and
+`tools/narrowband-test.py` therefore prefer a jaguar3 transmitter for their
+multi-run arms.
+
+Then the 2026-09-14 replug settled it: a VBUS power cycle clears the condition.
+On the fresh chip the jaguar2 accepted **three sequential** `experiment_link_probe`
+runs as transmitter in one session, all `TX_VERIFIED` (10 MHz 199/200, 5 MHz
+200/200, 5 MHz 200/200). So the wedge is not a per-run limit and not permanent;
+it is a stuck state a hard power cycle resets. A receiver-only blast radius was
+also seen once (an arm immediately after a jaguar2 TX arm failed and then
+repeated cleanly), so the conservative tools ordering stands. The follow-up, if
+it is ever worth chasing, is whether the wedge is in `SetMonitorChannel` on an
+already-up jaguar2 TX or in the feeder's re-arm.
+
+**Diagnosed: a jaguar2 monitor does not survive a stop/start — and this is
+what made a witness read 0/200.** With `monitor_start` + a 300-frame `txdemo`
+burst + `monitor_stop`, twice on the same session, the RTL8822B stores 241-290
+frames on the first monitor and **0** on the second, while the RTL8812CU (330
+then 308) and the MT7612U (300 then 300) restart cleanly. The bridge log shows
+the jaguar2 RX loop entering and exiting immediately with 0 reads, so it is a
+restart defect in the vendor RX path (`RtlJaguar2Device::StartRxLoop` after
+`StopRxLoop`), not a sink or collector problem. It is also the root cause of the
+usability trial's witness symptom: a radio that had monitored and was then used
+as an `experiment_link_probe` witness read 0/200 while an untouched radio heard
+~195-200/200, because the experiment restarts the witness monitor itself and
+hits the same defect. A `radio_close` + `radio_open` restores reception (a
+fresh session reported 246) and a non-jaguar2 witness avoids it entirely.
+Reproduce with `tools/monitor-restart-test.py`, which passes only while this
+known pattern holds; `CaptureService.start` labels a restarted monitor with the
+caveat so an empty capture is not presented as a quiet channel. The fix belongs
+upstream.
+
+**Retained hardening, which did NOT change the jaguar2 result.** `LinkProbe`
+now attaches its witness collectors after the monitors are started and waits,
+bounded, for the bridge to confirm `sink_attached` before the first point, and
+`CaptureService.stop` joins the stopped collector instead of cancelling without
+waiting. Both remove a pre-existing asynchronous-attach race (a burst could
+start before the bridge had a sink attached, and the bridge counts a frame only
+while it has one) and keep the experiment's collector as the last binder of the
+bridge's single per-session sink. They do not fix the restart defect: the same
+pre-monitored-witness run read 199/200 once and then 0/200 on a re-run, which is
+the jaguar2 restart above, not the attach race.
+
+**The acceptance matrix is met on the bench.** `tools/acceptance-matrix.py`
+runs the same measurement through `rxdemo`/`txdemo` and through MCP and
+compares. On 2026-09-14 (RTL8812CU transmitting, MT7612U as the receiver, and
+the RTL8822B as the monitor, ch6, 200-frame bursts of the same 200-byte QoS
+Data PSDU, best of two repetitions): on the same radio the MCP capture heard
+200/200 at both 6M and MCS7/20 while rxdemo's own count varied (100–200 heard
+across repetitions, never ahead of the capture); the TX plane's same-monitor
+counts were 185 vs the demo's 194 at 6M and 160 vs 183 at MCS7/20, while the
+MCP peer witness independently decoded the same rate (4 and 19) with
+0.98/0.995 delivery and `TX_VERIFIED`. Every MCP capture reported zero ring
+evictions and zero bridge drops. Comparison is by decoded count, not ratio,
+because a demo's `submitted` includes ~50 bring-up submissions. The gate
+statement is "not materially worse" within an explicit band (max 15% or 25
+frames), not identical — the demo column is submission-only, so the
+witness/verification surface is strictly better. Full table:
+`docs/rxdemo-txdemo-parity.md` "The acceptance test".
+
 ## Reproducing
 
 ```sh
@@ -1006,6 +1234,12 @@ tools/host/bridge-ctl.sh start
 tools/mcp-verify.py              # every tool, real requests, artifacts + dashboard
 tools/ack-responder-test.py      # hardware ACK responder arm/clear + safety gate
 tools/ampdu-test.py              # A-MPDU read/enable/clear + capability tri-state
+tools/ampdu-goodput-test.py      # QoS probe frames, A-MPDU goodput vs A-MPDU-off
+tools/stbc-test.py               # /STBC airs and decodes on an independent monitor
+tools/multi-witness-test.py      # two independent witnesses + the localisation note
+tools/narrowband-test.py         # 5/10 MHz TX+RX witnessed, plus the width gate
+tools/acceptance-matrix.py       # demo-vs-MCP acceptance run; prints the strictly-better list
+tools/monitor-restart-test.py    # second monitor on a session: jaguar2 delivers nothing (known)
 tools/tsf-test.py                # MAC TSF read + rate
 tools/beacon-test.py             # hardware beacon, decoded by an independent witness
 tools/smoke-test.py              # RX path, all adapters

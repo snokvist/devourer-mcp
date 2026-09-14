@@ -53,6 +53,14 @@ class DashboardTest {
         ): Double? = null
 
         override suspend fun radioMetric(session: Int, metric: String): Double? = null
+
+        override suspend fun experimentMetric(
+            experimentId: String,
+            metric: String,
+            point: String?,
+            pointIndex: Int?,
+            aggregate: String?,
+        ): Double? = null
     }
 
     private class Bench(val scope: CoroutineScope) : AutoCloseable {
