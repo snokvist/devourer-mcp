@@ -131,23 +131,32 @@ point of the comparison. The per-milestone tables in
    as such. The result also records the transmitter's `ampdu` state and labels
    a non-aggregated QoS run as single-MPDU (see `hardware-evidence.md`).
 2. **M4 loose ends — done.** STBC airs and decodes on an independent monitor
-   (`tools/stbc-test.py`: control `stbc=0` ×293 vs `/STBC` `stbc=1` ×292), and
+   (`tools/stbc-test.py`: every decoded probe is `stbc=0` on the control and
+   `stbc=1` on the `/STBC` arm — hundreds each, counts vary per run), and
    no-ack semantics are documented as the retry-limit-0 state that
    `tx_retry_limit:0` and `AmpduMode.no_ack` share. Open follow-up, recorded in
    `hardware-evidence.md`: a jaguar2 transmitter wedges on the second
    `experiment_link_probe` in a session, so the multi-run tools prefer jaguar3.
-3. **Multi-witness role in `LinkProbe`.** The two-witness run that settled the
-   carrier-sense question was done by hand at the bridge. Making it first-class
-   closes a plan item and is what the earlier carrier-sense work needed. The
-   open antenna question it was also meant to settle (`hardware-evidence.md`,
-   "which MT7612U board has four antennas") is now **UNAVAILABLE**: the second
-   MT7612U was swapped for the RTL8822B, and one board cannot be compared with
-   itself. A demo cannot do multi-witness at all, which is the "strictly
-   better" half of the gate.
-4. **M3 remainders.** Narrowband (5/10 MHz) as an open argument / width path,
-   verified TX+RX on J1/J3 with a witness. The absolute noise floor stays
-   blocked on the bring-up path (`Init` vs `InitWrite`); either move bring-up
-   onto `Init` or keep it recorded as blocked with the reason.
+3. **Multi-witness role in `LinkProbe` — done.** Roles were already first-class
+   in the API (`rx_session` + `witness_sessions` map to `RX_PEER`/`MONITOR`),
+   and `tools/multi-witness-test.py` now proves it on hardware: one RTL8822C
+   transmitter, both independent receivers decode the same burst (253/300 and 300/300
+   in the validating run, delivery 0.84–0.96), and the result carries the two-witness
+   agreement/disagreement note that localises the loss. The open antenna
+   question it was also meant to settle (`hardware-evidence.md`, "which
+   MT7612U board has four antennas") is now **UNAVAILABLE**: the second MT7612U
+   was swapped for the RTL8822B, and one board cannot be compared with itself.
+   A demo cannot do multi-witness at all, which is the "strictly better" half
+   of the gate.
+4. **M3 remainders — done.** Narrowband 5/10 MHz TX+RX is verified on the
+   post-swap pair (RTL8822C jaguar3 + RTL8822B jaguar2) by
+   `tools/narrowband-test.py`: 10 MHz 0.92–0.99, 5 MHz 0.990 forward, 5 MHz 1.000
+   reverse, and the MT7612U is refused as a 5 MHz witness rather than capturing
+   wide. J1 is gone from the bench, so the original "on J1/J3" wording is
+   `UNAVAILABLE` for J1. The absolute noise floor stays blocked on the bring-up
+   path (`Init` vs `InitWrite`) and is now recorded with the measured reason and
+   the `igi` relative proxy (`hardware-evidence.md`); moving bring-up onto
+   `Init` remains the unstarted fix.
 5. **Run the acceptance matrix.** For each capability, drive `rxdemo`/`txdemo`
    with the equivalent env knobs and the MCP tool, and compare on the bench.
    `tools/smoke-test.py` and `tools/mcp-verify.py` are the shape. Where the demo

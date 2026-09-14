@@ -1050,6 +1050,71 @@ every probe in an arm carries the same flag.
 The plain control is what makes the decode mean something: it rules out a
 receiver that flags STBC unconditionally.
 
+**Two independent witnesses, first-class through MCP.**
+`experiment_link_probe` takes `rx_session` plus optional `witness_sessions`; the
+result names every role and, with more than one witness, emits a note comparing
+them. `tools/multi-witness-test.py` runs it on the bench: an RTL8822C
+transmits, an RTL8822B and an MT7612U both monitor the same burst. Both heard
+it (253 and 300 of 300 in the validating run; 289 and 299 in an earlier one),
+delivery 0.84–0.96, `TX_VERIFIED`, and the result carries the two-witness
+sentence — *disagreed by up to 47 frames*, so the loss is not purely
+transmit-side, which is the call a single receiver cannot make. Frame-for-frame
+agreement would say the opposite (the missing frames were never aired). No demo
+can run two witnesses at once.
+
+**Narrowband 5/10 MHz, TX and RX, witnessed on an independent receiver.**
+`tools/narrowband-test.py` runs `experiment_link_probe` at 10 and 5 MHz on the
+post-swap pair — RTL8822C (jaguar3) and RTL8822B (jaguar2), the two
+narrowband-capable radios; the MT7612U has no 5/10 MHz encoding at all. On
+ch6, 6M:
+
+- 10 MHz, jaguar3 → jaguar2: 0.92–0.99 across runs (287/300 and 275/300).
+- 5 MHz, jaguar3 → jaguar2: 297/300 (0.990).
+- 5 MHz, jaguar2 → jaguar3: 300/300 (1.000) — the reverse direction.
+- Earlier runs of the same 10 MHz arm gave 0.96 / 0.98 / 0.99, so the number
+  is stable when the arm gets a clean slot.
+
+Narrowband RX on this bench is intermittent: the same 10 MHz jaguar3→jaguar2
+arm delivered 0/300 in one run and 0.957 in a later one, and 0.983 at 5 MHz
+immediately after a 10 MHz miss with no state change in between. The script
+therefore retries a required arm once and prints when a retry was needed. The
+retry must itself deliver (≥0.5) — an arm that fails every attempt is a
+failure — and because a retry can turn an intermittent miss into a pass, the
+transcript names it (`delivered on attempt 2`), so a marginal link is visible
+rather than laundered.
+
+A receiver's *reported* width proves nothing (vendor `docs/narrowband.md`), so
+the evidence is that an independent narrowband receiver decoded the frames. The
+script also proves the gate: the MT7612U is refused as a 5 MHz witness
+("cannot use 5MHz channels: it supports 20, 40, 80MHz") rather than silently
+capturing wide. A gate that cannot be exercised is a failure, not a silent pass.
+
+Ordering matters and is encoded in the script: the jaguar2's one TX experiment
+runs last. The reproducible failure is in the jaguar2 TX submit path — the host
+accepts every frame and nothing airs. Its blast radius is not strictly
+transmit-only: an arm that follows a jaguar2 TX arm can also fail, once, even
+with the jaguar2 as receiver (a 10 MHz jaguar3→jaguar2 arm failed immediately
+after a jaguar2 TX arm and repeated cleanly, 0.98–0.99, when it ran first), and
+the next arm recovered. So the script runs exactly one jaguar2 TX arm, last,
+and nothing required rides behind it. When that arm's first attempt accepts
+every frame and reaches no witness, the script prints a CAVEAT and leaves the
+reverse direction **unverified** for the run — it is not counted as a pass, and
+a retry cannot earn the carve-out.
+
+**The absolute noise floor stays blocked, and says so.**
+`radio_open noise_floor:true` plus `channel_energy` is the path. On the
+2026-09-14 bench both Realteks reported `valid_noise_floor:false`. The reasons
+are per-generation: on **Jaguar1** the vendor CAL that fills the absolute floor
+runs inside `IRadio::Init`, and this bridge brings radios up with `InitWrite` +
+`StartRxLoop`, so it never runs (the bridge's reason string says this); on
+**Jaguar2** the live report is best-effort in `GetRxEnergy` and was simply
+unpopulated in monitor mode here; **Jaguar3** has no absolute-floor report in
+this path in vendor source. The MT7612U reports the counter family unsupported. What is usable is `igi`, the
+AGC initial-gain index, a relative floor proxy: 30 on the jaguar3 (bottom of
+its range, maximum gain) and 52 on the jaguar2 in the same read-out. Moving
+Jaguar1 bring-up onto `Init` is the unstarted fix; until then an absolute dBm
+floor is `UNAVAILABLE`, not a number.
+
 **No-ack is the retry-limit-0 state, and it has two faces.**
 Two knobs express it at different scopes, and neither is a mode of its own:
 
@@ -1094,6 +1159,15 @@ jaguar3 transmitter, so their multi-run comparisons are valid. The follow-up is
 to find whether the wedge is in `SetMonitorChannel` on an already-up jaguar2 TX
 or in the feeder's re-arm.
 
+A later narrowband run added two facts. A `radio_close` + `radio_open` between
+arms does **not** clear it: the reopened jaguar2 still accepted every frame and
+reached no witness, so the wedge is chip-state-scoped (it survives a soft
+re-init, consistent with devourer's "the chip retains state across soft
+re-init" note) rather than session-scoped — a VBUS power cycle is the likely
+reset, not a reopen. And the persistent failure is in the TX submit path; the
+receiving role itself keeps working, except that one arm immediately after a
+jaguar2 TX arm can also fail (see the narrowband paragraph above).
+
 ## Reproducing
 
 ```sh
@@ -1104,6 +1178,8 @@ tools/ack-responder-test.py      # hardware ACK responder arm/clear + safety gat
 tools/ampdu-test.py              # A-MPDU read/enable/clear + capability tri-state
 tools/ampdu-goodput-test.py      # QoS probe frames, A-MPDU goodput vs A-MPDU-off
 tools/stbc-test.py               # /STBC airs and decodes on an independent monitor
+tools/multi-witness-test.py      # two independent witnesses + the localisation note
+tools/narrowband-test.py         # 5/10 MHz TX+RX witnessed, plus the width gate
 tools/tsf-test.py                # MAC TSF read + rate
 tools/beacon-test.py             # hardware beacon, decoded by an independent witness
 tools/smoke-test.py              # RX path, all adapters

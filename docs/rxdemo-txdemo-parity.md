@@ -60,8 +60,9 @@ what later milestones build on.
 | `FastRetune` | `HOP_FAST` (non-FH use) | **Done**: `radio_fast_retune` | — | Same-band hop: 21 ms lean on the 8822C vs ~130 ms full retune |
 | `FastSetBandwidth` | `NB_BW` | **Done**: `radio_fast_bandwidth` | Capability-gated on the adapter's widths | 20<->5/10 toggle; refused on a 20/40/80 adapter |
 | Spectrum sweep | `RX_SWEEP`, `RX_SWEEP_DWELL_MS`, `RX_SWEEP_FULL` | **Done**: `spectrum_sweep` dwells channels via `FastRetune` | — | Survey ch1/6/11 on the 8822C; quietest ch11 (cca 31 vs 128/172) |
-| Absolute noise floor | `RX_NOISE_FLOOR` | Open arg only, unreachable pre-`Init` | blocked on bring-up path (`Init` vs `InitWrite`) | Compare to the meter on a quiet channel |
-| Narrowband | `NB_BW/ADC/DAC` | Gap | open arg / channel width | 5/10 MHz TX+RX on J1/J3, witnessed |
+| Absolute noise floor | `RX_NOISE_FLOOR` | `noise_floor` at open; `channel_energy` reports `valid_noise_floor:false` with why | blocked on bring-up path (`Init` vs `InitWrite`) | Attempted on both Realteks: not populated (the vendor CAL never runs); `igi` is the usable relative proxy (30 jaguar3 / 52 jaguar2) |
+| Narrowband | `NB_BW/ADC/DAC` | **Done**: `experiment_link_probe width_mhz` 5/10 | — | `tools/narrowband-test.py`: 10 MHz 0.92–0.99, 5 MHz 0.990 forward and 5 MHz 1.000 reverse (jaguar3 ↔ jaguar2), and a 20/40/80-only MT7612U is refused as a 5 MHz witness |
+| Multi-witness link probe | — | **Done**: `experiment_link_probe` `rx_session` + `witness_sessions` map to `RX_PEER`/`MONITOR`, and the result carries the two-witness localisation note | — | `tools/multi-witness-test.py`: RTL8822C TX, RTL8822B + MT7612U both decode it (253/300 and 300/300 in the validating run), delivery 0.84–0.96, `TX_VERIFIED` |
 
 ### M4 — MAC features that change what a burst *is*
 
