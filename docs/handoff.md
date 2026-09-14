@@ -127,7 +127,7 @@ brought up. Realtek reports its MAC from construction.
 ## Testing
 
 ```sh
-./gradlew test                                   # 260 Kotlin tests, one hardware-tagged
+./gradlew test                                   # 261 Kotlin tests, one hardware-tagged
 ctest --test-dir build/native-bridge             # 64 native selftests (63 vendored + radiotap layout)
 tools/mcp-verify.py                              # every MCP tool, real requests, artifacts + dashboard
 tools/smoke-test.py                              # RX path, all adapters; never passes vacuously
@@ -214,7 +214,7 @@ EDCCA threshold.
 ## Picking up (2026-09-13)
 
 State: **39 MCP tools, 28 bridge ops, protocol v1.14, the bridge calls 35 of 55
-`IRadio` methods, 260 Kotlin tests + 64 native selftests.** The current bench is
+`IRadio` methods, 261 Kotlin tests + 64 native selftests.** The current bench is
 an RTL8812CU (Jaguar3), an RTL8822B (Jaguar2) and one MT7612U; the second
 MT7612U was swapped out on 2026-09-13 for the RTL8822B, because 5/10 MHz
 narrowband needs two Realteks (the MT7612U cannot do it). The 8812AU/Jaguar1
