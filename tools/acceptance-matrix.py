@@ -335,7 +335,7 @@ def main():
         print(f"  MCP RX      B: {B['usb_id']} bus{B['bus']}   (monitor/witness)")
 
         # The TX plane reuses T's session for several link probes; a jaguar2
-        # wedges on the second run (hardware-evidence.md, the OPEN finding), so
+        # wedges on the second run (hardware-evidence.md, the Diagnosed finding), so
         # a jaguar3 transmitter is a precondition, not a preference.
         probe_t = open_radio(c, T)
         if probe_t is None:

@@ -135,9 +135,12 @@ point of the comparison. The per-milestone tables in
    (`tools/stbc-test.py`: every decoded probe is `stbc=0` on the control and
    `stbc=1` on the `/STBC` arm — hundreds each, counts vary per run), and
    no-ack semantics are documented as the retry-limit-0 state that
-   `tx_retry_limit:0` and `AmpduMode.no_ack` share. Open follow-up, recorded in
-   `hardware-evidence.md`: a jaguar2 transmitter wedges on the second
-   `experiment_link_probe` in a session, so the multi-run tools prefer jaguar3.
+   `tx_retry_limit:0` and `AmpduMode.no_ack` share. Recorded in
+   `hardware-evidence.md`: a jaguar2 transmitter can stick in a TX state where
+   every frame is accepted and nothing airs; a `radio_close`/`radio_open` does
+   not clear it but a VBUS power cycle does (after the 2026-09-14 replug three
+   sequential jaguar2 TX runs all delivered), so the multi-run tools prefer
+   jaguar3.
 3. **Multi-witness role in `LinkProbe` — done.** Roles were already first-class
    in the API (`rx_session` + `witness_sessions` map to `RX_PEER`/`MONITOR`),
    and `tools/multi-witness-test.py` now proves it on hardware: one RTL8822C
@@ -149,15 +152,17 @@ point of the comparison. The per-milestone tables in
    was swapped for the RTL8822B, and one board cannot be compared with itself.
    A demo cannot do multi-witness at all, which is the "strictly better" half
    of the gate.
-4. **M3 remainders — done.** Narrowband 5/10 MHz TX+RX is verified on the
-   post-swap pair (RTL8822C jaguar3 + RTL8822B jaguar2) by
-   `tools/narrowband-test.py`: 10 MHz 0.92–0.99, 5 MHz 0.990 forward, 5 MHz 1.000
-   reverse, and the MT7612U is refused as a 5 MHz witness rather than capturing
-   wide. J1 is gone from the bench, so the original "on J1/J3" wording is
-   `UNAVAILABLE` for J1. The absolute noise floor stays blocked on the bring-up
-   path (`Init` vs `InitWrite`) and is now recorded with the measured reason and
-   the `igi` relative proxy (`hardware-evidence.md`); moving bring-up onto
-   `Init` remains the unstarted fix.
+4. **M3 remainders — done.** Narrowband 5/10 MHz TX+RX is verified in both
+   directions at both widths on the post-swap pair (RTL8822C jaguar3 + RTL8822B
+   jaguar2) by `tools/narrowband-test.py` (the reverse width is selected per
+   `--jaguar2-width` run): 10 MHz 0.98 forward / 0.99 reverse,
+   5 MHz 0.995 forward / 1.000 reverse, and the MT7612U is refused as a 5 MHz
+   witness rather than capturing wide. J1 is gone from the bench, so the
+   original "on J1/J3" wording is `UNAVAILABLE` for J1. The absolute noise
+   floor stays blocked on the bring-up path (`Init` vs `InitWrite`) and is now
+   recorded with the measured reason and the `igi` relative proxy
+   (`hardware-evidence.md`); moving bring-up onto `Init` remains the unstarted
+   fix.
 5. **Run the acceptance matrix — done, gate met.** `tools/acceptance-matrix.py`
    drives `rxdemo`/`txdemo` and the MCP equivalent on the same bench and
    compares decoded counts on the *same* receiver, both arms sending the same

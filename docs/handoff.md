@@ -236,7 +236,7 @@ results below are history. Everything merged in PRs #10–#25.
 | A-MPDU goodput | `ProbeFrame` QoS form + `experiment_link_probe qos_tid` | +32–35% at MCS7/20 vs both A-MPDU-off controls (three runs), independent witness; broadcast/no-ack, and the result records the armed state |
 | STBC | mode grammar `/STBC` | airs and decodes: control `stbc=0` ×362 vs `/STBC` `stbc=1` ×357 on an independent RTL8822B monitor (`tools/stbc-test.py`; counts vary per run, every probe in an arm agrees) |
 | Multi-witness link probe | `experiment_link_probe.rx_session` + `witness_sessions` | RTL8822C TX, RTL8822B + MT7612U both decode it (253/300 and 300/300, delivery 0.84–0.96), result carries the two-witness localisation note (`tools/multi-witness-test.py`) |
-| Narrowband 5/10 MHz | `experiment_link_probe width_mhz` | 10 MHz 0.92–0.99, 5 MHz 0.990 forward and 5 MHz 1.000 reverse on RTL8822C ↔ RTL8822B; MT7612U refused as a 5 MHz witness (`tools/narrowband-test.py`) |
+| Narrowband 5/10 MHz | `experiment_link_probe width_mhz` | both directions at both widths on RTL8822C ↔ RTL8822B (10 MHz 0.98/0.99, 5 MHz 0.995/1.000); MT7612U refused as a 5 MHz witness (`tools/narrowband-test.py`) |
 | Acceptance matrix (demo vs MCP) | `tools/acceptance-matrix.py` | gate met: same-radio RX MCP 200/200 at 6M and MCS7/20 while rxdemo varied 100–200 (never ahead); same-monitor TX 185 vs 194 (6M) and 160 vs 183 (MCS7/20), peer `TX_VERIFIED` at rates 4/19, delivery 0.98/0.995, zero capture evictions/drops; count-based, matched 200-byte QoS Data frames, "not materially worse" |
 | MAC TSF read + adoption | `radio_tsf` (+ `set_tsf_us`) | reads all; write 8822C only |
 | Hardware beacon (arm/update/stop) | `radio_beacon` | MT7612U and RTL8822C (Jaguar3) armed, witnessed by an independent MT7612U (~30 beacons, 102.4 ms cadence, live TX-egress TSF; `update` swapped the SSID on air; quiet after stop) and by the host MT7922 on its stock kernel driver (`iw scan` + monitor capture, TSF delta 102399 µs) |
@@ -244,10 +244,12 @@ results below are history. Everything merged in PRs #10–#25.
 
 `tools/rxdemo-txdemo-parity.md` is the staged plan; M2 is complete, M3 is
 complete (retune/survey primitives, multi-witness evidence, narrowband 5/10 MHz
-forward both widths plus the 5 MHz reverse; the absolute noise floor is recorded
-blocked on the bring-up path with `igi` as the relative proxy), M4's A-MPDU
-goodput, hardware ARQ, STBC and no-ack semantics are measured (an open jaguar2
-repeated-run TX wedge is recorded in `hardware-evidence.md`), and the M5
+TX+RX at both widths and in both directions — the reverse width is chosen per
+`tools/narrowband-test.py --jaguar2-width` run; the absolute noise floor is
+recorded blocked on the bring-up path with `igi` as the relative proxy), M4's A-MPDU
+goodput, hardware ARQ, STBC and no-ack semantics are measured (a jaguar2
+stuck-TX condition, cleared by a VBUS power cycle, is recorded in
+`hardware-evidence.md`), and the M5
 acceptance matrix is **met on the bench** (`tools/acceptance-matrix.py`): the RX
 plane matches exactly on the same radio and the TX plane is not materially worse
 by decoded count on the same monitor, while adding witness `TX_VERIFIED`
@@ -268,16 +270,17 @@ are done and the gate is met; the only remaining item is the optional step 6.
 2. **M4 loose ends — done.** STBC verified on an independent monitor
    (`tools/stbc-test.py`: control `stbc=0`, `/STBC` `stbc=1`); no-ack semantics
    documented as the retry-limit-0 state shared by `tx_retry_limit:0` and
-   `AmpduMode.no_ack`. Open follow-up: the jaguar2 second-run TX wedge.
+   `AmpduMode.no_ack`. Follow-up: a jaguar2 can stick in a TX state that a
+   VBUS power cycle clears (three sequential runs passed after the replug).
 3. **Multi-witness role in `LinkProbe` — done.** Roles were already first-class
    (`rx_session` + `witness_sessions` → `RX_PEER`/`MONITOR`), and
    `tools/multi-witness-test.py` proves it on hardware: one RTL8822C
    transmitter, both receivers decode it (253/300 and 300/300, delivery 0.84–0.96), and the result
    carries the two-witness localisation note. The two-board antenna swap is
    `UNAVAILABLE` — only one MT7612U remains.
- 4. **M3 remainders — done.** Narrowband 5/10 MHz verified TX+RX forward at
-    both widths plus the 5 MHz reverse on the jaguar3 + jaguar2 pair
-    (`tools/narrowband-test.py`), with
+ 4. **M3 remainders — done.** Narrowband 5/10 MHz verified TX+RX in both
+    directions at both widths on the jaguar3 + jaguar2 pair
+    (`tools/narrowband-test.py`: 10 MHz 0.98/0.99, 5 MHz 0.995/1.000), with
    the wide-only MT7612U refused as a 5 MHz witness. The absolute noise floor
    was attempted and is recorded blocked: the vendor CAL lives in
    `IRadio::Init` and the bridge uses `InitWrite` + `StartRxLoop`, so

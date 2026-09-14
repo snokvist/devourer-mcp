@@ -149,8 +149,9 @@ def main():
         # again before the experiment, which owns its own receive side and would
         # otherwise refuse the busy session. Try every radio and prefer a
         # jaguar3 transmitter: repeated link_probe retunes wedge a jaguar2 TX
-        # after the first run (hardware-evidence.md, "Open: a jaguar2 transmitter
-        # wedges on the second experiment_link_probe"), and this script runs
+        # after the first run (hardware-evidence.md, "Diagnosed: a jaguar2
+        # transmitter can wedge in a stuck TX state, and a power cycle clears
+        # it"), and this script runs
         # three conditions in a row.
         def bring_up_and_arm(session):
             started = c.tool("monitor_start",

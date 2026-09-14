@@ -12,7 +12,7 @@ capturing at 20 MHz.
 The bench's narrowband pair is a jaguar3 (RTL8822C) and a jaguar2 (RTL8822B).
 The required arms transmit from the jaguar3 (multi-run safe). The reverse arm
 transmits from the jaguar2 and is attempted too, but a jaguar2 transmitter
-delivers only its first experiment in a chip power cycle (the OPEN finding in
+delivers only its first experiment in a chip power cycle (the Diagnosed finding in
 `docs/hardware-evidence.md`; a close/reopen does not reset it). A zero-delivery
 first attempt of that one reverse arm is therefore reported as a CAVEAT and the
 reverse direction is left unverified for the run - never silently counted as a
@@ -190,7 +190,7 @@ def main():
                     caveat(
                         f"{label}: the host accepted all {sent} frames and the witness "
                         f"heard none - the known jaguar2 second-experiment wedge (the "
-                        f"OPEN finding in hardware-evidence.md), not a narrowband "
+                        f"Diagnosed finding in hardware-evidence.md), not a narrowband "
                         f"failure. The reverse direction at {width} MHz is UNVERIFIED "
                         f"this run and needs a jaguar2 power cycle."
                     )

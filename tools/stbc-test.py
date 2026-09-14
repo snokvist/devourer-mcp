@@ -229,9 +229,10 @@ def main():
                 bad("no opened adapter reports stbc_ok with >=2 TX chains - nothing to verify")
                 return finish(["no STBC-capable transmitter"])
 
-            # Prefer a jaguar3 transmitter. A jaguar2 TX wedges after the first
-            # experiment_link_probe in a session (hardware-evidence.md, "Open: a
-            # jaguar2 transmitter wedges on the second experiment_link_probe"),
+            # Prefer a jaguar3 transmitter. A jaguar2 TX can wedge after the first
+            # experiment_link_probe in a session (hardware-evidence.md, "Diagnosed:
+            # a jaguar2 transmitter can wedge in a stuck TX state, and a power
+            # cycle clears it"),
             # and this test runs two arms back to back.
             def tx_pref(o):
                 generation = o["generation"]

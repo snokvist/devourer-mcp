@@ -1068,11 +1068,17 @@ post-swap pair — RTL8822C (jaguar3) and RTL8822B (jaguar2), the two
 narrowband-capable radios; the MT7612U has no 5/10 MHz encoding at all. On
 ch6, 6M:
 
-- 10 MHz, jaguar3 → jaguar2: 0.92–0.99 across runs (287/300 and 275/300).
-- 5 MHz, jaguar3 → jaguar2: 297/300 (0.990).
-- 5 MHz, jaguar2 → jaguar3: 300/300 (1.000) — the reverse direction.
-- Earlier runs of the same 10 MHz arm gave 0.96 / 0.98 / 0.99, so the number
-  is stable when the arm gets a clean slot.
+- `--jaguar2-width 10`: 10 MHz j3 → j2 196/200 (0.98); 5 MHz j3 → j2 199/200
+  (0.995, attempt 2); gate refused naming the width; 10 MHz j2 → j3 198/200
+  (0.99).
+- `--jaguar2-width 5`: 10 MHz j3 → j2 197/200 (0.985, attempt 2); 5 MHz j3 → j2
+  180/200 (0.900); gate refused; 5 MHz j2 → j3 200/200 (1.000).
+
+The reverse arm is one width per invocation (`--jaguar2-width`), so the two runs
+above together cover **both directions at both widths**; the replug check
+independently ran the jaguar2 as transmitter three sequential times in one
+session (10 MHz 199/200, 5 MHz 200/200, 5 MHz 200/200). Across earlier runs the
+10 MHz j3→j2 arm gave 0.92–0.99 (287/300 and 275/300).
 
 Narrowband RX on this bench is intermittent: the same 10 MHz jaguar3→jaguar2
 arm delivered 0/300 in one run and 0.957 in a later one, and 0.983 at 5 MHz
@@ -1089,17 +1095,20 @@ script also proves the gate: the MT7612U is refused as a 5 MHz witness
 ("cannot use 5MHz channels: it supports 20, 40, 80MHz") rather than silently
 capturing wide. A gate that cannot be exercised is a failure, not a silent pass.
 
-Ordering matters and is encoded in the script: the jaguar2's one TX experiment
-runs last. The reproducible failure is in the jaguar2 TX submit path — the host
-accepts every frame and nothing airs. Its blast radius is not strictly
-transmit-only: an arm that follows a jaguar2 TX arm can also fail, once, even
-with the jaguar2 as receiver (a 10 MHz jaguar3→jaguar2 arm failed immediately
-after a jaguar2 TX arm and repeated cleanly, 0.98–0.99, when it ran first), and
-the next arm recovered. So the script runs exactly one jaguar2 TX arm, last,
-and nothing required rides behind it. When that arm's first attempt accepts
-every frame and reaches no witness, the script prints a CAVEAT and leaves the
-reverse direction **unverified** for the run — it is not counted as a pass, and
-a retry cannot earn the carve-out.
+**The jaguar2 TX wedge is a stuck chip state, cleared by a power cycle.**
+The failure is in the jaguar2 TX submit path — the host accepts every frame
+and nothing airs. A `radio_close`+`radio_open` did not clear it either; only a
+VBUS power cycle did (2026-09-14 replug).
+After the replug (a VBUS power cycle) the same jaguar2 accepted **three
+sequential** `experiment_link_probe` runs as transmitter in one session and
+all three delivered: 10 MHz 199/200, 5 MHz 200/200, 5 MHz 200/200, all
+`TX_VERIFIED`. So it is neither a per-run limit nor session-scoped; it is a
+chip condition a hard power cycle clears, which the multi-run tools avoid by
+preferring a jaguar3 transmitter. `tools/narrowband-test.py` still runs its
+one jaguar2 TX arm last and treats a zero-delivery first attempt as a CAVEAT
+that leaves that direction unverified (it is never counted as a pass, and a
+retry cannot earn the carve-out) — conservative on a wedged chip, and on the
+fresh chip the reverse direction is now verified at both widths.
 
 **The absolute noise floor stays blocked, and says so.**
 `radio_open noise_floor:true` plus `channel_energy` is the path. On the
@@ -1146,27 +1155,30 @@ measurement itself. The QoS-control ack-policy bits are deliberately not
 surfaced as a third knob: the no-ack recipe is retry-limit-based, so there is
 one place to reason about retransmission.
 
-**Open: a jaguar2 transmitter wedges on the second `experiment_link_probe`.**
-Found while building the STBC test on the post-swap bench. With the RTL8822B
-(jaguar2) as `tx_session`, the first run delivers (~0.99) and every later run in
-the same session reports `frames_received: 0` / `verification: FAILED` while
+**Diagnosed: a jaguar2 transmitter can wedge in a stuck TX state, and a power
+cycle clears it.** Found while building the STBC test on the post-swap bench.
+With the RTL8822B (jaguar2) as `tx_session` in that session, the first run
+delivered (~0.99) and later runs reported `frames_received: 0` /
+`verification: FAILED` while
 `tx_accepted` still equals `frames_sent` — the host submitted and nothing
 reached the witness. The identical sequence with the RTL8822C (jaguar3) as TX
-delivers 0.995 / 1.000 / 1.000 across three runs, and a fresh open/bring-up
-restores one working jaguar2 run. Reproducible; not yet fixed.
-`tools/ampdu-goodput-test.py` and `tools/stbc-test.py` therefore prefer a
-jaguar3 transmitter, so their multi-run comparisons are valid. The follow-up is
-to find whether the wedge is in `SetMonitorChannel` on an already-up jaguar2 TX
-or in the feeder's re-arm.
+delivers 0.995 / 1.000 / 1.000 across three runs. A later narrowband run showed
+a `radio_close` + `radio_open` does **not** clear it (the reopened jaguar2 still
+accepted every frame and reached no witness), so it is chip-state, not
+session-scoped — consistent with devourer's "the chip retains state across soft
+re-init" note. `tools/ampdu-goodput-test.py`, `tools/stbc-test.py` and
+`tools/narrowband-test.py` therefore prefer a jaguar3 transmitter for their
+multi-run arms.
 
-A later narrowband run added two facts. A `radio_close` + `radio_open` between
-arms does **not** clear it: the reopened jaguar2 still accepted every frame and
-reached no witness, so the wedge is chip-state-scoped (it survives a soft
-re-init, consistent with devourer's "the chip retains state across soft
-re-init" note) rather than session-scoped — a VBUS power cycle is the likely
-reset, not a reopen. And the persistent failure is in the TX submit path; the
-receiving role itself keeps working, except that one arm immediately after a
-jaguar2 TX arm can also fail (see the narrowband paragraph above).
+Then the 2026-09-14 replug settled it: a VBUS power cycle clears the condition.
+On the fresh chip the jaguar2 accepted **three sequential** `experiment_link_probe`
+runs as transmitter in one session, all `TX_VERIFIED` (10 MHz 199/200, 5 MHz
+200/200, 5 MHz 200/200). So the wedge is not a per-run limit and not permanent;
+it is a stuck state a hard power cycle resets. A receiver-only blast radius was
+also seen once (an arm immediately after a jaguar2 TX arm failed and then
+repeated cleanly), so the conservative tools ordering stands. The follow-up, if
+it is ever worth chasing, is whether the wedge is in `SetMonitorChannel` on an
+already-up jaguar2 TX or in the feeder's re-arm.
 
 **The acceptance matrix is met on the bench.** `tools/acceptance-matrix.py`
 runs the same measurement through `rxdemo`/`txdemo` and through MCP and
