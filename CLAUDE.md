@@ -102,7 +102,8 @@ Owned by the user, physically attached, and the routine subject of this work.
 
 | Device | USB ID | Kernel driver | Devourer backend |
 |---|---|---|---|
-| MediaTek MT7612U ×2 | `0e8d:7612` | `mt76x2u` | `mt7612u` (behind `IRadio`; build with `DEVOURER_MT7612U=ON`, which upstream defaults OFF) |
+| MediaTek MT7612U ×1 | `0e8d:7612` | `mt76x2u` | `mt7612u` (behind `IRadio`; build with `DEVOURER_MT7612U=ON`, which upstream defaults OFF). The second unit left the bench on 2026-09-13, swapped for the RTL8822B; it cannot do 5/10 MHz narrowband. |
+| Realtek RTL8822B (8822BU) | `0bda:b812` | `rtw_8822bu` | Jaguar2 (rtl8822b, chip-id `0x0a`), added 2026-09-13 as the second narrowband radio (5/10/20/40/80 MHz) |
 | Realtek RTL8812CU | `0bda:c812` | `rtw_8822cu` | Jaguar3 (rtl8822c, chip-id `0x13`) — replaced the RTL8812AU/Jaguar1 part on 2026-09-13 |
 | MediaTek MT7922 (internal) | `0e8d:0616` | — | **off limits** |
 
@@ -115,8 +116,10 @@ the bench adapters to the `plugdev` group, so the whole stack runs unprivileged
 adapters keep working as ordinary Wi-Fi interfaces until Devourer claims one
 and detaches the kernel driver at open time.
 
-Two MT7612U units means peer TX/RX and monitor-oracle experiments are possible
-today. Everything else Devourer supports is `UNAVAILABLE`, not broken.
+Three adapters means peer TX/RX, monitor-oracle and multi-witness experiments
+are possible today: two of them are narrowband-capable, which is what a 5/10 MHz
+TX+RX measurement needs. Everything else Devourer supports is `UNAVAILABLE`,
+not broken.
 
 ## MCP surface
 

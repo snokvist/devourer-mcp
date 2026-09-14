@@ -1832,8 +1832,9 @@ Json Session::ampdu_json() {
     j.set("note",
           "A-MPDU needs the TX queue fed deep enough for the MAC to aggregate; "
           "a shallow feed produces single-MPDU aggregates and no goodput gain. "
-          "The queue path here feeds one frame at a time, so the structured "
-          "send path will not show the +30% the demos measure.");
+          "The batch feed (experiment_link_probe batch:true with radio_open "
+          "usb_agg) is the deep path that measures the ~+30% at high MCS; a "
+          "single-frame send loop will not.");
   return j;
 }
 

@@ -43,7 +43,7 @@ the acceptance test.
 Each milestone is a small, hardware-verifiable slice. Ordered by value, and by
 what later milestones build on.
 
-### M2 — Finish the power story (in progress)
+### M2 — Finish the power story (done)
 
 | Capability | Demo knobs | Now | Where | Verify |
 |---|---|---|---|---|
@@ -67,9 +67,9 @@ what later milestones build on.
 
 | Capability | Demo knobs | Now | Where | Verify |
 |---|---|---|---|---|
-| A-MPDU | `TX_AMPDU`, `TX_AMPDU_MODE` | **Done**: `radio_ampdu` control, QoS probe frames (`ProbeFrame` TID form), deep feeder (`radio_open usb_agg`, `experiment_link_probe batch:true`) and `goodput_bytes_per_sec`; the result records the transmitter's `ampdu` state and labels a non-aggregated QoS run single-MPDU | — | `tools/ampdu-goodput-test.py`: **+33.8%** at MCS7/20 (6.54 vs 4.89 MB/s) vs both A-MPDU-off controls on an independent MT7612U witness; no gain at MCS0/20, as expected |
+| A-MPDU | `TX_AMPDU`, `TX_AMPDU_MODE` | **Done**: `radio_ampdu` control, QoS probe frames (`ProbeFrame` TID form), deep feeder (`radio_open usb_agg`, `experiment_link_probe batch:true`) and `goodput_bytes_per_sec`; the result records the transmitter's `ampdu` state and labels a non-aggregated QoS run single-MPDU | — | `tools/ampdu-goodput-test.py`: **+32–35%** at MCS7/20 across three runs (6.54/6.47/6.67 vs 4.89/4.91/4.94 MB/s) vs both A-MPDU-off controls on an independent MT7612U witness; no gain at MCS0/20, as expected |
 | Hardware ACK / ARQ | `ACK_RESPONDER` | **Done**: `radio_ack_responder` + `radio_open` retry knobs (`tx_retry_limit`, `tx_ack_timeout_us`, `tx_retry_fallback_off`) | — | `tools/tx-retry-arq-test.py`: no responder → retries pinned at the limit, retry-drop; MT responder armed → retries 0/1, delivered |
-| QoS / no-ack / STBC | `TX_QOS_*`, `TX_STBC_TOGGLE` | **Partial**: QoS probe frames carry a TID (`experiment_link_probe qos_tid`, see A-MPDU); no-ack is `tx_retry_limit:0` / `AmpduMode.no_ack`; STBC is in the mode grammar | Verify STBC on a witness; document no-ack semantics | Decoded rate/flags on the witness |
+| QoS / no-ack / STBC | `TX_QOS_*`, `TX_STBC_TOGGLE` | **Done**: QoS probe frames carry a TID (`experiment_link_probe qos_tid`, see A-MPDU); no-ack is the retry-limit-0 state (`tx_retry_limit:0` / `AmpduMode.no_ack`, semantics in `hardware-evidence.md`); STBC is in the mode grammar | — | `tools/stbc-test.py`: control `stbc=0` ×362 vs `/STBC` `stbc=1` ×357 decoded on an independent RTL8822B monitor (counts vary per run; every probe in an arm agrees); both arms TX_VERIFIED by an MT7612U peer |
 | Per-packet TX power | `TX_PKT_PWR_DB/QDB`, `TX_PKT_OFSET` | **Done**: `experiment_link_probe pkt_power_db` composes the per-frame radiotap `DBM_TX_POWER` (bit 10), capability-gated on `per_packet_txpower` | — | Witness RSSI tracks the request: 0→43, −6→37, −12→33 (bank floor) on the 8812CU; structured path 0→62, −12→52 |
 
 ### M5 — Hopping and sensing (algorithms, not knobs)

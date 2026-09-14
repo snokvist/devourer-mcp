@@ -91,10 +91,15 @@ def print_points(label, points):
     for mode, p in points.items():
         gp = p["goodput"]
         dr = p["delivery"]
+        received = p["received"] if p["received"] is not None else "-"
+        accepted = p["tx_accepted"] if p["tx_accepted"] is not None else "-"
+        goodput = f"{gp/1e6:.2f} MB/s" if gp is not None else "unmeasured"
+        burst = f"{p['tx_elapsed_ms']:.0f} ms" if p["tx_elapsed_ms"] is not None else "-"
+        delivery = f"{dr:.3f}" if dr is not None else "unmeasured"
         print(
-            f"    {label:<10} {mode:<9} delivered {p['received']:>5}/{p['tx_accepted']} "
-            f"({dr:.3f})  goodput {gp/1e6:>7.2f} MB/s  "
-            f"burst {p['tx_elapsed_ms']:.0f} ms  rssi {p['rssi']}"
+            f"    {label:<10} {mode:<9} delivered {received:>5}/{accepted} "
+            f"({delivery})  goodput {goodput:>10}  "
+            f"burst {burst}  rssi {p['rssi']}"
         )
 
 
@@ -129,6 +134,7 @@ def main():
                   f"{len(devices)} adapter(s). This test needs hardware.")
             return 2
 
+        opened = []
         for d in devices:
             r = c.tool("radio_open", {"bus": d["bus"], "address": d["address"],
                                       "usb_agg": args.usb_agg}, timeout=180)
@@ -136,52 +142,66 @@ def main():
                 bad(f"open {d['usb_id']} bus{d['bus']}: {r.get('_text', r)}")
                 failures.append(f"open {d['usb_id']}")
                 continue
-            opened.append(r["session"])
-            chip = r["capabilities"]["chip"]
-            if tx is None:
-                # A-MPDU can only be armed on a radio that is already up, and
-                # opening it is not enough: a monitor start is what runs Init.
-                # Stop the monitor again before the experiment, which owns its
-                # own receive side and would otherwise refuse the busy session.
-                started = c.tool("monitor_start",
-                                 {"session": r["session"], "channel": args.channel,
-                                  "width_mhz": args.width}, timeout=180)
-                if errored(started):
-                    print(f"  {chip} could not be brought up: "
-                          f"{started.get('_text', started)[:120]}")
-                else:
-                    c.tool("monitor_stop", {"capture_id": started["capture_id"],
-                                            "discard": True})
-                    set_result = c.tool(
-                        "radio_ampdu",
-                        {"session": r["session"], "enabled": True, "tid": 0,
-                         "max_num": 16},
-                    )
-                    if errored(set_result):
-                        print(f"  {chip} refuses A-MPDU; still a candidate witness")
-                    elif set_result.get("enabled") is True:
-                        tx = r["session"]
-                        print(f"  transmitter: {chip} session {tx} "
-                              f"(A-MPDU tid {set_result.get('tid')} "
-                              f"max {set_result.get('max_num')}, usb_agg {args.usb_agg})")
-            if rx is None and r["session"] != tx:
-                rx = r["session"]
-                print(f"  witness:     {chip} session {rx}")
+            opened.append((d, r))
 
-        for session in opened:
-            if session not in (tx, rx):
-                c.tool("radio_close", {"session": session})
+        # A-MPDU can only be armed on a radio that is already up, and opening it
+        # is not enough: a monitor start is what runs Init. Stop the monitor
+        # again before the experiment, which owns its own receive side and would
+        # otherwise refuse the busy session. Try every radio and prefer a
+        # jaguar3 transmitter: repeated link_probe retunes wedge a jaguar2 TX
+        # after the first run (hardware-evidence.md, "Open: a jaguar2 transmitter
+        # wedges on the second experiment_link_probe"), and this script runs
+        # three conditions in a row.
+        def bring_up_and_arm(session):
+            started = c.tool("monitor_start",
+                             {"session": session, "channel": args.channel,
+                              "width_mhz": args.width}, timeout=180)
+            if errored(started):
+                return False, f"could not be brought up: {started.get('_text', started)[:120]}", {}
+            c.tool("monitor_stop", {"capture_id": started["capture_id"], "discard": True})
+            set_result = c.tool("radio_ampdu",
+                                {"session": session, "enabled": True, "tid": 0, "max_num": 16})
+            return True, None, set_result
+
+        def prefer_jaguar3(item):
+            generation = item[1]["capabilities"].get("generation", "")
+            return 0 if "jaguar3" in generation else 1
+
+        tx = None
+        for d, r in sorted(opened, key=prefer_jaguar3):
+            if tx is not None:
+                break
+            brought_up, why, set_result = bring_up_and_arm(r["session"])
+            if not brought_up:
+                print(f"  {r['capabilities']['chip']} {why}")
+            elif errored(set_result):
+                print(f"  {r['capabilities']['chip']} refuses A-MPDU; still a candidate witness")
+            elif set_result.get("enabled") is True:
+                tx = r["session"]
+                print(f"  transmitter: {r['capabilities']['chip']} session {tx} "
+                      f"(A-MPDU tid {set_result.get('tid')} "
+                      f"max {set_result.get('max_num')}, usb_agg {args.usb_agg})")
+
+        rx = next((r["session"] for _, r in opened if r["session"] != tx), None)
+        if rx is not None:
+            print(f"  witness:     "
+                  f"{next(r['capabilities']['chip'] for _, r in opened if r['session'] == rx)} "
+                  f"session {rx}")
+
+        for _, r in opened:
+            if r["session"] not in (tx, rx):
+                c.tool("radio_close", {"session": r["session"]})
 
         if tx is None:
             bad("no adapter accepted A-MPDU — nothing could be measured")
-            for session in opened:
-                c.tool("radio_close", {"session": session})
+            for _, r in opened:
+                c.tool("radio_close", {"session": r["session"]})
             return 1
         if rx is None:
             bad("no independent receiver — nothing could be witnessed")
             c.tool("radio_ampdu", {"session": tx, "clear": True})
-            for session in opened:
-                c.tool("radio_close", {"session": session})
+            for _, r in opened:
+                c.tool("radio_close", {"session": r["session"]})
             return 1
 
         try:
@@ -204,7 +224,12 @@ def main():
                         failures.append(f"arm {label}")
                         continue
                 else:
-                    c.tool("radio_ampdu", {"session": tx, "clear": True})
+                    cleared = c.tool("radio_ampdu", {"session": tx, "clear": True})
+                    if cleared.get("enabled") is not False:
+                        bad(f"could not clear A-MPDU before {label}: "
+                            f"{json.dumps(cleared)[:160]}")
+                        failures.append(f"clear {label}")
+                        continue
                 points, raw = run_probe(c, tx, rx, args, qos_tid)
                 if points is None:
                     bad(f"{label} run failed: {json.dumps(raw)[:200]}")
@@ -271,17 +296,28 @@ def main():
                 failures.append(f"{gain_mode} gain not measured")
             else:
                 qos_gain = (results.get("qos-off") or {}).get(gain_mode)
-                best_control = max(plain_gain["goodput"],
-                                   qos_gain["goodput"] if qos_gain else plain_gain["goodput"])
-                if on_gain["goodput"] > best_control * 1.05:
-                    gain = (on_gain["goodput"] / best_control - 1) * 100
-                    ok(f"{gain_mode}: A-MPDU goodput {on_gain['goodput']/1e6:.2f} MB/s "
-                       f"vs best control {best_control/1e6:.2f} MB/s (+{gain:.1f}%)")
+                if qos_gain is None and "qos-off" in results:
+                    bad(f"{gain_mode}: the QoS control produced points but not this "
+                        "mode, so the comparison is incomplete")
+                    failures.append(f"{gain_mode} qos-off not measured")
+                elif (plain_gain["goodput"] is None or on_gain["goodput"] is None
+                      or (qos_gain is not None and qos_gain["goodput"] is None)):
+                    # Guard BEFORE max(): a timeout can leave a measured point
+                    # with a null goodput, and max(None, ...) raises.
+                    bad(f"{gain_mode}: goodput was not measured in every condition")
+                    failures.append(f"{gain_mode} goodput not measured")
                 else:
-                    bad(f"{gain_mode}: A-MPDU goodput {on_gain['goodput']/1e6:.2f} MB/s "
-                        f"did not beat the A-MPDU-off control "
-                        f"{best_control/1e6:.2f} MB/s")
-                    failures.append(f"{gain_mode} gain")
+                    best_control = max(plain_gain["goodput"],
+                                       qos_gain["goodput"] if qos_gain else plain_gain["goodput"])
+                    if on_gain["goodput"] > best_control * 1.05:
+                        gain = (on_gain["goodput"] / best_control - 1) * 100
+                        ok(f"{gain_mode}: A-MPDU goodput {on_gain['goodput']/1e6:.2f} MB/s "
+                           f"vs best control {best_control/1e6:.2f} MB/s (+{gain:.1f}%)")
+                    else:
+                        bad(f"{gain_mode}: A-MPDU goodput {on_gain['goodput']/1e6:.2f} MB/s "
+                            f"did not beat the A-MPDU-off control "
+                            f"{best_control/1e6:.2f} MB/s")
+                        failures.append(f"{gain_mode} gain")
 
             # The other rates are informational: per-MPDU airtime dominates at a
             # low rate, so aggregation has little to win and no gain is required.
@@ -293,8 +329,14 @@ def main():
                 if not (plain and on):
                     continue
                 qos = results.get("qos-off", {}).get(mode)
-                best_control = max(plain["goodput"],
-                                   qos["goodput"] if qos else plain["goodput"])
+                controls = [plain["goodput"]]
+                if qos and qos["goodput"] is not None:
+                    controls.append(qos["goodput"])
+                if plain["goodput"] is None or on["goodput"] is None:
+                    print(f"  \033[33mNOTE\033[0m {mode}: goodput was not measured "
+                          "in every condition (truncated or timed out); skipped.")
+                    continue
+                best_control = max(controls)
                 if on["goodput"] > best_control * 1.05:
                     gain = (on["goodput"] / best_control - 1) * 100
                     ok(f"{mode}: A-MPDU goodput {on['goodput']/1e6:.2f} MB/s "
@@ -307,8 +349,11 @@ def main():
 
             c.tool("radio_ampdu", {"session": tx, "clear": True})
         finally:
-            for session in opened:
-                c.tool("radio_close", {"session": session})
+            # Always leave the mode cleared and every radio closed, including
+            # on the exception path the docstring promises.
+            c.tool("radio_ampdu", {"session": tx, "clear": True})
+            for _, r in opened:
+                c.tool("radio_close", {"session": r["session"]})
 
     print("=" * 60)
     if failures:

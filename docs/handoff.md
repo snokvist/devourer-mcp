@@ -44,8 +44,8 @@ grant the supported USB ids to `plugdev` and blacklist nothing.
 **The RTL8812CU is held by the ground station when it runs.** `waybeam-hub`
 (`systemctl` unit `waybeam-hub`) claims it, so `radio.open` fails with `busy`.
 Free it with `sudo systemctl stop waybeam-hub`, do the radio work, then
-`sudo systemctl start waybeam-hub` to restore the link. The two MT7612U are
-usually free.
+`sudo systemctl start waybeam-hub` to restore the link. The MT7612U and the
+RTL8822B are usually free.
 
 ---
 
@@ -66,7 +66,7 @@ LLM ──MCP(stdio)──▶ Kotlin runtime ──UDS control + frame stream─
 | `kotlin/characterize/` | Evidence database, one JSON per adapter. |
 | `kotlin/scratchpad/` | Declarative micro-app runtime + live UI. |
 | `kotlin/dashboard/` | The persistent dashboard on `127.0.0.1:8910`. Reads in-process state only; never calls the bridge. |
-| `kotlin/mcp/` | The 38 tools. The only process the model talks to. |
+| `kotlin/mcp/` | The 39 tools. The only process the model talks to. |
 | `var/` | Runtime state: captures, `characterization/`, `scratchpads/`. Gitignored. |
 
 ### Why a separate bridge process
@@ -116,10 +116,11 @@ rule that `tx_send` can never grant `TX_VERIFIED`.
 4 s; ch6 carries ~1). Good for injection measurements, and a trap: a quiet
 channel looks exactly like a deaf receiver.
 
-**The two MT7612U adapters are indistinguishable by USB descriptors** — same id,
-same product string, serial `000000000`. Their EEPROM MACs differ, but MediaTek
-reads its EEPROM during chip init, so the address does not exist until the
-adapter is brought up. Realtek has it from construction.
+**The MT7612U is indistinguishable from other MT7612U units by USB descriptors**
+— same id, same product string, serial `000000000`. (Only one remains on the
+bench since 2026-09-13.) Its EEPROM MAC differs per unit, but MediaTek reads
+the EEPROM during chip init, so the address does not exist until the adapter is
+brought up. Realtek reports its MAC from construction.
 
 ---
 
@@ -208,8 +209,10 @@ EDCCA threshold.
 
 State: **39 MCP tools, 28 bridge ops, protocol v1.14, the bridge calls 35 of 55
 `IRadio` methods, 247 Kotlin tests + 64 native selftests.** The current bench is
-an RTL8812CU (Jaguar3) plus two MT7612U; the 8812AU/Jaguar1 results below are
-history. Everything merged in PRs #10–#25.
+an RTL8812CU (Jaguar3), an RTL8822B (Jaguar2) and one MT7612U; the second
+MT7612U was swapped out on 2026-09-13 for the RTL8822B, because 5/10 MHz
+narrowband needs two Realteks (the MT7612U cannot do it). The 8812AU/Jaguar1
+results below are history. Everything merged in PRs #10–#25.
 
 ### What this session added, end to end
 
@@ -225,29 +228,35 @@ history. Everything merged in PRs #10–#25.
 | Energy survey | `spectrum_sweep` | quietest channel on ch1/6/11 |
 | Hardware ACK responder | `radio_ack_responder` | all three arm/clear |
 | A-MPDU control | `radio_ampdu` | 8822C enables; MT refuses honestly |
-| A-MPDU goodput | `ProbeFrame` QoS form + `experiment_link_probe qos_tid` | +33.8% at MCS7/20 vs A-MPDU-off, independent witness; result records the armed state |
+| A-MPDU goodput | `ProbeFrame` QoS form + `experiment_link_probe qos_tid` | +32–35% at MCS7/20 vs both A-MPDU-off controls (three runs), independent witness; broadcast/no-ack, and the result records the armed state |
+| STBC | mode grammar `/STBC` | airs and decodes: control `stbc=0` ×362 vs `/STBC` `stbc=1` ×357 on an independent RTL8822B monitor (`tools/stbc-test.py`; counts vary per run, every probe in an arm agrees) |
 | MAC TSF read + adoption | `radio_tsf` (+ `set_tsf_us`) | reads all; write 8822C only |
 | Hardware beacon (arm/update/stop) | `radio_beacon` | MT7612U and RTL8822C (Jaguar3) armed, witnessed by an independent MT7612U (~30 beacons, 102.4 ms cadence, live TX-egress TSF; `update` swapped the SSID on air; quiet after stop) and by the host MT7922 on its stock kernel driver (`iw scan` + monitor capture, TSF delta 102399 µs) |
 | Whole-surface verification | `tools/mcp-verify.py` | 46/46 |
 
 `tools/rxdemo-txdemo-parity.md` is the staged plan; M2 is complete, M3's
-retune/survey primitives are done, M4's A-MPDU goodput and hardware ARQ are
-measured (STBC verification and no-ack documentation remain), M6 has started.
+retune/survey primitives are done, M4's A-MPDU goodput, hardware ARQ, STBC and
+no-ack semantics are measured (an open jaguar2 repeated-run TX wedge is
+recorded in `hardware-evidence.md`), M6 has started.
 
 ### Next
 
 The ordered plan lives in
 [`roadmap.md`](roadmap.md) under **"Path to the gate (next steps)"**. Short
-version; the immediate next action is step 2:
+version; the immediate next action is step 3:
 
 1. **A-MPDU goodput — done.** `ProbeFrame` builds the QoS Data form (a TID for
    the aggregator), and `tools/ampdu-goodput-test.py` measured delivered
-   payload against both A-MPDU-off controls: **+33.8% at MCS7/20**, no gain at
-   MCS0/20 as expected, on an independent MT7612U witness. `LinkProbe` now
-   records the transmitter's `ampdu` state and labels a non-aggregated QoS run
-   single-MPDU. See `hardware-evidence.md`.
-2. M4 loose ends: verify STBC on a witness; decide no-ack semantics.
-3. Multi-witness role in `LinkProbe` (also settles the open antenna question).
+   payload against both A-MPDU-off controls: **+32–35% at MCS7/20** across three
+   runs, no gain at MCS0/20 as expected, on an independent MT7612U witness.
+   `LinkProbe` records the transmitter's `ampdu` state and labels a
+   non-aggregated QoS run single-MPDU. See `hardware-evidence.md`.
+2. **M4 loose ends — done.** STBC verified on an independent monitor
+   (`tools/stbc-test.py`: control `stbc=0`, `/STBC` `stbc=1`); no-ack semantics
+   documented as the retry-limit-0 state shared by `tx_retry_limit:0` and
+   `AmpduMode.no_ack`. Open follow-up: the jaguar2 second-run TX wedge.
+3. Multi-witness role in `LinkProbe` (the two-board antenna swap is now
+   `UNAVAILABLE` — only one MT7612U remains).
 4. M3 remainders: narrowband; the absolute noise floor stays blocked on the
    `Init` vs `InitWrite` bring-up path.
 5. Run the demo-vs-MCP acceptance matrix on the bench.

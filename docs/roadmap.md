@@ -48,12 +48,14 @@ page down with it.
 
 | Adapter | State |
 |---|---|
-| RTL8812CU (jaguar3) | `TX_VERIFIED` — 100% at 6M–MCS7 on ch6, witnessed by both MT7612U simultaneously |
-| MT7612U ×2 | `TX_VERIFIED` — 99–100% delivery witnessed by the Realtek |
+| RTL8812CU (jaguar3) | `TX_VERIFIED` — 100% at 6M–MCS7 on ch6; also STBC TX and narrowband TX on the post-swap bench |
+| RTL8822B (jaguar2) | `TX_VERIFIED`, `RX_VERIFIED` — STBC decode monitor; narrowband 5/10 MHz peer |
+| MT7612U ×1 | `TX_VERIFIED` — 99–100% delivery witnessed by the Realtek |
 | Everything else | `UNAVAILABLE` — no hardware, which is not a failure |
 
 The RTL8812AU (jaguar1) that produced the earlier TX evidence left the bench on
-2026-09-13; its results stay in `hardware-evidence.md` as history.
+2026-09-13, as did the second MT7612U (swapped for the RTL8822B); their results
+stay in `hardware-evidence.md` as history.
 
 Full evidence, including the findings below, is in
 [`hardware-evidence.md`](hardware-evidence.md).
@@ -124,19 +126,24 @@ point of the comparison. The per-milestone tables in
 1. **M4 A-MPDU goodput — done.** `ProbeFrame` builds the QoS Data form the
    MAC needs a TID for, and `tools/ampdu-goodput-test.py` measures delivered
    payload against both A-MPDU-off controls with an independent witness:
-   **+33.8% at MCS7/20** (6.54 vs 4.89 MB/s), no gain at MCS0/20 as expected.
-   The result also records the transmitter's `ampdu` state and labels a
-   non-aggregated QoS run as single-MPDU (see `hardware-evidence.md`).
-2. **M4 loose ends.** Verify STBC decodes on a witness (the mode grammar already
-   carries `/STBC`). Decide and document no-ack semantics; `tx_retry_limit:0`
-   and `AmpduMode.no_ack` already give the no-retry recipe. QoS is subsumed by
-   step 1.
+   **+32–35% at MCS7/20** across three runs (6.54/6.47/6.67 vs 4.89/4.91/4.94 MB/s), no
+   gain at MCS0/20 as expected. It is a broadcast, no-ack measurement, stated
+   as such. The result also records the transmitter's `ampdu` state and labels
+   a non-aggregated QoS run as single-MPDU (see `hardware-evidence.md`).
+2. **M4 loose ends — done.** STBC airs and decodes on an independent monitor
+   (`tools/stbc-test.py`: control `stbc=0` ×293 vs `/STBC` `stbc=1` ×292), and
+   no-ack semantics are documented as the retry-limit-0 state that
+   `tx_retry_limit:0` and `AmpduMode.no_ack` share. Open follow-up, recorded in
+   `hardware-evidence.md`: a jaguar2 transmitter wedges on the second
+   `experiment_link_probe` in a session, so the multi-run tools prefer jaguar3.
 3. **Multi-witness role in `LinkProbe`.** The two-witness run that settled the
    carrier-sense question was done by hand at the bridge. Making it first-class
-   both closes a plan item and is the only way to settle the open antenna
-   question (`hardware-evidence.md`, "which MT7612U board has four antennas").
-   A demo cannot do this at all, which is the "strictly better" half of the
-   gate.
+   closes a plan item and is what the earlier carrier-sense work needed. The
+   open antenna question it was also meant to settle (`hardware-evidence.md`,
+   "which MT7612U board has four antennas") is now **UNAVAILABLE**: the second
+   MT7612U was swapped for the RTL8822B, and one board cannot be compared with
+   itself. A demo cannot do multi-witness at all, which is the "strictly
+   better" half of the gate.
 4. **M3 remainders.** Narrowband (5/10 MHz) as an open argument / width path,
    verified TX+RX on J1/J3 with a witness. The absolute noise floor stays
    blocked on the bring-up path (`Init` vs `InitWrite`); either move bring-up
@@ -171,7 +178,9 @@ independent receivers simultaneously. That is a qualitatively different
 measurement rather than a repeat: two witnesses agreeing frame-for-frame means
 the missing frames were never aired, which localises the loss to the
 transmitter. It is how the carrier-sense finding became conclusive, and it is
-what an answer to the open antenna question needs.
+what the antenna question needed — now **UNAVAILABLE**, because the second
+MT7612U was swapped for the RTL8822B and one board cannot be compared with
+itself.
 
 Each point has a hard deadline and the whole run is registered, so it can be
 stopped from the dashboard while it runs. Cancellation still restores carrier
@@ -197,12 +206,14 @@ What it still does not do:
 
 ## Known open questions on this bench
 
-**Which MT7612U board has four antennas.** Still unsettled, deliberately. The
-two units differ consistently in received level from the same transmitter
-(≈76 vs ≈55, measured simultaneously), but position was never controlled, so
-that difference does not attribute to the antenna configuration. Settling it
-needs a fixed transmitter and the two receivers swapped between positions — a
-multi-witness experiment, which is the feature above.
+**Which MT7612U board has four antennas.** `UNAVAILABLE`, not settled. The two
+units differed consistently in received level from the same transmitter (≈76 vs
+≈55, measured simultaneously), but position was never controlled, so that
+difference never attributed to the antenna configuration. Settling it needs a
+fixed transmitter and the two receivers swapped between positions — and the
+second MT7612U left the bench on 2026-09-13 (swapped for the RTL8822B), so one
+board cannot be compared with itself. The two-witness feature that would have
+run the experiment is done; the question is not answerable on this bench.
 
 **Whether the RTL8812AU's EDCCA threshold can be raised rather than bypassed.**
 Answered. EDCCA is the gate that blocks injection on Jaguar1 (94% recovered by
