@@ -118,3 +118,36 @@ witness), MCP must be strictly better, and that is the point.
 CI stays hardware-free: this matrix is a documented, repeatable hardware run
 like `tools/smoke-test.py` and `tools/rx-gain-cca-test.py`, never a unit test
 that could pass without a radio.
+
+### Acceptance run — gate met (2026-09-14)
+
+`tools/acceptance-matrix.py` on the current bench, channel 6, two repetitions
+per arm compared best-of. Every row compares the *same* receiver under the two
+paths, and every comparison is a decoded-frame count, not a ratio: a demo's own
+`submitted` count includes ~50 bring-up submissions, so it is not a usable
+denominator (the monitor sees roughly 150–200 test frames for a 200-frame
+burst). Both arms send the same 200-byte QoS Data PSDU, so the airtime is
+comparable, and every MCP capture is checked for ring eviction and bridge drops
+(0/0 on these rows). The script pins only the transmitter's jaguar3 generation
+and prints the roles it assigned; on this run T = `0bda:c812` (RTL8812CU),
+receiver A = `0e8d:7612` (MT7612U), monitor B = `0bda:b812` (RTL8822B).
+
+| Plane | Mode | Demo path | MCP path | Result |
+|---|---|---|---|---|
+| RX (same radio, MT7612U) | 6M | 100–200 heard | 200 heard | MCP not behind |
+| RX (same radio, MT7612U) | MCS7/20 | 100–200 heard | 200 heard | MCP not behind |
+| TX (same monitor, RTL8822B) | 6M | 194 heard | 185 heard; peer witness delivery 0.98, rate 4, `TX_VERIFIED` | inside band, verified |
+| TX (same monitor, RTL8822B) | MCS7/20 | 183 heard | 160 heard; peer witness delivery 0.995, rate 19, `TX_VERIFIED` | inside band, verified |
+
+The demo column cannot produce the right-hand column's evidence at all: a demo
+reports *submission*, never whether anything reached the air, and it has no
+capability model, no persistent capture, no second witness, and no
+cancellation. The demo receiver's own count is the more variable one — rxdemo
+heard 100–200 of the 250-frame bursts across repetitions while the MCP capture
+read a full 200/200 each time — which is exactly why the verdict is
+**not materially worse** (the gate's accepted band: max 15% or 25 frames, plus
+an upper bound), checked best-of, rather than a claim of statistical equality.
+The RX plane is never behind and the TX plane sits inside that band while
+adding independent `TX_VERIFIED` evidence the demo cannot produce. So the gate
+is met, and the matrix prints that strictly-better list on every run.
+

@@ -157,12 +157,22 @@ point of the comparison. The per-milestone tables in
    path (`Init` vs `InitWrite`) and is now recorded with the measured reason and
    the `igi` relative proxy (`hardware-evidence.md`); moving bring-up onto
    `Init` remains the unstarted fix.
-5. **Run the acceptance matrix.** For each capability, drive `rxdemo`/`txdemo`
-   with the equivalent env knobs and the MCP tool, and compare on the bench.
-   `tools/smoke-test.py` and `tools/mcp-verify.py` are the shape. Where the demo
-   cannot measure it, MCP's witness/verification/capture is the result. This is
-   the artifact that actually declares the gate met, and it stays a documented
-   hardware run, never a unit test.
+5. **Run the acceptance matrix — done, gate met.** `tools/acceptance-matrix.py`
+   drives `rxdemo`/`txdemo` and the MCP equivalent on the same bench and
+   compares decoded counts on the *same* receiver, both arms sending the same
+   200-byte QoS Data PSDU: the MCP capture heard 200/200 at 6M and MCS7/20
+   while rxdemo's own count varied (100–200, never ahead); the TX plane's
+   same-monitor counts were 185 vs the demo's 194 at 6M and 160 vs 183 at
+   MCS7/20, with the MCP peer witness decoding the same rate (4/19), 0.98/0.995
+   delivery and `TX_VERIFIED`, every capture at zero evictions/drops. A demo's
+   own `submitted` count includes ~50 bring-up submissions, so the comparison
+   is count-based, and the honest verdict is "not materially worse" within an
+   explicit band (max 15% or 25 frames), not identical. Where the demo cannot
+   measure it — independent witness/`TX_VERIFIED`, multi-witness localisation,
+   persistent capture/query/PCAP, capability gating, the cancellable experiment
+   engine — MCP is strictly better, and the matrix prints that list every run.
+   The full table and gate statement are in `docs/rxdemo-txdemo-parity.md`; it
+   stays a documented hardware run, never a unit test.
 6. **Optional: hardware-tagged JUnit.** The `hardware` tag exists but nothing
    carries it; converting the Python hardware checks would make the parity
    matrix a gated CI target rather than a set of scripts.

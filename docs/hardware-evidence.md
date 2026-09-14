@@ -1168,6 +1168,23 @@ reset, not a reopen. And the persistent failure is in the TX submit path; the
 receiving role itself keeps working, except that one arm immediately after a
 jaguar2 TX arm can also fail (see the narrowband paragraph above).
 
+**The acceptance matrix is met on the bench.** `tools/acceptance-matrix.py`
+runs the same measurement through `rxdemo`/`txdemo` and through MCP and
+compares. On 2026-09-14 (RTL8812CU transmitting, MT7612U as the receiver, and
+the RTL8822B as the monitor, ch6, 200-frame bursts of the same 200-byte QoS
+Data PSDU, best of two repetitions): on the same radio the MCP capture heard
+200/200 at both 6M and MCS7/20 while rxdemo's own count varied (100–200 heard
+across repetitions, never ahead of the capture); the TX plane's same-monitor
+counts were 185 vs the demo's 194 at 6M and 160 vs 183 at MCS7/20, while the
+MCP peer witness independently decoded the same rate (4 and 19) with
+0.98/0.995 delivery and `TX_VERIFIED`. Every MCP capture reported zero ring
+evictions and zero bridge drops. Comparison is by decoded count, not ratio,
+because a demo's `submitted` includes ~50 bring-up submissions. The gate
+statement is "not materially worse" within an explicit band (max 15% or 25
+frames), not identical — the demo column is submission-only, so the
+witness/verification surface is strictly better. Full table:
+`docs/rxdemo-txdemo-parity.md` "The acceptance test".
+
 ## Reproducing
 
 ```sh
@@ -1180,6 +1197,7 @@ tools/ampdu-goodput-test.py      # QoS probe frames, A-MPDU goodput vs A-MPDU-of
 tools/stbc-test.py               # /STBC airs and decodes on an independent monitor
 tools/multi-witness-test.py      # two independent witnesses + the localisation note
 tools/narrowband-test.py         # 5/10 MHz TX+RX witnessed, plus the width gate
+tools/acceptance-matrix.py       # demo-vs-MCP acceptance run; prints the strictly-better list
 tools/tsf-test.py                # MAC TSF read + rate
 tools/beacon-test.py             # hardware beacon, decoded by an independent witness
 tools/smoke-test.py              # RX path, all adapters

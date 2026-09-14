@@ -144,6 +144,7 @@ tools/ampdu-goodput-test.py                      # A-MPDU goodput vs both contro
 tools/stbc-test.py                               # /STBC airs and decodes on an independent monitor
 tools/narrowband-test.py                         # 5/10 MHz TX+RX witnessed, plus the width gate
 tools/multi-witness-test.py                      # two independent witnesses + the localisation note
+tools/acceptance-matrix.py                       # demo-vs-MCP acceptance run; prints the strictly-better list
 tools/tsf-test.py                                # MAC TSF read + adoption
 tools/beacon-test.py                             # hardware beacon, decoded by an independent witness
 tools/stall-test.py / tools/backpressure-test.py # sink stops reading / sustained overload
@@ -235,6 +236,7 @@ results below are history. Everything merged in PRs #10–#25.
 | STBC | mode grammar `/STBC` | airs and decodes: control `stbc=0` ×362 vs `/STBC` `stbc=1` ×357 on an independent RTL8822B monitor (`tools/stbc-test.py`; counts vary per run, every probe in an arm agrees) |
 | Multi-witness link probe | `experiment_link_probe.rx_session` + `witness_sessions` | RTL8822C TX, RTL8822B + MT7612U both decode it (253/300 and 300/300, delivery 0.84–0.96), result carries the two-witness localisation note (`tools/multi-witness-test.py`) |
 | Narrowband 5/10 MHz | `experiment_link_probe width_mhz` | 10 MHz 0.92–0.99, 5 MHz 0.990 forward and 5 MHz 1.000 reverse on RTL8822C ↔ RTL8822B; MT7612U refused as a 5 MHz witness (`tools/narrowband-test.py`) |
+| Acceptance matrix (demo vs MCP) | `tools/acceptance-matrix.py` | gate met: same-radio RX MCP 200/200 at 6M and MCS7/20 while rxdemo varied 100–200 (never ahead); same-monitor TX 185 vs 194 (6M) and 160 vs 183 (MCS7/20), peer `TX_VERIFIED` at rates 4/19, delivery 0.98/0.995, zero capture evictions/drops; count-based, matched 200-byte QoS Data frames, "not materially worse" |
 | MAC TSF read + adoption | `radio_tsf` (+ `set_tsf_us`) | reads all; write 8822C only |
 | Hardware beacon (arm/update/stop) | `radio_beacon` | MT7612U and RTL8822C (Jaguar3) armed, witnessed by an independent MT7612U (~30 beacons, 102.4 ms cadence, live TX-egress TSF; `update` swapped the SSID on air; quiet after stop) and by the host MT7922 on its stock kernel driver (`iw scan` + monitor capture, TSF delta 102399 µs) |
 | Whole-surface verification | `tools/mcp-verify.py` | 46/46 |
@@ -244,13 +246,17 @@ complete (retune/survey primitives, multi-witness evidence, narrowband 5/10 MHz
 forward both widths plus the 5 MHz reverse; the absolute noise floor is recorded
 blocked on the bring-up path with `igi` as the relative proxy), M4's A-MPDU
 goodput, hardware ARQ, STBC and no-ack semantics are measured (an open jaguar2
-repeated-run TX wedge is recorded in `hardware-evidence.md`), M6 has started.
+repeated-run TX wedge is recorded in `hardware-evidence.md`), and the M5
+acceptance matrix is **met on the bench** (`tools/acceptance-matrix.py`): the RX
+plane matches exactly on the same radio and the TX plane is not materially worse
+by decoded count on the same monitor, while adding witness `TX_VERIFIED`
+evidence a demo cannot produce. M6 has started.
 
 ### Next
 
 The ordered plan lives in
-[`roadmap.md`](roadmap.md) under **"Path to the gate (next steps)"**. Steps 1–4
-are done; the immediate next action is step 5, the acceptance matrix.
+[`roadmap.md`](roadmap.md) under **"Path to the gate (next steps)"**. Steps 1–5
+are done and the gate is met; the only remaining item is the optional step 6.
 
 1. **A-MPDU goodput — done.** `ProbeFrame` builds the QoS Data form (a TID for
    the aggregator), and `tools/ampdu-goodput-test.py` measured delivered
@@ -276,7 +282,17 @@ are done; the immediate next action is step 5, the acceptance matrix.
    `IRadio::Init` and the bridge uses `InitWrite` + `StartRxLoop`, so
    `channel_energy` reports `valid_noise_floor:false` with the reason and
    offers `igi` as the relative proxy.
-5. Run the demo-vs-MCP acceptance matrix on the bench.
+5. **Acceptance matrix — done, gate met.** `tools/acceptance-matrix.py` runs the
+   demo and MCP paths on the same bench and compares decoded counts on the same
+   receiver, both arms sending the same 200-byte QoS Data PSDU: the MCP capture
+   heard 200/200 at 6M and MCS7/20 while rxdemo's own count varied (100–200,
+   never ahead); TX was 185 vs the demo's 194 (6M) and 160 vs 183 (MCS7/20) on
+   the same monitor, with the MCP peer witness decoding rates 4/19, 0.98/0.995
+   delivery and `TX_VERIFIED`, and every MCP capture at zero evictions/drops.
+   Count-based because a demo's `submitted` includes ~50 bring-up frames;
+   verdict "not materially worse" within an explicit band (max 15% or 25
+   frames), and the strictly-better list prints on every run. Full table:
+   `docs/rxdemo-txdemo-parity.md` "The acceptance test".
 6. Optional: convert the Python hardware checks to the JUnit `hardware` tag.
 
 Already done and independently verified this session: M6 beacons
